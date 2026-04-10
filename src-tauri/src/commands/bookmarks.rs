@@ -7,7 +7,9 @@ use crate::{
 };
 
 #[tauri::command]
-pub async fn list_bookmark_sources(state: State<'_, AppState>) -> AppResult<Vec<BookmarkSourceStatus>> {
+pub async fn list_bookmark_sources(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<BookmarkSourceStatus>> {
     state.bookmark_service.list_sources().await
 }
 
@@ -17,7 +19,10 @@ pub async fn import_bookmarks(
     browsers: Vec<BookmarkBrowser>,
     state: State<'_, AppState>,
 ) -> AppResult<BookmarkSyncSummary> {
-    let summary = state.bookmark_service.import_browsers(app.clone(), browsers).await?;
+    let summary = state
+        .bookmark_service
+        .import_browsers(app.clone(), browsers)
+        .await?;
     app.emit("recall://bookmarks-synced", &summary)?;
     Ok(summary)
 }
@@ -27,7 +32,10 @@ pub async fn sync_bookmarks_now(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<BookmarkSyncSummary> {
-    let summary = state.bookmark_service.sync_selected_browsers(app.clone()).await?;
+    let summary = state
+        .bookmark_service
+        .sync_selected_browsers(app.clone())
+        .await?;
     app.emit("recall://bookmarks-synced", &summary)?;
     Ok(summary)
 }

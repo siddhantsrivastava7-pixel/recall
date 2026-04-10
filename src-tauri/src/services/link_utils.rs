@@ -5,13 +5,13 @@ use url::Url;
 fn url_regex() -> &'static Regex {
     static URL_REGEX: OnceLock<Regex> = OnceLock::new();
     URL_REGEX.get_or_init(|| {
-        Regex::new(r#"(?i)\bhttps?://[^\s<>"'()]+[^\s<>"'().,!?;:]"#)
-            .expect("valid url regex")
+        Regex::new(r#"(?i)\bhttps?://[^\s<>"'()]+[^\s<>"'().,!?;:]"#).expect("valid url regex")
     })
 }
 
 fn trim_url_wrappers(value: &str) -> String {
-    value.trim()
+    value
+        .trim()
         .trim_start_matches('<')
         .trim_end_matches('>')
         .trim_matches('"')
@@ -61,9 +61,11 @@ pub fn detect_primary_url(content: &str, explicit_url: Option<&str>) -> Option<S
 
 pub fn extract_domain(url: &str) -> Option<String> {
     let normalized = normalize_url_candidate(url)?;
-    Url::parse(&normalized)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.trim_start_matches("www.").to_ascii_lowercase()))
+    Url::parse(&normalized).ok().and_then(|parsed| {
+        parsed
+            .host_str()
+            .map(|host| host.trim_start_matches("www.").to_ascii_lowercase())
+    })
 }
 
 #[cfg(test)]

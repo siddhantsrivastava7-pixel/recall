@@ -70,7 +70,9 @@ export interface LicenseState {
   id: string;
   licenseKey: string | null;
   isActivated: boolean;
+  isTrial: boolean;
   activatedAt: string | null;
+  expiresAt: string | null;
   lastCheckedAt: string | null;
 }
 

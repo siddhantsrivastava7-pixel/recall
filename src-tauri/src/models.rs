@@ -169,7 +169,9 @@ pub struct LicenseState {
     pub id: String,
     pub license_key: Option<String>,
     pub is_activated: bool,
+    pub is_trial: bool,
     pub activated_at: Option<String>,
+    pub expires_at: Option<String>,
     pub last_checked_at: Option<String>,
 }
 

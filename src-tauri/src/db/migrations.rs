@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS license_state (
   id TEXT PRIMARY KEY NOT NULL,
   license_key TEXT,
   is_activated INTEGER NOT NULL,
+  is_trial INTEGER NOT NULL DEFAULT 0,
   activated_at TEXT,
+  expires_at TEXT,
   last_checked_at TEXT
 );
 "#;
@@ -41,7 +43,9 @@ async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> AppResult<b
     let pragma = format!("PRAGMA table_info({table})");
     let rows = sqlx::query(&pragma).fetch_all(pool).await?;
 
-    Ok(rows.into_iter().any(|row| row.get::<String, _>("name") == column))
+    Ok(rows
+        .into_iter()
+        .any(|row| row.get::<String, _>("name") == column))
 }
 
 async fn ensure_column(
@@ -67,7 +71,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
         sqlx::query(statement).execute(pool).await?;
     }
 
-    ensure_column(pool, "memories", "source_type", "TEXT NOT NULL DEFAULT 'manual'").await?;
+    ensure_column(
+        pool,
+        "memories",
+        "source_type",
+        "TEXT NOT NULL DEFAULT 'manual'",
+    )
+    .await?;
     ensure_column(pool, "memories", "url", "TEXT").await?;
     ensure_column(pool, "memories", "domain", "TEXT").await?;
     ensure_column(pool, "memories", "resolved_domain", "TEXT").await?;
@@ -85,6 +95,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "last_enriched_at", "TEXT").await?;
     ensure_column(pool, "memories", "external_id", "TEXT").await?;
     ensure_column(pool, "memories", "folder_path", "TEXT").await?;
+    ensure_column(
+        pool,
+        "license_state",
+        "is_trial",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(pool, "license_state", "expires_at", "TEXT").await?;
 
     sqlx::query(
         r#"

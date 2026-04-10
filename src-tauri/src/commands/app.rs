@@ -41,7 +41,11 @@ async fn run_startup_bookmark_sync_if_needed(
         return Ok(());
     }
 
-    match state.bookmark_service.sync_selected_browsers(app.clone()).await {
+    match state
+        .bookmark_service
+        .sync_selected_browsers(app.clone())
+        .await
+    {
         Ok(summary) => {
             let _ = app.emit("recall://bookmarks-synced", &summary);
         }

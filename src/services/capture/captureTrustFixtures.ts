@@ -92,7 +92,9 @@ const license: LicenseState = {
   id: "license-local",
   licenseKey: "RC-TEST-TEST-F",
   isActivated: true,
+  isTrial: false,
   activatedAt: "2026-04-09T11:30:00.000Z",
+  expiresAt: null,
   lastCheckedAt: "2026-04-09T11:30:00.000Z",
 };
 

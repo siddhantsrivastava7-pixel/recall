@@ -54,7 +54,8 @@ impl AppState {
         license_repository: SharedLicenseRepository,
         platform: PlatformServices,
     ) -> Self {
-        let capture_service = Arc::new(CaptureService::new(pool.clone(), memory_repository.clone()));
+        let capture_service =
+            Arc::new(CaptureService::new(pool.clone(), memory_repository.clone()));
         let memory_service = Arc::new(MemoryService::new(
             memory_repository.clone(),
             capture_service.clone(),

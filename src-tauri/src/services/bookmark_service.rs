@@ -7,9 +7,7 @@ use tokio::fs;
 use crate::{
     db::repositories::{SharedMemoryRepository, SharedSettingsRepository},
     errors::app_error::{AppError, AppResult},
-    models::{
-        BookmarkBrowser, BookmarkImportResult, BookmarkSourceStatus, BookmarkSyncSummary,
-    },
+    models::{BookmarkBrowser, BookmarkImportResult, BookmarkSourceStatus, BookmarkSyncSummary},
     platform::contracts::BrowserPathResolver,
     services::{
         capture_service::{BookmarkCaptureInput, CaptureService},
@@ -92,13 +90,18 @@ impl BookmarkIngestionService {
         app: AppHandle,
         browsers: Vec<BookmarkBrowser>,
     ) -> AppResult<BookmarkSyncSummary> {
-        self.import_internal(app, deduplicate_browsers(browsers), true).await
+        self.import_internal(app, deduplicate_browsers(browsers), true)
+            .await
     }
 
     pub async fn sync_selected_browsers(&self, app: AppHandle) -> AppResult<BookmarkSyncSummary> {
         let settings = self.settings_repository.get().await?;
-        self.import_internal(app, deduplicate_browsers(settings.bookmark_sync_browsers), true)
-            .await
+        self.import_internal(
+            app,
+            deduplicate_browsers(settings.bookmark_sync_browsers),
+            true,
+        )
+        .await
     }
 
     async fn import_internal(
@@ -157,7 +160,10 @@ impl BookmarkIngestionService {
                 path: None,
                 imported_count: 0,
                 skipped_count: 0,
-                message: format!("{} bookmarks are not configured on this platform.", browser.display_name()),
+                message: format!(
+                    "{} bookmarks are not configured on this platform.",
+                    browser.display_name()
+                ),
             });
         };
 
@@ -290,7 +296,9 @@ fn collect_bookmarks(
 
     let mut next_breadcrumbs = breadcrumbs.to_vec();
     if !node.name.trim().is_empty()
-        && next_breadcrumbs.last().is_none_or(|last| last != node.name.trim())
+        && next_breadcrumbs
+            .last()
+            .is_none_or(|last| last != node.name.trim())
     {
         next_breadcrumbs.push(node.name.trim().to_string());
     }

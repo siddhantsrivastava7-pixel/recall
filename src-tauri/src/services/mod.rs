@@ -1,5 +1,5 @@
-pub mod bookmark_service;
 pub mod bookmark_intelligence_service;
+pub mod bookmark_service;
 pub mod capture_service;
 pub mod export_service;
 pub mod license_service;

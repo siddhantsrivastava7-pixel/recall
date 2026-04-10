@@ -129,7 +129,11 @@ fn build_quick_save_window(app: &AppHandle) -> AppResult<()> {
 
 #[async_trait]
 impl WindowAdapter for WindowsWindowAdapter {
-    async fn ensure_widget(&self, app: &AppHandle, saved_position: Option<(f64, f64)>) -> AppResult<()> {
+    async fn ensure_widget(
+        &self,
+        app: &AppHandle,
+        saved_position: Option<(f64, f64)>,
+    ) -> AppResult<()> {
         let window = if let Some(w) = app.get_webview_window("widget") {
             w
         } else {
@@ -366,10 +370,7 @@ fn startup_command_value() -> AppResult<String> {
 }
 
 fn run_reg_command(args: &[&str]) -> AppResult<std::process::Output> {
-    Command::new("reg")
-        .args(args)
-        .output()
-        .map_err(Into::into)
+    Command::new("reg").args(args).output().map_err(Into::into)
 }
 
 #[async_trait]

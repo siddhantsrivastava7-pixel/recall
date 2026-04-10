@@ -8,13 +8,13 @@ use crate::{
             ShortcutAdapter, StartupAdapter, WindowAdapter,
         },
         mac::{
-            MacAppContextAdapter, MacClipboardAdapter, MacFileSystemAdapter, MacShortcutAdapter,
-            MacStartupAdapter, MacWindowAdapter, MacBrowserPathResolver,
+            MacAppContextAdapter, MacBrowserPathResolver, MacClipboardAdapter,
+            MacFileSystemAdapter, MacShortcutAdapter, MacStartupAdapter, MacWindowAdapter,
         },
         windows::{
-            WindowsAppContextAdapter, WindowsClipboardAdapter, WindowsFileSystemAdapter,
-            WindowsShortcutAdapter, WindowsStartupAdapter, WindowsWindowAdapter,
-            WindowsBrowserPathResolver,
+            WindowsAppContextAdapter, WindowsBrowserPathResolver, WindowsClipboardAdapter,
+            WindowsFileSystemAdapter, WindowsShortcutAdapter, WindowsStartupAdapter,
+            WindowsWindowAdapter,
         },
     },
 };

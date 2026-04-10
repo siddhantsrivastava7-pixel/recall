@@ -63,10 +63,7 @@ impl LinkEnrichmentService {
             header::CACHE_CONTROL,
             header::HeaderValue::from_static("no-cache"),
         );
-        default_headers.insert(
-            header::PRAGMA,
-            header::HeaderValue::from_static("no-cache"),
-        );
+        default_headers.insert(header::PRAGMA, header::HeaderValue::from_static("no-cache"));
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(ENRICHMENT_TIMEOUT_SECONDS))
@@ -135,10 +132,7 @@ impl LinkEnrichmentService {
             return;
         }
 
-        debug_enrichment_log(format!(
-            "startup-resume count={}",
-            candidates.len()
-        ));
+        debug_enrichment_log(format!("startup-resume count={}", candidates.len()));
 
         for memory in candidates {
             self.schedule_for_memory(app.clone(), memory).await;
@@ -348,7 +342,9 @@ fn extract_meta_content(document: &NodeRef, attribute: &str, target: &str) -> Op
             .map(|value| value.eq_ignore_ascii_case(target))
             .unwrap_or(false);
         if matches_target {
-            if let Some(content) = attribute_value(element, "content").and_then(|value| collapse_whitespace(&value)) {
+            if let Some(content) =
+                attribute_value(element, "content").and_then(|value| collapse_whitespace(&value))
+            {
                 return Some(content);
             }
         }
@@ -432,7 +428,12 @@ fn build_link_enrichment_update(
     let canonical_url = metadata
         .and_then(|metadata| metadata.canonical_url.as_deref())
         .and_then(normalize_canonical_url)
-        .or_else(|| memory.canonical_url.as_deref().and_then(normalize_canonical_url))
+        .or_else(|| {
+            memory
+                .canonical_url
+                .as_deref()
+                .and_then(normalize_canonical_url)
+        })
         .or_else(|| memory.url.as_deref().and_then(normalize_canonical_url));
     let effective_url = canonical_url
         .clone()
@@ -515,9 +516,8 @@ mod tests {
           </html>
         "#;
 
-        let metadata =
-            extract_metadata_from_html("https://platform.openai.com/docs/pricing", html)
-                .expect("metadata should be extracted");
+        let metadata = extract_metadata_from_html("https://platform.openai.com/docs/pricing", html)
+            .expect("metadata should be extracted");
 
         assert_eq!(metadata.resolved_title.as_deref(), Some("OpenAI pricing"));
         assert_eq!(

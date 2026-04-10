@@ -66,7 +66,11 @@ impl ShortcutAdapter for MacShortcutAdapter {
 
 #[async_trait]
 impl WindowAdapter for MacWindowAdapter {
-    async fn ensure_widget(&self, _app: &AppHandle, _saved_position: Option<(f64, f64)>) -> AppResult<()> {
+    async fn ensure_widget(
+        &self,
+        _app: &AppHandle,
+        _saved_position: Option<(f64, f64)>,
+    ) -> AppResult<()> {
         Ok(())
     }
 
@@ -128,9 +132,7 @@ impl BrowserPathResolver for MacBrowserPathResolver {
         let path = match browser {
             BookmarkBrowser::Chrome => base.join("Google/Chrome/Default/Bookmarks"),
             BookmarkBrowser::Edge => base.join("Microsoft Edge/Default/Bookmarks"),
-            BookmarkBrowser::Brave => {
-                base.join("BraveSoftware/Brave-Browser/Default/Bookmarks")
-            }
+            BookmarkBrowser::Brave => base.join("BraveSoftware/Brave-Browser/Default/Bookmarks"),
         };
 
         // Safari bookmark ingestion should be completed later with a dedicated resolver and

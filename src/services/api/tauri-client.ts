@@ -14,6 +14,11 @@ import type {
   ShortcutBinding,
 } from "@/domain/types";
 
+export interface LicenseValidationResult {
+  valid: boolean;
+  expired: boolean;
+}
+
 export const tauriClient = {
   bootstrap: () => invoke<BootstrapPayload>("bootstrap_app"),
   listMemories: () => invoke<Memory[]>("list_memories"),
@@ -47,6 +52,8 @@ export const tauriClient = {
     invoke<ShortcutBinding[]>("update_shortcuts", { shortcuts }),
   activateLicense: (licenseKey: string) =>
     invoke<LicenseState>("activate_license", { licenseKey }),
+  validateLicenseKey: (licenseKey: string) =>
+    invoke<LicenseValidationResult>("validate_license_key", { licenseKey }),
   deactivateLicense: () => invoke<LicenseState>("deactivate_license"),
   getLicenseState: () => invoke<LicenseState>("get_license_state"),
   openMainWindow: () => invoke<void>("open_main_window"),

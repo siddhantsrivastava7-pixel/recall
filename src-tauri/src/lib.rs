@@ -9,7 +9,7 @@ mod state;
 use commands::{
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
-    license::{activate_license, deactivate_license, get_license_state},
+    license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
         create_memory, delete_memory, duplicate_memory, get_memory, list_memories, update_memory,
     },
@@ -34,9 +34,7 @@ use tauri_plugin_global_shortcut::{
 };
 use tokio::time::{sleep, Duration};
 
-async fn current_shortcut_bindings(
-    state: &AppState,
-) -> Vec<crate::models::ShortcutBinding> {
+async fn current_shortcut_bindings(state: &AppState) -> Vec<crate::models::ShortcutBinding> {
     state
         .shortcut_service
         .list(&state.platform.shortcuts.bindings())
@@ -44,10 +42,7 @@ async fn current_shortcut_bindings(
         .unwrap_or_else(|_| state.platform.shortcuts.bindings())
 }
 
-async fn shortcut_action_for_accelerator(
-    state: &AppState,
-    accelerator: &str,
-) -> Option<String> {
+async fn shortcut_action_for_accelerator(state: &AppState, accelerator: &str) -> Option<String> {
     let normalized = normalize_accelerator(accelerator);
     let bindings = state
         .shortcut_service
@@ -113,7 +108,11 @@ fn start_bookmark_sync_loop(app: tauri::AppHandle) {
             if !should_sync {
                 continue;
             }
-            if let Ok(summary) = state.bookmark_service.sync_selected_browsers(app.clone()).await {
+            if let Ok(summary) = state
+                .bookmark_service
+                .sync_selected_browsers(app.clone())
+                .await
+            {
                 let _ = app.emit("recall://bookmarks-synced", &summary);
             }
         }
@@ -245,9 +244,9 @@ pub fn run() {
 
                 if settings.floating_widget_enabled && license_activated {
                     let saved_pos = settings.widget_position_x.zip(settings.widget_position_y);
-                    if let Err(e) = runtime.block_on(
-                        managed.platform.window.ensure_widget(&handle, saved_pos),
-                    ) {
+                    if let Err(e) =
+                        runtime.block_on(managed.platform.window.ensure_widget(&handle, saved_pos))
+                    {
                         eprintln!("[recall] Widget init warning: {e}");
                     }
                 }
@@ -257,7 +256,9 @@ pub fn run() {
                 }
 
                 let shortcuts = runtime.block_on(current_shortcut_bindings(&managed));
-                if let Err(e) = runtime.block_on(apply_shortcut_bindings(&handle, &managed, &shortcuts)) {
+                if let Err(e) =
+                    runtime.block_on(apply_shortcut_bindings(&handle, &managed, &shortcuts))
+                {
                     eprintln!("[recall] Shortcut registration warning: {e}");
                 }
                 start_bookmark_sync_loop(handle.clone());
@@ -305,6 +306,7 @@ pub fn run() {
             import_data,
             clear_all_data,
             seed_sample_data,
+            validate_license_key,
             get_license_state,
             activate_license,
             deactivate_license,

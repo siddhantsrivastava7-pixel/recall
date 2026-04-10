@@ -84,7 +84,10 @@ fn normalize_accelerator_part(part: &str) -> String {
     if let Some(letter) = lowered.strip_prefix("key").filter(|value| value.len() == 1) {
         return letter.to_ascii_uppercase();
     }
-    if let Some(digit) = lowered.strip_prefix("digit").filter(|value| value.len() == 1) {
+    if let Some(digit) = lowered
+        .strip_prefix("digit")
+        .filter(|value| value.len() == 1)
+    {
         return digit.to_string();
     }
 
@@ -263,7 +266,8 @@ mod tests {
         let mut requested = defaults();
         requested[0].accelerator = "Space".into();
 
-        let error = validate_shortcuts(&defaults(), &requested).expect_err("missing modifier should fail");
+        let error =
+            validate_shortcuts(&defaults(), &requested).expect_err("missing modifier should fail");
         assert!(error.to_string().contains("modifier"));
     }
 }

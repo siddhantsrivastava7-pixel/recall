@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use sqlx::SqlitePool;
 use sqlx::types::Json;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUpdateStore } from "@/stores/updateStore";
+import { useLicenseStore } from "@/stores/licenseStore";
 import { tauriClient } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
@@ -447,19 +448,21 @@ function UpdatesTab() {
 
 /* ─── License ───────────────────────────────────────────────────── */
 function LicenseTab() {
-  const { license, activateLicense, deactivateLicense } = useSettingsStore();
+  const { license } = useSettingsStore();
+  const activateKey = useLicenseStore((state) => state.activateKey);
+  const clearLicense = useLicenseStore((state) => state.clearLicense);
+  const licenseStatus = useLicenseStore((state) => state.status);
   const [key,        setKey]        = useState("");
-  const [activating, setActivating] = useState(false);
   const [msg,        setMsg]        = useState("");
 
   async function activate() {
     if (!key.trim()) return;
-    setActivating(true);
-    const res = await activateLicense(key.trim());
-    setActivating(false);
-    setMsg(res.ok ? "License activated." : res.error || "Activation failed.");
+    const res = await activateKey(key.trim());
+    setMsg(res.ok ? "Trial activated successfully." : res.error || "Activation failed.");
     if (res.ok) setKey("");
   }
+
+  const activating = licenseStatus === "validating";
 
   return (
     <Section title="License">
@@ -480,16 +483,16 @@ function LicenseTab() {
         }
         <div>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>
-            {license?.isActivated ? "License Active" : "Free Version"}
+            {license?.isActivated ? (license.isTrial ? "Trial Active" : "License Active") : "Free Version"}
           </div>
           <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
             {license?.isActivated
-              ? `Activated ${license.activatedAt ? formatLongTimestamp(license.activatedAt) : ""}`
+              ? `${license.activatedAt ? `Activated ${formatLongTimestamp(license.activatedAt)}` : "Activated"}${license.expiresAt ? ` · Expires ${formatLongTimestamp(license.expiresAt)}` : ""}`
               : "Enter a license key to unlock all features"}
           </div>
         </div>
         {license?.isActivated && (
-          <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={() => void deactivateLicense()}>
+          <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={() => void clearLicense()}>
             Deactivate
           </button>
         )}

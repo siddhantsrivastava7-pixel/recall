@@ -174,9 +174,19 @@ pub fn derive_bookmark_intelligence(
             .as_deref()
             .or(memory.folder_path.as_deref()),
     );
-    let topic_labels = extract_topic_labels(memory, context, resolved_domain.as_deref(), canonical_url.as_deref());
-    let is_duplicate_of =
-        find_duplicate_of(memory, all_memories, canonical_url.as_deref(), resolved_domain.as_deref(), context);
+    let topic_labels = extract_topic_labels(
+        memory,
+        context,
+        resolved_domain.as_deref(),
+        canonical_url.as_deref(),
+    );
+    let is_duplicate_of = find_duplicate_of(
+        memory,
+        all_memories,
+        canonical_url.as_deref(),
+        resolved_domain.as_deref(),
+        context,
+    );
     let bookmark_quality_score = compute_quality_score(
         memory,
         context,
@@ -253,11 +263,7 @@ fn extract_path_tokens(url: Option<&str>) -> Vec<String> {
     tokenize(parsed.path())
 }
 
-fn score_topic_candidate(
-    scores: &mut HashMap<String, f64>,
-    label: String,
-    score: f64,
-) {
+fn score_topic_candidate(scores: &mut HashMap<String, f64>, label: String, score: f64) {
     if label.trim().is_empty() {
         return;
     }
@@ -312,10 +318,7 @@ fn extract_topic_labels(
         }
     }
 
-    let title_sources = [
-        context.resolved_title.as_deref(),
-        memory.title.as_deref(),
-    ];
+    let title_sources = [context.resolved_title.as_deref(), memory.title.as_deref()];
     for source in title_sources.into_iter().flatten() {
         let tokens = tokenize(source);
         for token in tokens.iter().take(4) {
@@ -335,7 +338,10 @@ fn extract_topic_labels(
         }
     }
 
-    for token in extract_path_tokens(canonical_url.or(Some(&context.url))).iter().take(4) {
+    for token in extract_path_tokens(canonical_url.or(Some(&context.url)))
+        .iter()
+        .take(4)
+    {
         if resolved_domain.is_some_and(|domain| token == domain) {
             continue;
         }
@@ -365,10 +371,9 @@ fn extract_topic_labels(
             .then_with(|| left.0.cmp(&right.0))
     });
 
-    topic_labels
-        .into_iter()
-        .map(|(label, _)| label)
-        .fold(Vec::<String>::new(), |mut output, label| {
+    topic_labels.into_iter().map(|(label, _)| label).fold(
+        Vec::<String>::new(),
+        |mut output, label| {
             if !output
                 .iter()
                 .any(|existing| existing.eq_ignore_ascii_case(&label))
@@ -377,7 +382,8 @@ fn extract_topic_labels(
                 output.push(label);
             }
             output
-        })
+        },
+    )
 }
 
 fn duplicate_candidate_key(memory: &Memory) -> (&str, &str) {
@@ -399,7 +405,8 @@ fn find_duplicate_of(
             .or(memory.title.as_deref())
             .unwrap_or_default(),
     );
-    let current_path_tokens = extract_path_tokens(current_canonical.as_deref().or(Some(&context.url)));
+    let current_path_tokens =
+        extract_path_tokens(current_canonical.as_deref().or(Some(&context.url)));
 
     let mut exact_matches = Vec::new();
     let mut near_matches = Vec::new();
@@ -471,9 +478,9 @@ fn find_duplicate_of(
     }
 
     let choose_primary = |matches: Vec<&Memory>| -> Option<String> {
-        let primary = matches
-            .into_iter()
-            .min_by(|left, right| duplicate_candidate_key(left).cmp(&duplicate_candidate_key(right)))?;
+        let primary = matches.into_iter().min_by(|left, right| {
+            duplicate_candidate_key(left).cmp(&duplicate_candidate_key(right))
+        })?;
         if duplicate_candidate_key(primary) < duplicate_candidate_key(memory) {
             Some(primary.id.clone())
         } else {
@@ -547,7 +554,11 @@ fn compute_quality_score(
         score += 7.0;
     }
 
-    if context.resolved_site_name.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+    if context
+        .resolved_site_name
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         score += 6.0;
     }
 
@@ -566,7 +577,11 @@ fn compute_quality_score(
         score -= 32.0;
     }
 
-    if context.resolved_image.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+    if context
+        .resolved_image
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
         score += 3.0;
     }
 
@@ -579,11 +594,14 @@ mod tests {
 
     use crate::models::{LinkEnrichmentStatus, MemorySourceType};
 
-    use super::{
-        derive_bookmark_intelligence, normalize_canonical_url, BookmarkMetadataContext,
-    };
+    use super::{derive_bookmark_intelligence, normalize_canonical_url, BookmarkMetadataContext};
 
-    fn bookmark_memory(id: &str, title: &str, url: &str, created_at: &str) -> crate::models::Memory {
+    fn bookmark_memory(
+        id: &str,
+        title: &str,
+        url: &str,
+        created_at: &str,
+    ) -> crate::models::Memory {
         crate::models::Memory {
             id: id.into(),
             source_type: MemorySourceType::Bookmark,
@@ -642,8 +660,7 @@ mod tests {
                 canonical_url: Some("https://platform.openai.com/docs/pricing".into()),
                 resolved_title: Some("OpenAI API pricing guide".into()),
                 resolved_description: Some(
-                    "Review model pricing, token tiers, and usage details for API planning."
-                        .into(),
+                    "Review model pricing, token tiers, and usage details for API planning.".into(),
                 ),
                 resolved_image: Some("https://platform.openai.com/assets/pricing.png".into()),
                 resolved_site_name: Some("OpenAI Docs".into()),
@@ -651,8 +668,14 @@ mod tests {
             &[],
         );
 
-        assert_eq!(intelligence.resolved_domain.as_deref(), Some("platform.openai.com"));
-        assert!(intelligence.topic_labels.iter().any(|label| label == "Pricing"));
+        assert_eq!(
+            intelligence.resolved_domain.as_deref(),
+            Some("platform.openai.com")
+        );
+        assert!(intelligence
+            .topic_labels
+            .iter()
+            .any(|label| label == "Pricing"));
         assert!(intelligence.bookmark_quality_score > 40.0);
     }
 
@@ -709,7 +732,9 @@ mod tests {
                 url: "https://react.dev/learn/performance".into(),
                 canonical_url: Some("https://react.dev/learn/performance".into()),
                 resolved_title: Some("Performance checklist for React apps".into()),
-                resolved_description: Some("Patterns for profiling and optimizing render work.".into()),
+                resolved_description: Some(
+                    "Patterns for profiling and optimizing render work.".into(),
+                ),
                 resolved_image: None,
                 resolved_site_name: Some("React".into()),
             },

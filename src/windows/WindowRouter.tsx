@@ -13,6 +13,9 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
+import { useLicenseStore } from "@/stores/licenseStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { LicenseModal } from "@/components/LicenseModal";
 import { MainWindow } from "./MainWindow";
 import { WidgetWindow } from "./WidgetWindow";
 import { SearchWindow } from "./SearchWindow";
@@ -21,10 +24,20 @@ import type { WindowLabel } from "@/domain/types";
 
 export function WindowRouter() {
   const { bootstrap, isBootstrapping, initialized, error, runtime } = useAppStore();
+  const backendLicense = useSettingsStore((state) => state.license);
+  const licenseChecked = useLicenseStore((state) => state.checked);
+  const isLicensed = useLicenseStore((state) => state.isLicensed);
+  const checkLicense = useLicenseStore((state) => state.checkLicense);
 
   useEffect(() => {
     void bootstrap();
   }, []);
+
+  useEffect(() => {
+    if (initialized && runtime?.currentWindowLabel === "main") {
+      void checkLicense(backendLicense);
+    }
+  }, [backendLicense, checkLicense, initialized, runtime?.currentWindowLabel]);
 
   if (isBootstrapping) {
     return <BootSplash />;
@@ -35,6 +48,14 @@ export function WindowRouter() {
   }
 
   const label = runtime?.currentWindowLabel ?? "main";
+
+  if (label === "main" && !licenseChecked) {
+    return <BootSplash />;
+  }
+
+  if (label === "main" && !isLicensed) {
+    return <LicenseModal />;
+  }
 
   switch (label as WindowLabel) {
     case "widget":         return <WidgetWindow />;

@@ -29,13 +29,15 @@ impl SettingsRepository for SqliteSettingsRepository {
                 "floating_widget_enabled" => settings.floating_widget_enabled = value == "true",
                 "launch_on_startup_enabled" => settings.launch_on_startup_enabled = value == "true",
                 "update_auto_check_enabled" => settings.update_auto_check_enabled = value == "true",
-                "bookmark_auto_sync_enabled" => settings.bookmark_auto_sync_enabled = value == "true",
+                "bookmark_auto_sync_enabled" => {
+                    settings.bookmark_auto_sync_enabled = value == "true"
+                }
                 "bookmark_sync_interval_minutes" => {
                     settings.bookmark_sync_interval_minutes = value.parse::<u32>().unwrap_or(15)
                 }
                 "bookmark_sync_browsers" => {
-                    settings.bookmark_sync_browsers =
-                        serde_json::from_str(&value).unwrap_or_else(|_| AppSettings::default().bookmark_sync_browsers)
+                    settings.bookmark_sync_browsers = serde_json::from_str(&value)
+                        .unwrap_or_else(|_| AppSettings::default().bookmark_sync_browsers)
                 }
                 "bookmark_last_synced_at" => {
                     settings.bookmark_last_synced_at = if value.trim().is_empty() {

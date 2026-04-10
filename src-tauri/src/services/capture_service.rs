@@ -71,8 +71,11 @@ impl CaptureService {
     }
 
     pub async fn create(&self, input: MemoryInput) -> AppResult<Memory> {
-        self.persist(CaptureOrigin::Manual, CaptureInputBuilder::from_manual_input(input)?)
-            .await
+        self.persist(
+            CaptureOrigin::Manual,
+            CaptureInputBuilder::from_manual_input(input)?,
+        )
+        .await
     }
 
     pub async fn update(&self, id: &str, input: MemoryInput) -> AppResult<Memory> {
@@ -92,15 +95,23 @@ impl CaptureService {
                 Ok(memory)
             }
             Err(error) => {
-                self.log_failure(CaptureOrigin::Update, started_at.elapsed(), &prepared.steps, &error);
+                self.log_failure(
+                    CaptureOrigin::Update,
+                    started_at.elapsed(),
+                    &prepared.steps,
+                    &error,
+                );
                 Err(error)
             }
         }
     }
 
     pub async fn create_bookmark(&self, input: BookmarkCaptureInput) -> AppResult<Memory> {
-        self.persist(CaptureOrigin::BookmarkImport, CaptureInputBuilder::from_bookmark(input)?)
-            .await
+        self.persist(
+            CaptureOrigin::BookmarkImport,
+            CaptureInputBuilder::from_bookmark(input)?,
+        )
+        .await
     }
 
     pub async fn duplicate_from_memory(&self, original: Memory) -> AppResult<Memory> {
@@ -159,7 +170,12 @@ impl CaptureService {
         debug_capture_log(format!(
             "start origin={} source_type={} steps={}",
             origin_label(origin),
-            source_type_label(prepared.input.source_type.unwrap_or(MemorySourceType::Manual)),
+            source_type_label(
+                prepared
+                    .input
+                    .source_type
+                    .unwrap_or(MemorySourceType::Manual)
+            ),
             prepared.steps.join(","),
         ));
     }
@@ -403,8 +419,7 @@ mod tests {
 
     use crate::{
         db::{
-            migrations::run_migrations,
-            sqlite_memory_repository::SqliteMemoryRepository,
+            migrations::run_migrations, sqlite_memory_repository::SqliteMemoryRepository,
             system_projects::DEFAULT_INBOX_PROJECT_ID,
         },
         models::{BookmarkBrowser, LinkEnrichmentStatus, MemorySourceType},
@@ -472,11 +487,11 @@ mod tests {
             Some("https://platform.openai.com/docs/pricing")
         );
         assert_eq!(memory.domain.as_deref(), Some("platform.openai.com"));
-        assert_eq!(memory.enrichment_status, Some(LinkEnrichmentStatus::Pending));
         assert_eq!(
-            memory.content,
-            "https://platform.openai.com/docs/pricing"
+            memory.enrichment_status,
+            Some(LinkEnrichmentStatus::Pending)
         );
+        assert_eq!(memory.content, "https://platform.openai.com/docs/pricing");
         assert_eq!(memory.external_id.as_deref(), Some("bookmark-1"));
         assert_eq!(memory.source_app.as_deref(), Some("chrome"));
         assert_eq!(memory.folder_path.as_deref(), Some("Research / API"));
@@ -525,10 +540,19 @@ mod tests {
             .await
             .expect("clipboard capture should succeed");
 
-        assert_eq!(memory.title.as_deref(), Some("https://example.com/docs/render"));
-        assert_eq!(memory.url.as_deref(), Some("https://example.com/docs/render"));
+        assert_eq!(
+            memory.title.as_deref(),
+            Some("https://example.com/docs/render")
+        );
+        assert_eq!(
+            memory.url.as_deref(),
+            Some("https://example.com/docs/render")
+        );
         assert_eq!(memory.domain.as_deref(), Some("example.com"));
-        assert_eq!(memory.enrichment_status, Some(LinkEnrichmentStatus::Pending));
+        assert_eq!(
+            memory.enrichment_status,
+            Some(LinkEnrichmentStatus::Pending)
+        );
         assert_eq!(memory.source_app.as_deref(), Some("Brave"));
         assert_eq!(memory.source_window.as_deref(), Some("Render Docs"));
     }
@@ -541,7 +565,8 @@ mod tests {
             .create(crate::models::MemoryInput {
                 source_type: Some(MemorySourceType::Manual),
                 title: None,
-                content: "Remember this launch note https://example.com/posts/pricing-strategy".into(),
+                content: "Remember this launch note https://example.com/posts/pricing-strategy"
+                    .into(),
                 note: Some("Useful later".into()),
                 project_id: None,
                 url: None,
@@ -560,6 +585,9 @@ mod tests {
             Some("https://example.com/posts/pricing-strategy"),
         );
         assert_eq!(memory.domain.as_deref(), Some("example.com"));
-        assert_eq!(memory.enrichment_status, Some(LinkEnrichmentStatus::Pending));
+        assert_eq!(
+            memory.enrichment_status,
+            Some(LinkEnrichmentStatus::Pending)
+        );
     }
 }

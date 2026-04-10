@@ -18,7 +18,11 @@ pub trait ShortcutAdapter: Send + Sync {
 
 #[async_trait]
 pub trait WindowAdapter: Send + Sync {
-    async fn ensure_widget(&self, app: &AppHandle, saved_position: Option<(f64, f64)>) -> AppResult<()>;
+    async fn ensure_widget(
+        &self,
+        app: &AppHandle,
+        saved_position: Option<(f64, f64)>,
+    ) -> AppResult<()>;
     async fn set_widget_expanded(&self, app: &AppHandle, expanded: bool) -> AppResult<()>;
     async fn open_main(&self, app: &AppHandle) -> AppResult<()>;
     async fn open_search_overlay(&self, app: &AppHandle) -> AppResult<()>;

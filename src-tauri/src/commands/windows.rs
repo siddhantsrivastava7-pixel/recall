@@ -41,17 +41,18 @@ pub async fn set_widget_expanded(
     expanded: bool,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
-    state.platform.window.set_widget_expanded(&app, expanded).await
+    state
+        .platform
+        .window
+        .set_widget_expanded(&app, expanded)
+        .await
 }
 
 /// Called from the widget frontend when the user finishes dragging.
 /// Saves the current physical position of the widget window to the DB
 /// so it can be restored on next launch.
 #[tauri::command]
-pub async fn save_widget_position(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<()> {
+pub async fn save_widget_position(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     if let Some(window) = app.get_webview_window("widget") {
         if let (Ok(pos), Ok(scale)) = (window.outer_position(), window.scale_factor()) {
             let logical_x = pos.x as f64 / scale;

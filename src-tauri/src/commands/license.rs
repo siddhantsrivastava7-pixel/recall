@@ -1,6 +1,43 @@
 use tauri::{AppHandle, Manager, State};
 
-use crate::{errors::app_error::AppResult, models::LicenseState, state::app_state::AppState};
+use crate::{
+    errors::app_error::{AppError, AppResult},
+    models::LicenseState,
+    state::app_state::AppState,
+};
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseValidationResult {
+    pub valid: bool,
+    pub expired: bool,
+}
+
+#[tauri::command]
+pub async fn validate_license_key(license_key: String) -> AppResult<LicenseValidationResult> {
+    let key = license_key.trim().to_uppercase();
+    if key.is_empty() {
+        return Err(AppError::Invalid("License key is required.".into()));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()?;
+
+    let response = client
+        .post("https://sidbuilds.com/api/validate-key")
+        .json(&serde_json::json!({ "key": key }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(AppError::Invalid(
+            "Unable to validate your key right now.".into(),
+        ));
+    }
+
+    response.json::<LicenseValidationResult>().await.map_err(Into::into)
+}
 
 #[tauri::command]
 pub async fn get_license_state(state: State<'_, AppState>) -> AppResult<LicenseState> {
