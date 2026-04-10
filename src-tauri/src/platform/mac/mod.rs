@@ -19,8 +19,8 @@ pub struct MacFileSystemAdapter;
 pub struct MacBrowserPathResolver;
 pub struct MacStartupAdapter;
 
-const WIDGET_COLLAPSED_WIDTH: f64 = 260.0;
-const WIDGET_COLLAPSED_HEIGHT: f64 = 56.0;
+const WIDGET_COLLAPSED_WIDTH: f64 = 142.0;
+const WIDGET_COLLAPSED_HEIGHT: f64 = 48.0;
 
 // macOS completion notes for future work:
 // - Search overlay and widget currently use normal transparent Tauri windows. A later pass should

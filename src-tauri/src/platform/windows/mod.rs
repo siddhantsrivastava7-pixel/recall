@@ -24,10 +24,10 @@ pub struct WindowsFileSystemAdapter;
 pub struct WindowsBrowserPathResolver;
 pub struct WindowsStartupAdapter;
 
-const WIDGET_COLLAPSED_WIDTH: f64 = 260.0;
-const WIDGET_COLLAPSED_HEIGHT: f64 = 56.0;
-const WIDGET_EXPANDED_WIDTH: f64 = 260.0;
-const WIDGET_EXPANDED_HEIGHT: f64 = 56.0;
+const WIDGET_COLLAPSED_WIDTH: f64 = 142.0;
+const WIDGET_COLLAPSED_HEIGHT: f64 = 48.0;
+const WIDGET_EXPANDED_WIDTH: f64 = 142.0;
+const WIDGET_EXPANDED_HEIGHT: f64 = 48.0;
 const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const WINDOWS_STARTUP_VALUE_NAME: &str = "Recall";
 
