@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Position, WebviewWindow};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::{
     errors::app_error::AppResult,
@@ -18,9 +19,12 @@ pub struct MacFileSystemAdapter;
 pub struct MacBrowserPathResolver;
 pub struct MacStartupAdapter;
 
+const WIDGET_COLLAPSED_WIDTH: f64 = 260.0;
+const WIDGET_COLLAPSED_HEIGHT: f64 = 56.0;
+
 // macOS completion notes for future work:
-// - Search overlay and widget should likely move to NSPanel-style behavior so they can float
-//   without feeling like regular app windows.
+// - Search overlay and widget currently use normal transparent Tauri windows. A later pass should
+//   move them to NSPanel-style behavior so they can float above fullscreen Spaces more naturally.
 // - Global shortcut behavior should be revalidated against macOS-specific modifier conventions,
 //   app activation rules, and any permission prompts surfaced by the host OS.
 // - Frontmost-app / active-window detection should move to a macOS-native implementation that
@@ -30,11 +34,14 @@ pub struct MacStartupAdapter;
 
 #[async_trait]
 impl ClipboardAdapter for MacClipboardAdapter {
-    async fn read_text(&self, _app: &AppHandle) -> AppResult<Option<String>> {
-        Ok(None)
+    async fn read_text(&self, app: &AppHandle) -> AppResult<Option<String>> {
+        Ok(app.clipboard().read_text().ok())
     }
 
-    async fn write_text(&self, _app: &AppHandle, _text: &str) -> AppResult<()> {
+    async fn write_text(&self, app: &AppHandle, text: &str) -> AppResult<()> {
+        app.clipboard()
+            .write_text(text.to_string())
+            .map_err(|error| crate::errors::app_error::AppError::Invalid(error.to_string()))?;
         Ok(())
     }
 }
@@ -68,33 +75,84 @@ impl ShortcutAdapter for MacShortcutAdapter {
 impl WindowAdapter for MacWindowAdapter {
     async fn ensure_widget(
         &self,
-        _app: &AppHandle,
-        _saved_position: Option<(f64, f64)>,
+        app: &AppHandle,
+        saved_position: Option<(f64, f64)>,
     ) -> AppResult<()> {
+        let Some(window) = app.get_webview_window("widget") else {
+            return Ok(());
+        };
+
+        if let Some((x, y)) = saved_position {
+            window.set_position(Position::Logical(LogicalPosition::new(x, y)))?;
+        } else if let Ok(Some(monitor)) = window.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let screen_w = monitor.size().width as f64 / scale;
+            let screen_h = monitor.size().height as f64 / scale;
+            let x = (screen_w - WIDGET_COLLAPSED_WIDTH) / 2.0;
+            let y = screen_h - WIDGET_COLLAPSED_HEIGHT - 32.0;
+            window.set_position(Position::Logical(LogicalPosition::new(x, y)))?;
+        }
+
+        let _ = window.set_shadow(false);
+        window.show()?;
+        window.set_always_on_top(true)?;
         Ok(())
     }
 
     async fn set_widget_expanded(&self, _app: &AppHandle, _expanded: bool) -> AppResult<()> {
+        // The current floating pill keeps the same 260x56 shell in collapsed and expanded states.
         Ok(())
     }
 
-    async fn open_main(&self, _app: &AppHandle) -> AppResult<()> {
+    async fn open_main(&self, app: &AppHandle) -> AppResult<()> {
+        if let Some(window) = app.get_webview_window("main") {
+            if window.is_minimized()? {
+                window.unminimize()?;
+            }
+            window.show()?;
+            window.set_focus()?;
+        }
         Ok(())
     }
 
-    async fn open_search_overlay(&self, _app: &AppHandle) -> AppResult<()> {
+    async fn open_search_overlay(&self, app: &AppHandle) -> AppResult<()> {
+        if let Some(window) = app.get_webview_window("search-overlay") {
+            window.show()?;
+            window.set_focus()?;
+            window.center()?;
+            window.set_always_on_top(true)?;
+        }
         Ok(())
     }
 
-    async fn open_quick_save(&self, _app: &AppHandle) -> AppResult<()> {
+    async fn open_quick_save(&self, app: &AppHandle) -> AppResult<()> {
+        if let Some(window) = app.get_webview_window("quick-save") {
+            window.show()?;
+            window.set_focus()?;
+            window.center()?;
+            window.set_always_on_top(true)?;
+        }
         Ok(())
     }
 
-    async fn close_window(&self, _window: &WebviewWindow) -> AppResult<()> {
+    async fn close_window(&self, window: &WebviewWindow) -> AppResult<()> {
+        let label = window.label().to_string();
+        if label == "main" {
+            window.app_handle().exit(0);
+        } else {
+            window.hide()?;
+        }
         Ok(())
     }
 
-    async fn open_memory_in_main(&self, _app: &AppHandle, _memory_id: String) -> AppResult<()> {
+    async fn open_memory_in_main(&self, app: &AppHandle, memory_id: String) -> AppResult<()> {
+        self.open_main(app).await?;
+        if let Some(main_window) = app.get_webview_window("main") {
+            main_window.emit("recall://open-memory", memory_id)?;
+        }
+        if let Some(overlay) = app.get_webview_window("search-overlay") {
+            overlay.hide()?;
+        }
         Ok(())
     }
 }
