@@ -105,7 +105,10 @@ function Ensure-GitHub-Repo {
   if (-not $repoExists) {
     Write-Step "Creating GitHub repo $repoFullName"
     $visibilityFlag = if ($Visibility -eq "public") { "--public" } else { "--private" }
-    Run "gh" @("repo", "create", $Name, $visibilityFlag, "--source=.", "--remote=origin")
+    & gh repo create $Name $visibilityFlag --source=. --remote=origin *> $null
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Command failed: gh repo create $Name $visibilityFlag --source=. --remote=origin"
+    }
   } else {
     Write-Host "GitHub repo exists: $repoFullName"
     if (-not (Test-CommandSuccess "git" @("remote", "get-url", "origin"))) {
