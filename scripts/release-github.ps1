@@ -33,9 +33,28 @@ function Run {
   }
 }
 
+function Test-CommandSuccess {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Command,
+    [string[]]$Arguments = @()
+  )
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  & $Command @Arguments *> $null
+  $exitCode = $LASTEXITCODE
+  $ErrorActionPreference = $previousErrorActionPreference
+  return $exitCode -eq 0
+}
+
 function Has-Git-Changes {
   $status = git status --porcelain
   return -not [string]::IsNullOrWhiteSpace(($status -join ""))
+}
+
+function Has-Git-Commits {
+  return Test-CommandSuccess "git" @("rev-parse", "--verify", "HEAD")
 }
 
 function Commit-If-Needed {
@@ -81,8 +100,7 @@ function Ensure-GitHub-Repo {
   )
 
   $repoFullName = "$Owner/$Name"
-  gh repo view $repoFullName *> $null
-  $repoExists = $LASTEXITCODE -eq 0
+  $repoExists = Test-CommandSuccess "gh" @("repo", "view", $repoFullName)
 
   if (-not $repoExists) {
     Write-Step "Creating GitHub repo $repoFullName"
@@ -90,8 +108,7 @@ function Ensure-GitHub-Repo {
     Run "gh" @("repo", "create", $Name, $visibilityFlag, "--source=.", "--remote=origin")
   } else {
     Write-Host "GitHub repo exists: $repoFullName"
-    git remote get-url origin *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-CommandSuccess "git" @("remote", "get-url", "origin"))) {
       Run "git" @("remote", "add", "origin", "https://github.com/$repoFullName.git")
     }
   }
@@ -145,7 +162,11 @@ if (-not (Test-Path -LiteralPath ".git")) {
 $safeDirectory = (Resolve-Path -LiteralPath $PWD).Path.Replace("\", "/")
 Run "git" @("config", "--global", "--add", "safe.directory", $safeDirectory)
 Run "git" @("branch", "-M", $Branch)
-Commit-If-Needed "initial commit"
+if (Has-Git-Commits) {
+  Commit-If-Needed "release setup"
+} else {
+  Commit-If-Needed "initial commit"
+}
 
 $repoUrl = Ensure-GitHub-Repo -Owner $owner -Name $RepoName
 Run "git" @("push", "-u", "origin", $Branch)
@@ -170,8 +191,7 @@ Write-Host "MSI: $($msi.FullName)"
 Write-Host "Signature: $($sig.FullName)"
 
 Write-Step "Creating or updating GitHub release"
-gh release view $tag *> $null
-$releaseExists = $LASTEXITCODE -eq 0
+$releaseExists = Test-CommandSuccess "gh" @("release", "view", $tag)
 if ($releaseExists) {
   Run "gh" @("release", "upload", $tag, $msi.FullName, $sig.FullName, "--clobber")
   Run "gh" @("release", "edit", $tag, "--title", "Recall $tag", "--notes", $ReleaseNotes)
