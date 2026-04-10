@@ -47,6 +47,24 @@ pub trait BrowserPathResolver: Send + Sync {
     fn resolve_bookmark_file(&self, browser: BookmarkBrowser) -> Option<std::path::PathBuf>;
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedBookmarkRecord {
+    pub external_id: String,
+    pub title: String,
+    pub url: String,
+    pub folder_path: Option<String>,
+    pub created_at: String,
+}
+
+#[async_trait]
+pub trait BrowserBookmarkReader: Send + Sync {
+    async fn read_bookmarks(
+        &self,
+        browser: BookmarkBrowser,
+        path: &std::path::Path,
+    ) -> AppResult<Vec<ParsedBookmarkRecord>>;
+}
+
 #[async_trait]
 pub trait StartupAdapter: Send + Sync {
     async fn apply_launch_on_startup(&self, app: &AppHandle, enabled: bool) -> AppResult<()>;

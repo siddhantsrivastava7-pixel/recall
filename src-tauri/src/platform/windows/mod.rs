@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::process::Command;
+use tokio::fs;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
@@ -11,9 +12,10 @@ use crate::{
     errors::app_error::AppResult,
     models::{AppContextSnapshot, BookmarkBrowser, RuntimePlatform, ShortcutBinding},
     platform::contracts::{
-        AppContextAdapter, BrowserPathResolver, ClipboardAdapter, FileSystemAdapter,
-        ShortcutAdapter, StartupAdapter, WindowAdapter,
+        AppContextAdapter, BrowserBookmarkReader, BrowserPathResolver, ClipboardAdapter,
+        FileSystemAdapter, ParsedBookmarkRecord, ShortcutAdapter, StartupAdapter, WindowAdapter,
     },
+    services::bookmark_parser::parse_chromium_bookmark_bytes,
 };
 
 pub struct WindowsClipboardAdapter;
@@ -22,12 +24,13 @@ pub struct WindowsWindowAdapter;
 pub struct WindowsAppContextAdapter;
 pub struct WindowsFileSystemAdapter;
 pub struct WindowsBrowserPathResolver;
+pub struct WindowsBrowserBookmarkReader;
 pub struct WindowsStartupAdapter;
 
-const WIDGET_COLLAPSED_WIDTH: f64 = 142.0;
-const WIDGET_COLLAPSED_HEIGHT: f64 = 48.0;
-const WIDGET_EXPANDED_WIDTH: f64 = 142.0;
-const WIDGET_EXPANDED_HEIGHT: f64 = 48.0;
+const WIDGET_COLLAPSED_WIDTH: f64 = 260.0;
+const WIDGET_COLLAPSED_HEIGHT: f64 = 56.0;
+const WIDGET_EXPANDED_WIDTH: f64 = 260.0;
+const WIDGET_EXPANDED_HEIGHT: f64 = 56.0;
 const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const WINDOWS_STARTUP_VALUE_NAME: &str = "Recall";
 
@@ -164,6 +167,7 @@ impl WindowAdapter for WindowsWindowAdapter {
             window.set_position(Position::Logical(LogicalPosition::new(x, y)))?;
         }
 
+        resize_widget_window(&window, false)?;
         let _ = window.set_shadow(false);
         window.show()?;
         window.set_always_on_top(true)?;
@@ -358,9 +362,27 @@ impl BrowserPathResolver for WindowsBrowserPathResolver {
             BookmarkBrowser::Brave => {
                 base.join("BraveSoftware/Brave-Browser/User Data/Default/Bookmarks")
             }
+            BookmarkBrowser::Safari => return None,
         };
 
         Some(path)
+    }
+}
+
+#[async_trait]
+impl BrowserBookmarkReader for WindowsBrowserBookmarkReader {
+    async fn read_bookmarks(
+        &self,
+        browser: BookmarkBrowser,
+        path: &std::path::Path,
+    ) -> AppResult<Vec<ParsedBookmarkRecord>> {
+        match browser {
+            BookmarkBrowser::Chrome | BookmarkBrowser::Edge | BookmarkBrowser::Brave => {
+                let bytes = fs::read(path).await?;
+                parse_chromium_bookmark_bytes(&bytes)
+            }
+            BookmarkBrowser::Safari => Ok(Vec::new()),
+        }
     }
 }
 

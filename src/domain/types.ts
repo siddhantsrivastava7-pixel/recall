@@ -2,7 +2,7 @@ export type WindowLabel = "main" | "widget" | "search-overlay" | "quick-save";
 export type RuntimePlatform = "windows" | "macos" | "linux" | "unknown";
 export type SearchStrategy = "keyword" | "semantic";
 export type MemorySourceType = "manual" | "bookmark";
-export type BookmarkBrowser = "chrome" | "edge" | "brave";
+export type BookmarkBrowser = "chrome" | "edge" | "brave" | "safari";
 export type LinkEnrichmentStatus = "pending" | "done" | "failed";
 
 export interface Project {

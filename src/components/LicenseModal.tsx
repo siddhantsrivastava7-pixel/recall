@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyRound, Loader2 } from "lucide-react";
+import { ExternalLink, KeyRound, Loader2 } from "lucide-react";
 
+import { openTrialKeyPage } from "@/services/externalLinkService";
 import { useLicenseStore } from "@/stores/licenseStore";
 
 export function LicenseModal() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [key, setKey] = useState("");
+  const [isOpeningTrialPage, setIsOpeningTrialPage] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const {
     status,
     isExpired,
@@ -37,6 +40,19 @@ export function LicenseModal() {
   async function submit() {
     if (isValidating) return;
     await activateKey(key);
+  }
+
+  async function handleOpenTrialPage() {
+    if (isOpeningTrialPage) return;
+    setLinkError(null);
+    setIsOpeningTrialPage(true);
+    try {
+      await openTrialKeyPage();
+    } catch {
+      setLinkError("Couldn't open the trial page. Visit sidbuilds.com to request a trial key.");
+    } finally {
+      setIsOpeningTrialPage(false);
+    }
   }
 
   return (
@@ -142,6 +158,32 @@ export function LicenseModal() {
           </button>
         </div>
 
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.34)" }}>
+            Don&apos;t have a key yet?
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleOpenTrialPage()}
+            disabled={isOpeningTrialPage}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              background: "transparent",
+              border: "none",
+              color: "rgba(127,168,255,0.92)",
+              fontSize: 13,
+              fontWeight: 500,
+              padding: 0,
+              cursor: isOpeningTrialPage ? "default" : "pointer",
+            }}
+          >
+            {isOpeningTrialPage ? <Loader2 size={13} className="animate-spin" /> : <ExternalLink size={13} />}
+            Get a trial key
+          </button>
+        </div>
+
         {statusText && (
           <div
             style={{
@@ -151,6 +193,18 @@ export function LicenseModal() {
             }}
           >
             {statusText}
+          </div>
+        )}
+
+        {linkError && (
+          <div
+            style={{
+              marginTop: statusText ? 8 : 14,
+              fontSize: 12,
+              color: "var(--text-muted)",
+            }}
+          >
+            {linkError}
           </div>
         )}
 

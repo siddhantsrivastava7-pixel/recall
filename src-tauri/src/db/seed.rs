@@ -4,6 +4,18 @@ use uuid::Uuid;
 
 use crate::{db::system_projects::ensure_default_inbox_project, errors::app_error::AppResult};
 
+fn default_bookmark_sync_browsers_json() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "[\"chrome\",\"edge\",\"brave\",\"safari\"]"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "[\"chrome\",\"edge\",\"brave\"]"
+    }
+}
+
 pub async fn ensure_seed_data(pool: &SqlitePool) -> AppResult<()> {
     ensure_default_inbox_project(pool).await?;
 
@@ -95,7 +107,8 @@ pub async fn ensure_seed_data(pool: &SqlitePool) -> AppResult<()> {
     sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('bookmark_sync_interval_minutes', '15')")
         .execute(pool)
         .await?;
-    sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('bookmark_sync_browsers', '[\"chrome\",\"edge\",\"brave\"]')")
+    sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('bookmark_sync_browsers', ?)")
+        .bind(default_bookmark_sync_browsers_json())
         .execute(pool)
         .await?;
 

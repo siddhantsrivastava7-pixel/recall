@@ -1,28 +1,31 @@
 use std::sync::Arc;
 
 use crate::platform::contracts::{
-    AppContextAdapter, BrowserPathResolver, ClipboardAdapter, FileSystemAdapter, ShortcutAdapter,
-    StartupAdapter, WindowAdapter,
+    AppContextAdapter, BrowserBookmarkReader, BrowserPathResolver, ClipboardAdapter,
+    FileSystemAdapter, ShortcutAdapter, StartupAdapter, WindowAdapter,
 };
 
 #[cfg(target_os = "macos")]
 use crate::platform::mac::{
-    MacAppContextAdapter, MacBrowserPathResolver, MacClipboardAdapter, MacFileSystemAdapter,
-    MacShortcutAdapter, MacStartupAdapter, MacWindowAdapter,
+    MacAppContextAdapter, MacBrowserBookmarkReader, MacBrowserPathResolver,
+    MacClipboardAdapter, MacFileSystemAdapter, MacShortcutAdapter, MacStartupAdapter,
+    MacWindowAdapter,
 };
 
 #[cfg(target_os = "windows")]
 use crate::platform::windows::{
-    WindowsAppContextAdapter, WindowsBrowserPathResolver, WindowsClipboardAdapter,
-    WindowsFileSystemAdapter, WindowsShortcutAdapter, WindowsStartupAdapter, WindowsWindowAdapter,
+    WindowsAppContextAdapter, WindowsBrowserBookmarkReader, WindowsBrowserPathResolver,
+    WindowsClipboardAdapter, WindowsFileSystemAdapter, WindowsShortcutAdapter,
+    WindowsStartupAdapter, WindowsWindowAdapter,
 };
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use crate::{
     models::{AppContextSnapshot, BookmarkBrowser, RuntimePlatform, ShortcutBinding},
     platform::contracts::{
-        AppContextAdapter as _, BrowserPathResolver as _, ClipboardAdapter as _,
-        FileSystemAdapter as _, ShortcutAdapter as _, StartupAdapter as _, WindowAdapter as _,
+        AppContextAdapter as _, BrowserBookmarkReader as _, BrowserPathResolver as _,
+        ClipboardAdapter as _, FileSystemAdapter as _, ShortcutAdapter as _, StartupAdapter as _,
+        WindowAdapter as _,
     },
 };
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -37,6 +40,7 @@ pub struct PlatformServices {
     pub app_context: Arc<dyn AppContextAdapter>,
     pub file_system: Arc<dyn FileSystemAdapter>,
     pub browser_paths: Arc<dyn BrowserPathResolver>,
+    pub browser_bookmarks: Arc<dyn BrowserBookmarkReader>,
     pub startup: Arc<dyn StartupAdapter>,
 }
 
@@ -50,6 +54,7 @@ pub fn create_platform_services() -> PlatformServices {
             app_context: Arc::new(MacAppContextAdapter),
             file_system: Arc::new(MacFileSystemAdapter),
             browser_paths: Arc::new(MacBrowserPathResolver),
+            browser_bookmarks: Arc::new(MacBrowserBookmarkReader),
             startup: Arc::new(MacStartupAdapter),
         }
     }
@@ -63,6 +68,7 @@ pub fn create_platform_services() -> PlatformServices {
             app_context: Arc::new(WindowsAppContextAdapter),
             file_system: Arc::new(WindowsFileSystemAdapter),
             browser_paths: Arc::new(WindowsBrowserPathResolver),
+            browser_bookmarks: Arc::new(WindowsBrowserBookmarkReader),
             startup: Arc::new(WindowsStartupAdapter),
         }
     }
@@ -76,6 +82,7 @@ pub fn create_platform_services() -> PlatformServices {
             app_context: Arc::new(UnsupportedAppContextAdapter),
             file_system: Arc::new(UnsupportedFileSystemAdapter),
             browser_paths: Arc::new(UnsupportedBrowserPathResolver),
+            browser_bookmarks: Arc::new(UnsupportedBrowserBookmarkReader),
             startup: Arc::new(UnsupportedStartupAdapter),
         }
     }
@@ -93,6 +100,8 @@ struct UnsupportedAppContextAdapter;
 struct UnsupportedFileSystemAdapter;
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 struct UnsupportedBrowserPathResolver;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+struct UnsupportedBrowserBookmarkReader;
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 struct UnsupportedStartupAdapter;
 
@@ -209,6 +218,19 @@ impl FileSystemAdapter for UnsupportedFileSystemAdapter {
 impl BrowserPathResolver for UnsupportedBrowserPathResolver {
     fn resolve_bookmark_file(&self, _browser: BookmarkBrowser) -> Option<std::path::PathBuf> {
         None
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[async_trait]
+impl BrowserBookmarkReader for UnsupportedBrowserBookmarkReader {
+    async fn read_bookmarks(
+        &self,
+        _browser: BookmarkBrowser,
+        _path: &std::path::Path,
+    ) -> crate::errors::app_error::AppResult<Vec<crate::platform::contracts::ParsedBookmarkRecord>>
+    {
+        Ok(Vec::new())
     }
 }
 

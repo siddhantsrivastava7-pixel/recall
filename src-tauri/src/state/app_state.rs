@@ -76,6 +76,7 @@ impl AppState {
             capture_service.clone(),
             settings_repository.clone(),
             platform.browser_paths.clone(),
+            platform.browser_bookmarks.clone(),
             link_enrichment_service.clone(),
         ));
 

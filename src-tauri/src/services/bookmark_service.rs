@@ -1,14 +1,12 @@
 use std::{collections::HashSet, sync::Arc};
 
-use chrono::{NaiveDate, Utc};
-use serde::Deserialize;
-use tokio::fs;
+use chrono::Utc;
 
 use crate::{
     db::repositories::{SharedMemoryRepository, SharedSettingsRepository},
-    errors::app_error::{AppError, AppResult},
+    errors::app_error::AppResult,
     models::{BookmarkBrowser, BookmarkImportResult, BookmarkSourceStatus, BookmarkSyncSummary},
-    platform::contracts::BrowserPathResolver,
+    platform::contracts::{BrowserBookmarkReader, BrowserPathResolver},
     services::{
         capture_service::{BookmarkCaptureInput, CaptureService},
         link_enrichment_service::LinkEnrichmentService,
@@ -16,41 +14,12 @@ use crate::{
 };
 use tauri::AppHandle;
 
-#[derive(Debug, Deserialize)]
-struct BookmarkFile {
-    roots: std::collections::HashMap<String, BookmarkNode>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct BookmarkNode {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default, rename = "type")]
-    node_type: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    date_added: Option<String>,
-    #[serde(default)]
-    children: Vec<BookmarkNode>,
-}
-
-#[derive(Debug, Clone)]
-struct ParsedBookmark {
-    external_id: String,
-    title: String,
-    url: String,
-    folder_path: Option<String>,
-    created_at: String,
-}
-
 pub struct BookmarkIngestionService {
     memory_repository: SharedMemoryRepository,
     capture_service: Arc<CaptureService>,
     settings_repository: SharedSettingsRepository,
     browser_paths: Arc<dyn BrowserPathResolver>,
+    browser_bookmarks: Arc<dyn BrowserBookmarkReader>,
     link_enrichment_service: Arc<LinkEnrichmentService>,
 }
 
@@ -60,6 +29,7 @@ impl BookmarkIngestionService {
         capture_service: Arc<CaptureService>,
         settings_repository: SharedSettingsRepository,
         browser_paths: Arc<dyn BrowserPathResolver>,
+        browser_bookmarks: Arc<dyn BrowserBookmarkReader>,
         link_enrichment_service: Arc<LinkEnrichmentService>,
     ) -> Self {
         Self {
@@ -67,6 +37,7 @@ impl BookmarkIngestionService {
             capture_service,
             settings_repository,
             browser_paths,
+            browser_bookmarks,
             link_enrichment_service,
         }
     }
@@ -177,9 +148,7 @@ impl BookmarkIngestionService {
             });
         }
 
-        let bytes = fs::read(&path).await?;
-        let bookmark_file = serde_json::from_slice::<BookmarkFile>(&bytes)?;
-        let parsed = parse_bookmark_tree(&bookmark_file)?;
+        let parsed = self.browser_bookmarks.read_bookmarks(browser, &path).await?;
 
         let mut imported_count = 0;
         let mut skipped_count = 0;
@@ -234,11 +203,24 @@ impl BookmarkIngestionService {
 }
 
 fn supported_browsers() -> Vec<BookmarkBrowser> {
-    vec![
-        BookmarkBrowser::Chrome,
-        BookmarkBrowser::Edge,
-        BookmarkBrowser::Brave,
-    ]
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            BookmarkBrowser::Chrome,
+            BookmarkBrowser::Edge,
+            BookmarkBrowser::Brave,
+            BookmarkBrowser::Safari,
+        ]
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![
+            BookmarkBrowser::Chrome,
+            BookmarkBrowser::Edge,
+            BookmarkBrowser::Brave,
+        ]
+    }
 }
 
 fn deduplicate_browsers(browsers: Vec<BookmarkBrowser>) -> Vec<BookmarkBrowser> {
@@ -247,101 +229,4 @@ fn deduplicate_browsers(browsers: Vec<BookmarkBrowser>) -> Vec<BookmarkBrowser> 
         .into_iter()
         .filter(|browser| seen.insert(*browser))
         .collect()
-}
-
-fn parse_bookmark_tree(bookmark_file: &BookmarkFile) -> AppResult<Vec<ParsedBookmark>> {
-    let mut parsed = Vec::new();
-
-    for (root_key, root_node) in &bookmark_file.roots {
-        let root_label = root_label(root_key, &root_node.name);
-        collect_bookmarks(root_node, &[root_label], &mut parsed)?;
-    }
-
-    Ok(parsed)
-}
-
-fn collect_bookmarks(
-    node: &BookmarkNode,
-    breadcrumbs: &[String],
-    parsed: &mut Vec<ParsedBookmark>,
-) -> AppResult<()> {
-    if node.node_type == "url" {
-        let url = node
-            .url
-            .clone()
-            .ok_or_else(|| AppError::Invalid("Bookmark entry is missing a URL.".into()))?;
-
-        parsed.push(ParsedBookmark {
-            external_id: if node.id.trim().is_empty() {
-                url.clone()
-            } else {
-                node.id.clone()
-            },
-            title: if node.name.trim().is_empty() {
-                url.clone()
-            } else {
-                node.name.trim().to_string()
-            },
-            url,
-            folder_path: if breadcrumbs.is_empty() {
-                None
-            } else {
-                Some(breadcrumbs.join(" / "))
-            },
-            created_at: parse_bookmark_timestamp(node.date_added.as_deref()),
-        });
-
-        return Ok(());
-    }
-
-    let mut next_breadcrumbs = breadcrumbs.to_vec();
-    if !node.name.trim().is_empty()
-        && next_breadcrumbs
-            .last()
-            .is_none_or(|last| last != node.name.trim())
-    {
-        next_breadcrumbs.push(node.name.trim().to_string());
-    }
-
-    for child in &node.children {
-        collect_bookmarks(child, &next_breadcrumbs, parsed)?;
-    }
-
-    Ok(())
-}
-
-fn root_label(root_key: &str, fallback_name: &str) -> String {
-    if !fallback_name.trim().is_empty() {
-        return fallback_name.trim().to_string();
-    }
-
-    match root_key {
-        "bookmark_bar" => "Bookmarks Bar".into(),
-        "other" => "Other Bookmarks".into(),
-        "synced" => "Synced".into(),
-        "mobile" => "Mobile Bookmarks".into(),
-        _ => "Bookmarks".into(),
-    }
-}
-
-fn parse_bookmark_timestamp(value: Option<&str>) -> String {
-    let Some(raw) = value else {
-        return Utc::now().to_rfc3339();
-    };
-
-    let Ok(microseconds) = raw.parse::<i64>() else {
-        return Utc::now().to_rfc3339();
-    };
-
-    let Some(base) = NaiveDate::from_ymd_opt(1601, 1, 1).and_then(|date| date.and_hms_opt(0, 0, 0))
-    else {
-        return Utc::now().to_rfc3339();
-    };
-
-    let Some(datetime) = base.checked_add_signed(chrono::TimeDelta::microseconds(microseconds))
-    else {
-        return Utc::now().to_rfc3339();
-    };
-
-    chrono::DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc).to_rfc3339()
 }

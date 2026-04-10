@@ -1,4 +1,7 @@
+mod safari_bookmarks;
+
 use async_trait::async_trait;
+use tokio::fs;
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Position, WebviewWindow};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -6,10 +9,12 @@ use crate::{
     errors::app_error::AppResult,
     models::{AppContextSnapshot, BookmarkBrowser, RuntimePlatform, ShortcutBinding},
     platform::contracts::{
-        AppContextAdapter, BrowserPathResolver, ClipboardAdapter, FileSystemAdapter,
-        ShortcutAdapter, StartupAdapter, WindowAdapter,
+        AppContextAdapter, BrowserBookmarkReader, BrowserPathResolver, ClipboardAdapter,
+        FileSystemAdapter, ParsedBookmarkRecord, ShortcutAdapter, StartupAdapter, WindowAdapter,
     },
+    services::bookmark_parser::parse_chromium_bookmark_bytes,
 };
+use safari_bookmarks::parse_safari_bookmarks;
 
 pub struct MacClipboardAdapter;
 pub struct MacShortcutAdapter;
@@ -17,6 +22,7 @@ pub struct MacWindowAdapter;
 pub struct MacAppContextAdapter;
 pub struct MacFileSystemAdapter;
 pub struct MacBrowserPathResolver;
+pub struct MacBrowserBookmarkReader;
 pub struct MacStartupAdapter;
 
 const WIDGET_COLLAPSED_WIDTH: f64 = 142.0;
@@ -184,19 +190,34 @@ impl FileSystemAdapter for MacFileSystemAdapter {
 
 impl BrowserPathResolver for MacBrowserPathResolver {
     fn resolve_bookmark_file(&self, browser: BookmarkBrowser) -> Option<std::path::PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        let base = std::path::PathBuf::from(home).join("Library/Application Support");
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+        let app_support = home.join("Library/Application Support");
 
-        let path = match browser {
-            BookmarkBrowser::Chrome => base.join("Google/Chrome/Default/Bookmarks"),
-            BookmarkBrowser::Edge => base.join("Microsoft Edge/Default/Bookmarks"),
-            BookmarkBrowser::Brave => base.join("BraveSoftware/Brave-Browser/Default/Bookmarks"),
-        };
+        Some(match browser {
+            BookmarkBrowser::Chrome => app_support.join("Google/Chrome/Default/Bookmarks"),
+            BookmarkBrowser::Edge => app_support.join("Microsoft Edge/Default/Bookmarks"),
+            BookmarkBrowser::Brave => {
+                app_support.join("BraveSoftware/Brave-Browser/Default/Bookmarks")
+            }
+            BookmarkBrowser::Safari => home.join("Library/Safari/Bookmarks.plist"),
+        })
+    }
+}
 
-        // Safari bookmark ingestion should be completed later with a dedicated resolver and
-        // permission strategy. Its storage format differs from Chromium-based browsers enough
-        // that it should stay out of the shared bookmark ingestion service for now.
-        Some(path)
+#[async_trait]
+impl BrowserBookmarkReader for MacBrowserBookmarkReader {
+    async fn read_bookmarks(
+        &self,
+        browser: BookmarkBrowser,
+        path: &std::path::Path,
+    ) -> AppResult<Vec<ParsedBookmarkRecord>> {
+        match browser {
+            BookmarkBrowser::Chrome | BookmarkBrowser::Edge | BookmarkBrowser::Brave => {
+                let bytes = fs::read(path).await?;
+                parse_chromium_bookmark_bytes(&bytes)
+            }
+            BookmarkBrowser::Safari => parse_safari_bookmarks(path).await,
+        }
     }
 }
 

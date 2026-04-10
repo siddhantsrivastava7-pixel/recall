@@ -28,6 +28,7 @@ pub enum BookmarkBrowser {
     Chrome,
     Edge,
     Brave,
+    Safari,
 }
 
 impl BookmarkBrowser {
@@ -36,6 +37,7 @@ impl BookmarkBrowser {
             BookmarkBrowser::Chrome => "chrome",
             BookmarkBrowser::Edge => "edge",
             BookmarkBrowser::Brave => "brave",
+            BookmarkBrowser::Safari => "safari",
         }
     }
 
@@ -44,7 +46,25 @@ impl BookmarkBrowser {
             BookmarkBrowser::Chrome => "Chrome",
             BookmarkBrowser::Edge => "Edge",
             BookmarkBrowser::Brave => "Brave",
+            BookmarkBrowser::Safari => "Safari",
         }
+    }
+
+    pub fn default_sync_browsers() -> Vec<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            vec![Self::Chrome, Self::Edge, Self::Brave, Self::Safari]
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            vec![Self::Chrome, Self::Edge, Self::Brave]
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn legacy_default_sync_browsers() -> Vec<Self> {
+        vec![Self::Chrome, Self::Edge, Self::Brave]
     }
 }
 
@@ -151,11 +171,7 @@ impl Default for AppSettings {
             update_auto_check_enabled: true,
             bookmark_auto_sync_enabled: true,
             bookmark_sync_interval_minutes: 15,
-            bookmark_sync_browsers: vec![
-                BookmarkBrowser::Chrome,
-                BookmarkBrowser::Edge,
-                BookmarkBrowser::Brave,
-            ],
+            bookmark_sync_browsers: BookmarkBrowser::default_sync_browsers(),
             bookmark_last_synced_at: None,
             widget_position_x: None,
             widget_position_y: None,

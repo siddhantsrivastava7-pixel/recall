@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
 import { tauriClient } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
+import { getBookmarkBrowserOptions } from "@/domain/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
 import type { ShortcutBinding } from "@/domain/types";
 
@@ -214,8 +216,10 @@ function ShortcutsTab() {
 /* ─── Bookmarks ─────────────────────────────────────────────────── */
 function BookmarksTab() {
   const { settings, updateSettings } = useSettingsStore();
+  const runtimePlatform = useAppStore((state) => state.runtime?.platform);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
+  const browserOptions = getBookmarkBrowserOptions(runtimePlatform);
 
   async function syncNow() {
     setSyncing(true);
@@ -257,17 +261,17 @@ function BookmarksTab() {
 
       <SettingRow label="Browsers">
         <div style={{ display: "flex", gap: 7 }}>
-          {(["chrome", "edge", "brave"] as const).map(b => {
-            const on = settings.bookmarkSyncBrowsers.includes(b);
+          {browserOptions.map(({ id, label }) => {
+            const on = settings.bookmarkSyncBrowsers.includes(id);
             return (
               <PillBtn
-                key={b}
-                label={b.charAt(0).toUpperCase() + b.slice(1)}
+                key={id}
+                label={label}
                 active={on}
                 onClick={() => {
                   const list = on
-                    ? settings.bookmarkSyncBrowsers.filter(x => x !== b)
-                    : [...settings.bookmarkSyncBrowsers, b];
+                    ? settings.bookmarkSyncBrowsers.filter(x => x !== id)
+                    : [...settings.bookmarkSyncBrowsers, id];
                   void updateSettings({ ...settings, bookmarkSyncBrowsers: list });
                 }}
               />

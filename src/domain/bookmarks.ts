@@ -1,10 +1,16 @@
-import type { BookmarkBrowser } from "@/domain/types";
+import type { BookmarkBrowser, RuntimePlatform } from "@/domain/types";
 
-export const bookmarkBrowserOptions: Array<{ id: BookmarkBrowser; label: string }> = [
+const bookmarkBrowserOptions: Array<{ id: BookmarkBrowser; label: string }> = [
   { id: "chrome", label: "Chrome" },
   { id: "edge", label: "Edge" },
   { id: "brave", label: "Brave" },
+  { id: "safari", label: "Safari" },
 ];
+
+export const getBookmarkBrowserOptions = (platform?: RuntimePlatform | null) =>
+  platform === "macos"
+    ? bookmarkBrowserOptions
+    : bookmarkBrowserOptions.filter((option) => option.id !== "safari");
 
 export const formatBookmarkBrowserLabel = (browser: string | null | undefined) => {
   if (!browser) {

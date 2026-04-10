@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::{
-    db::repositories::SettingsRepository, errors::app_error::AppResult, models::AppSettings,
+    db::repositories::SettingsRepository,
+    errors::app_error::AppResult,
+    models::{AppSettings, BookmarkBrowser},
 };
 
 pub struct SqliteSettingsRepository {
@@ -12,6 +14,48 @@ pub struct SqliteSettingsRepository {
 impl SqliteSettingsRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+}
+
+fn normalize_bookmark_sync_browsers(browsers: Vec<BookmarkBrowser>) -> Vec<BookmarkBrowser> {
+    #[cfg(target_os = "macos")]
+    {
+        let browsers = if browsers == BookmarkBrowser::legacy_default_sync_browsers() {
+            let mut upgraded = browsers;
+            upgraded.push(BookmarkBrowser::Safari);
+            upgraded
+        } else {
+            browsers
+        };
+
+        let mut deduped = Vec::new();
+        for browser in browsers {
+            if !deduped.contains(&browser) {
+                deduped.push(browser);
+            }
+        }
+
+        return if deduped.is_empty() {
+            BookmarkBrowser::default_sync_browsers()
+        } else {
+            deduped
+        };
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+    let mut deduped = Vec::new();
+    for browser in browsers {
+        if !deduped.contains(&browser) {
+            deduped.push(browser);
+        }
+    }
+
+    if deduped.is_empty() {
+        BookmarkBrowser::default_sync_browsers()
+    } else {
+        deduped
+    }
     }
 }
 
@@ -36,8 +80,10 @@ impl SettingsRepository for SqliteSettingsRepository {
                     settings.bookmark_sync_interval_minutes = value.parse::<u32>().unwrap_or(15)
                 }
                 "bookmark_sync_browsers" => {
-                    settings.bookmark_sync_browsers = serde_json::from_str(&value)
-                        .unwrap_or_else(|_| AppSettings::default().bookmark_sync_browsers)
+                    settings.bookmark_sync_browsers = normalize_bookmark_sync_browsers(
+                        serde_json::from_str(&value)
+                            .unwrap_or_else(|_| AppSettings::default().bookmark_sync_browsers),
+                    )
                 }
                 "bookmark_last_synced_at" => {
                     settings.bookmark_last_synced_at = if value.trim().is_empty() {
@@ -108,9 +154,12 @@ impl SettingsRepository for SqliteSettingsRepository {
             .execute(&mut *transaction)
             .await?;
 
+        let bookmark_sync_browsers =
+            normalize_bookmark_sync_browsers(settings.bookmark_sync_browsers.clone());
+
         sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
             .bind("bookmark_sync_browsers")
-            .bind(serde_json::to_string(&settings.bookmark_sync_browsers)?)
+            .bind(serde_json::to_string(&bookmark_sync_browsers)?)
             .execute(&mut *transaction)
             .await?;
 
