@@ -36,7 +36,10 @@ pub async fn validate_license_key(license_key: String) -> AppResult<LicenseValid
         ));
     }
 
-    response.json::<LicenseValidationResult>().await.map_err(Into::into)
+    response
+        .json::<LicenseValidationResult>()
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
