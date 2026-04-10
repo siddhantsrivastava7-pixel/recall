@@ -71,6 +71,26 @@ body {
   user-select: none;
 }
 
+html[data-recall-window="widget"],
+html[data-recall-window="widget"] body,
+html[data-recall-window="widget"] #root,
+html[data-recall-window="search-overlay"],
+html[data-recall-window="search-overlay"] body,
+html[data-recall-window="search-overlay"] #root,
+html[data-recall-window="quick-save"],
+html[data-recall-window="quick-save"] body,
+html[data-recall-window="quick-save"] #root {
+  background: transparent !important;
+}
+
+html[data-recall-window="widget"],
+html[data-recall-window="widget"] body,
+html[data-recall-window="widget"] #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 /* Allow selection inside inputs/textareas */
 input, textarea {
   user-select: text;

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import type { MouseEvent } from "react";
 import { Save, Search, LayoutGrid } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getPlatformAdapters } from "@/app-runtime";
 import { tauriClient } from "@/services/api/tauri-client";
 
@@ -8,13 +10,14 @@ export function WidgetWindow() {
   const dragTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // Widget window must be fully transparent — override body bg
+    // Widget window must stay fully transparent, especially on macOS WKWebView.
     document.body.style.background = "transparent";
     document.documentElement.style.background = "transparent";
+    document.getElementById("root")?.style.setProperty("background", "transparent", "important");
+    void getCurrentWindow().setBackgroundColor([0, 0, 0, 0]);
   }, []);
 
   useEffect(() => {
-    // Save position 800ms after drag ends
     const handleMouseUp = () => {
       if (dragTimeout.current) clearTimeout(dragTimeout.current);
       dragTimeout.current = setTimeout(() => {
@@ -28,28 +31,40 @@ export function WidgetWindow() {
     };
   }, []);
 
+  const startWindowDrag = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) {
+      return;
+    }
+
+    event.preventDefault();
+    void getCurrentWindow().startDragging();
+  };
+
   return (
-    // Outer wrapper: full window, transparent, drag region so empty space drags too
     <div
       data-tauri-drag-region
-      style={{
-        width: "100vw",
-        height: "100vh",
-        background: "transparent",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        // No pointer-events on the wrapper itself so clicks fall through to pill
-        WebkitAppRegion: "drag",
-      } as React.CSSProperties}
+      onMouseDown={startWindowDrag}
+      style={
+        {
+          width: "100vw",
+          height: "100vh",
+          background: "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          WebkitAppRegion: "drag",
+        } as React.CSSProperties
+      }
     >
-      {/* Pill: draggable background, but buttons are no-drag */}
       <div
         className="pill"
         data-tauri-drag-region
+        onMouseDown={startWindowDrag}
         style={{ position: "relative", WebkitAppRegion: "drag" } as React.CSSProperties}
       >
-        {/* Glow */}
         <div
           style={{
             position: "absolute",
@@ -61,7 +76,6 @@ export function WidgetWindow() {
           }}
         />
 
-        {/* Quick Capture */}
         <button
           className="pill-btn"
           title="Quick Capture  Ctrl+Shift+S"
@@ -73,7 +87,6 @@ export function WidgetWindow() {
 
         <div className="pill-sep" />
 
-        {/* Search */}
         <button
           className="pill-btn"
           title="Search  Alt+Space"
@@ -85,7 +98,6 @@ export function WidgetWindow() {
 
         <div className="pill-sep" />
 
-        {/* Open main */}
         <button
           className="pill-btn"
           title="Open Recall  Ctrl+Shift+O"

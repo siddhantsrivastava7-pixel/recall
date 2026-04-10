@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "@/stores/appStore";
 import { useLicenseStore } from "@/stores/licenseStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -24,6 +25,7 @@ import type { WindowLabel } from "@/domain/types";
 
 export function WindowRouter() {
   const { bootstrap, isBootstrapping, initialized, error, runtime } = useAppStore();
+  const initialWindowLabel = getCurrentWindow().label as WindowLabel;
   const backendLicense = useSettingsStore((state) => state.license);
   const licenseChecked = useLicenseStore((state) => state.checked);
   const isLicensed = useLicenseStore((state) => state.isLicensed);
@@ -40,6 +42,9 @@ export function WindowRouter() {
   }, [backendLicense, checkLicense, initialized, runtime?.currentWindowLabel]);
 
   if (isBootstrapping) {
+    if (initialWindowLabel === "widget" || initialWindowLabel === "search-overlay" || initialWindowLabel === "quick-save") {
+      return <TransparentBootShell />;
+    }
     return <BootSplash />;
   }
 
@@ -64,6 +69,18 @@ export function WindowRouter() {
     case "main":
     default:               return <MainWindow />;
   }
+}
+
+function TransparentBootShell() {
+  return (
+    <div
+      style={{
+        width: "100vw",
+        height: "100vh",
+        background: "transparent",
+      }}
+    />
+  );
 }
 
 function BootSplash() {
