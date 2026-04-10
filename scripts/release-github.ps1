@@ -227,7 +227,9 @@ $manifest = [ordered]@{
 }
 
 $manifestPath = Join-Path $updatesDir "latest.json"
-$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+$manifestJson = $manifest | ConvertTo-Json -Depth 8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
 
 Commit-If-Needed "update manifest for $tag"
 Run "git" @("push", "origin", $Branch)
