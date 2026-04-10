@@ -1,11 +1,15 @@
 {
     "version":  "0.1.3",
     "notes":  "Release v0.1.3",
-    "pub_date":  "2026-04-10T19:55:27Z",
+    "pub_date":  "2026-04-10T20:02:55Z",
     "platforms":  {
                       "windows-x86_64":  {
                                              "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyendwcGpBbWc0dWlEV1JnNDVGQXhaUlMxSWJVWkF2SHozc0tUa1NXMHpXOGI2T1duYlpmOVRsN3prc0UrNEF0dTJJTHdTN1JjUzZob3Z2QktXcFJla2c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc1ODUwOTIxCWZpbGU6UmVjYWxsXzAuMS4zX3g2NF9lbi1VUy5tc2kKb05uZE9zS1haNTFKdGVaRVY4aGt4WTBqZisyYVJSSURuOFJkWjVNT0h1cmJ6V1FmOWdvVGhWZ2FJcEZ1c2JITnFFMlE0Z0dqaExLVEZ0VHhWVXBLQUE9PQo=",
                                              "url":  "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.1.3/Recall_0.1.3_x64_en-US.msi"
+                                         },
+                      "darwin-aarch64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyejROSHB0TTJ2YXJFVlU2UzErWlhHRW5MTjY4ak5NWjBrSmJTQXBEeXpUbWVLWHVVUjdsQ0ZYeFUrTlhMYlNXTjJNV0VSWmRFM1ZpSmFsTWZjbERiWHc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc1ODUxMjU3CWZpbGU6UmVjYWxsLmFwcC50YXIuZ3oKekRhdkJYTkM3WVBlUTlkL2ZiUGpidVNYV3BpOHlMNWdmNkw1OTJleEJxak9jL3QxWlhoa1BFZ0dGYVVFZE9KSFZCRDBiMG5KazJvQVZmQ2dxNkNwQUE9PQo=",
+                                             "url":  "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.1.3/Recall.app.tar.gz"
                                          }
                   }
 }
