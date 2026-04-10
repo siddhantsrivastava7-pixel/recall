@@ -1,0 +1,92 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Recall",
+  "version": "0.1.0",
+  "identifier": "com.recall.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm.cmd run dev",
+    "beforeBuildCommand": "npm.cmd run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Recall",
+        "width": 1460,
+        "height": 980,
+        "minWidth": 1180,
+        "minHeight": 760,
+        "resizable": true,
+        "center": true,
+        "visible": true
+      },
+      {
+        "label": "widget",
+        "title": "Recall Widget",
+        "width": 260,
+        "height": 56,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false
+      },
+      {
+        "label": "search-overlay",
+        "title": "Recall Search",
+        "width": 680,
+        "height": 520,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false
+      },
+      {
+        "label": "quick-save",
+        "title": "Recall Quick Save",
+        "width": 560,
+        "height": 560,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENGNkI5NkRGODE2NzVBODkKUldTSldtZUIzNVpyejQ3d2E5cHpVM3lCMnpEQUttU2hzZFRTNWY2UXBubFE5bXhPZ0lpY0tSUWkK",
+      "endpoints": [
+        "https://raw.githubusercontent.com/siddhantsrivastava7-pixel/recall/main/updates/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    }
+  }
+}

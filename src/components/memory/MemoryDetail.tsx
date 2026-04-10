@@ -1,0 +1,782 @@
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  Save,
+  Trash,
+  X,
+} from "lucide-react";
+import {
+  type CSSProperties,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  formatLongTimestamp,
+  formatUrlForDisplay,
+  getMemoryDetailSourceLabel,
+  getMemoryDisplayProject,
+  getMemoryDisplayTitle,
+  normalizeReadingText,
+  formatRelativeTimestamp,
+} from "@/domain/formatters";
+import type { Memory } from "@/domain/types";
+import { tauriClient } from "@/services/api/tauri-client";
+import { useMemoryStore } from "@/stores/memoryStore";
+import { useProjectStore } from "@/stores/projectStore";
+
+export function MemoryDetail({
+  memory,
+  onClose,
+}: {
+  memory: Memory;
+  onClose: () => void;
+}) {
+  const liveMemory = useMemoryStore((state) =>
+    state.memories.find((item) => item.id === memory.id),
+  );
+  const currentMemory = liveMemory ?? memory;
+
+  const { update, remove } = useMemoryStore();
+  const { projects } = useProjectStore();
+
+  const [titleDraft, setTitleDraft] = useState(currentMemory.title ?? "");
+  const [contentDraft, setContentDraft] = useState(currentMemory.content);
+  const [noteDraft, setNoteDraft] = useState(currentMemory.note ?? "");
+  const [projectIdDraft, setProjectIdDraft] = useState(currentMemory.projectId ?? "");
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingContent, setEditingContent] = useState(false);
+  const [editingNote, setEditingNote] = useState(false);
+  const [movingProject, setMovingProject] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const contentTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const scrollTopRef = useRef(0);
+  const loadedMemoryIdRef = useRef(currentMemory.id);
+  const copyResetTimeoutRef = useRef<number | null>(null);
+
+  const generatedTitle = useMemo(
+    () =>
+      getMemoryDisplayTitle({
+        ...currentMemory,
+        title: titleDraft || null,
+        content: contentDraft,
+        note: noteDraft || null,
+      }),
+    [currentMemory, titleDraft, contentDraft, noteDraft],
+  );
+  const displayTitle = titleDraft.trim()
+    ? getMemoryDisplayTitle({
+        ...currentMemory,
+        title: titleDraft,
+        content: contentDraft,
+        note: noteDraft || null,
+      })
+    : generatedTitle;
+  const displayProject = getMemoryDisplayProject(currentMemory);
+  const sourceLabel = getMemoryDetailSourceLabel(currentMemory);
+  const hasSourceUrl = Boolean(currentMemory.url);
+  const isRawUrlContent =
+    /^https?:\/\//i.test(contentDraft.trim()) &&
+    !/\s/.test(contentDraft.trim());
+  const normalizedContent = useMemo(
+    () => normalizeReadingText(contentDraft),
+    [contentDraft],
+  );
+  const normalizedResolvedDescription = useMemo(
+    () => normalizeReadingText(currentMemory.resolvedDescription),
+    [currentMemory.resolvedDescription],
+  );
+  const detailReadingContent = useMemo(() => {
+    if (
+      currentMemory.sourceType === "bookmark" &&
+      normalizedResolvedDescription &&
+      isRawUrlContent
+    ) {
+      return normalizedResolvedDescription;
+    }
+    return normalizedContent;
+  }, [
+    currentMemory.sourceType,
+    normalizedResolvedDescription,
+    isRawUrlContent,
+    normalizedContent,
+  ]);
+  const normalizedNote = useMemo(
+    () => normalizeReadingText(noteDraft),
+    [noteDraft],
+  );
+  const metadataItems = [
+    displayProject,
+    sourceLabel,
+    formatRelativeTimestamp(currentMemory.updatedAt || currentMemory.createdAt),
+  ];
+
+  useEffect(() => {
+    if (loadedMemoryIdRef.current === currentMemory.id) {
+      return;
+    }
+
+    loadedMemoryIdRef.current = currentMemory.id;
+    setTitleDraft(currentMemory.title ?? "");
+    setContentDraft(currentMemory.content);
+    setNoteDraft(currentMemory.note ?? "");
+    setProjectIdDraft(currentMemory.projectId ?? "");
+    setDirty(false);
+    setEditingTitle(false);
+    setEditingContent(false);
+    setEditingNote(false);
+    setMovingProject(false);
+    setCopied(false);
+  }, [currentMemory]);
+
+  useEffect(() => {
+    setDirty(
+      titleDraft !== (currentMemory.title ?? "") ||
+        contentDraft !== currentMemory.content ||
+        noteDraft !== (currentMemory.note ?? "") ||
+        projectIdDraft !== (currentMemory.projectId ?? ""),
+    );
+  }, [titleDraft, contentDraft, noteDraft, projectIdDraft, currentMemory]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && dirty && !saving) {
+        event.preventDefault();
+        void save();
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [dirty, saving, titleDraft, contentDraft, noteDraft, projectIdDraft, currentMemory]);
+
+  useEffect(() => {
+    if (editingTitle) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    }
+  }, [editingTitle]);
+
+  useEffect(() => {
+    if (editingContent) {
+      contentTextareaRef.current?.focus();
+    }
+  }, [editingContent]);
+
+  useEffect(() => {
+    if (editingNote) {
+      noteTextareaRef.current?.focus();
+    }
+  }, [editingNote]);
+
+  useLayoutEffect(() => {
+    if (bodyRef.current) {
+      bodyRef.current.scrollTop = scrollTopRef.current;
+    }
+  }, [editingTitle, editingContent, editingNote, movingProject]);
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimeoutRef.current !== null) {
+        window.clearTimeout(copyResetTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  function rememberScrollPosition() {
+    if (bodyRef.current) {
+      scrollTopRef.current = bodyRef.current.scrollTop;
+    }
+  }
+
+  async function save() {
+    if (!contentDraft.trim() || saving) return;
+
+    setSaving(true);
+    const result = await update(currentMemory.id, {
+      sourceType: currentMemory.sourceType,
+      title: titleDraft.trim() || null,
+      content: contentDraft,
+      note: noteDraft.trim() || null,
+      projectId: projectIdDraft || null,
+      url: currentMemory.url,
+      externalId: currentMemory.externalId,
+      folderPath: currentMemory.folderPath,
+      sourceApp: currentMemory.sourceApp,
+      sourceWindow: currentMemory.sourceWindow,
+      createdAt: currentMemory.createdAt,
+      updatedAt: currentMemory.updatedAt,
+    });
+    setSaving(false);
+
+    if (!result.ok) {
+      return;
+    }
+
+    const persisted = useMemoryStore
+      .getState()
+      .memories.find((item) => item.id === currentMemory.id);
+    if (persisted) {
+      setTitleDraft(persisted.title ?? "");
+      setContentDraft(persisted.content);
+      setNoteDraft(persisted.note ?? "");
+      setProjectIdDraft(persisted.projectId ?? "");
+    }
+
+    setDirty(false);
+    setEditingTitle(false);
+    setEditingContent(false);
+    setEditingNote(false);
+    setMovingProject(false);
+  }
+
+  async function copyContent() {
+    await tauriClient.writeClipboardText(currentMemory.content);
+    setCopied(true);
+    if (copyResetTimeoutRef.current !== null) {
+      window.clearTimeout(copyResetTimeoutRef.current);
+    }
+    copyResetTimeoutRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimeoutRef.current = null;
+    }, 1200);
+  }
+
+  async function deleteMemory() {
+    if (!confirm("Delete this memory? This cannot be undone.")) return;
+    await remove(currentMemory.id);
+    onClose();
+  }
+
+  function requestClose() {
+    if (dirty && !saving && !confirm("Discard unsaved changes?")) {
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.62)",
+        backdropFilter: "blur(4px)",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        paddingTop: "4vh",
+        zIndex: 50,
+      }}
+      className="anim-fadein"
+      onClick={requestClose}
+    >
+      <div
+        style={{
+          background: "var(--surface-2)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          borderRadius: 26,
+          width: "100%",
+          maxWidth: 860,
+          maxHeight: "90vh",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          margin: "0 16px",
+        }}
+        className="anim-scalein"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "18px 22px 14px",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 12,
+              color: "rgba(255,255,255,0.26)",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+            }}
+          >
+            Memory
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {dirty && (
+              <button
+                className="btn-primary"
+                onClick={() => void save()}
+                disabled={saving}
+                style={{ padding: "8px 16px", fontSize: 13 }}
+              >
+                <Save size={13} />
+                {saving ? "Saving..." : "Save"}
+              </button>
+            )}
+
+            <HeaderAction
+              label={copied ? "Copied" : "Copy"}
+              onClick={() => void copyContent()}
+              active={copied}
+            >
+              {copied ? (
+                <Check size={13} strokeWidth={2} />
+              ) : (
+                <Copy size={13} strokeWidth={1.9} />
+              )}
+            </HeaderAction>
+
+            <HeaderAction
+              label={movingProject ? "Done" : "Move"}
+              onClick={() => setMovingProject((value) => !value)}
+            >
+              <FolderOpen size={13} strokeWidth={1.9} />
+            </HeaderAction>
+
+            <HeaderAction
+              label="Delete"
+              danger
+              onClick={() => void deleteMemory()}
+            >
+              <Trash size={13} strokeWidth={1.9} />
+            </HeaderAction>
+
+            <button
+              className="btn-ghost"
+              onClick={requestClose}
+              style={{ padding: "7px 10px" }}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        <div
+          ref={bodyRef}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "28px 32px 34px",
+          }}
+          onScroll={rememberScrollPosition}
+        >
+          <section style={{ marginBottom: 28 }}>
+            {editingTitle ? (
+              <input
+                ref={titleInputRef}
+                value={titleDraft}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onBlur={() => setEditingTitle(false)}
+                placeholder={generatedTitle}
+                style={{
+                  width: "100%",
+                  background: "transparent",
+                  border: "none",
+                  outline: "none",
+                  fontSize: 32,
+                  fontWeight: 680,
+                  color: "var(--text-primary)",
+                  fontFamily: "inherit",
+                  letterSpacing: "-0.03em",
+                  lineHeight: 1.15,
+                  marginBottom: 12,
+                }}
+              />
+            ) : (
+              <button
+                onClick={() => setEditingTitle(true)}
+                style={{
+                  width: "100%",
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  margin: 0,
+                  textAlign: "left",
+                  cursor: "text",
+                  font: "inherit",
+                  marginBottom: 12,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 32,
+                    fontWeight: 680,
+                    color: "var(--text-primary)",
+                    letterSpacing: "-0.03em",
+                    lineHeight: 1.15,
+                  }}
+                >
+                  {displayTitle}
+                </div>
+              </button>
+            )}
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                fontSize: 13,
+                color: "rgba(255,255,255,0.34)",
+                lineHeight: 1.6,
+              }}
+            >
+              <MetadataText value={displayProject} />
+              <MetadataDivider />
+              {hasSourceUrl && currentMemory.url ? (
+                <a
+                  href={currentMemory.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: "rgba(255,255,255,0.44)",
+                    textDecoration: "none",
+                  }}
+                  title={currentMemory.url}
+                >
+                  {sourceLabel}
+                </a>
+              ) : (
+                <MetadataText value={sourceLabel} />
+              )}
+              <MetadataDivider />
+              <MetadataText
+                value={formatRelativeTimestamp(
+                  currentMemory.updatedAt || currentMemory.createdAt,
+                )}
+                title={formatLongTimestamp(currentMemory.updatedAt || currentMemory.createdAt)}
+              />
+            </div>
+
+            {movingProject && (
+              <div style={{ marginTop: 14 }}>
+                <select
+                  value={projectIdDraft}
+                  onChange={(event) => setProjectIdDraft(event.target.value)}
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: 12,
+                    color: "var(--text-primary)",
+                    fontSize: 13,
+                    fontFamily: "inherit",
+                    outline: "none",
+                    padding: "10px 12px",
+                    minWidth: 220,
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="" style={{ background: "#111827" }}>
+                    Inbox
+                  </option>
+                  {projects.map((project) => (
+                    <option
+                      key={project.id}
+                      value={project.id}
+                      style={{ background: "#111827" }}
+                    >
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </section>
+
+          <section style={{ marginBottom: normalizedNote ? 26 : 0 }}>
+            {editingContent ? (
+              <textarea
+                ref={contentTextareaRef}
+                value={contentDraft}
+                onChange={(event) => setContentDraft(event.target.value)}
+                onBlur={() => setEditingContent(false)}
+                rows={Math.max(10, Math.min(24, normalizeReadingText(contentDraft).split("\n").length + 2))}
+                style={editableContentStyle(true)}
+              />
+            ) : (
+              <button
+                onClick={() => setEditingContent(true)}
+                style={{
+                  width: "100%",
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  margin: 0,
+                  textAlign: "left",
+                  cursor: "text",
+                  font: "inherit",
+                }}
+              >
+                <div style={editableContentStyle(false)}>
+                  <div
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      fontSize: 15,
+                      lineHeight: 1.9,
+                      color: "rgba(255,255,255,0.86)",
+                    }}
+                  >
+                    {detailReadingContent}
+                  </div>
+                  {currentMemory.sourceType === "bookmark" && currentMemory.url && (
+                    <a
+                      href={currentMemory.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        marginTop: 16,
+                        color: "rgba(255,255,255,0.44)",
+                        textDecoration: "none",
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        wordBreak: "break-all",
+                      }}
+                      title={currentMemory.url}
+                    >
+                      {formatUrlForDisplay(currentMemory.url, 96)}
+                    </a>
+                  )}
+                </div>
+              </button>
+            )}
+          </section>
+
+          {(normalizedNote || editingNote) && (
+            <section>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "rgba(255,255,255,0.26)",
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  marginBottom: 10,
+                }}
+              >
+                Why save this?
+              </div>
+
+              {editingNote ? (
+                <textarea
+                  ref={noteTextareaRef}
+                  value={noteDraft}
+                  onChange={(event) => setNoteDraft(event.target.value)}
+                  onBlur={() => {
+                    if (!noteDraft.trim()) {
+                      setNoteDraft("");
+                    }
+                    setEditingNote(false);
+                  }}
+                  rows={Math.max(3, Math.min(8, normalizeReadingText(noteDraft).split("\n").length + 1))}
+                  style={editableNoteStyle(true)}
+                />
+              ) : (
+                <button
+                  onClick={() => setEditingNote(true)}
+                  style={{
+                    width: "100%",
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    margin: 0,
+                    textAlign: "left",
+                    cursor: "text",
+                    font: "inherit",
+                  }}
+                >
+                  <div style={editableNoteStyle(false)}>
+                    <div
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        fontSize: 14,
+                        lineHeight: 1.75,
+                        color: "rgba(255,255,255,0.68)",
+                      }}
+                    >
+                      {normalizedNote}
+                    </div>
+                  </div>
+                </button>
+              )}
+            </section>
+          )}
+
+          {!normalizedNote && !editingNote && (
+            <button
+              onClick={() => setEditingNote(true)}
+              style={{
+                marginTop: 6,
+                background: "none",
+                border: "none",
+                padding: 0,
+                color: "rgba(255,255,255,0.34)",
+                fontSize: 13,
+                fontFamily: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              Add a note
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HeaderAction({
+  children,
+  label,
+  onClick,
+  danger = false,
+  active = false,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 12px",
+        background: active ? "var(--blue-dim)" : "rgba(255,255,255,0.04)",
+        border: `1px solid ${active ? "var(--blue-border)" : "rgba(255,255,255,0.06)"}`,
+        borderRadius: 10,
+        color: active
+          ? "var(--blue)"
+          : danger
+            ? "rgba(248,113,113,0.78)"
+            : "rgba(255,255,255,0.58)",
+        fontSize: 13,
+        fontFamily: "inherit",
+        cursor: "pointer",
+        transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
+      }}
+      onMouseEnter={(event) => {
+        if (active) {
+          event.currentTarget.style.background = "var(--blue-dim)";
+          event.currentTarget.style.borderColor = "var(--blue-border)";
+          event.currentTarget.style.color = "var(--blue)";
+          return;
+        }
+        event.currentTarget.style.background = danger
+          ? "rgba(248,113,113,0.10)"
+          : "rgba(255,255,255,0.07)";
+        event.currentTarget.style.borderColor = danger
+          ? "rgba(248,113,113,0.16)"
+          : "rgba(255,255,255,0.09)";
+        event.currentTarget.style.color = danger
+          ? "var(--danger)"
+          : "var(--text-primary)";
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.background = active
+          ? "var(--blue-dim)"
+          : "rgba(255,255,255,0.04)";
+        event.currentTarget.style.borderColor = active
+          ? "var(--blue-border)"
+          : "rgba(255,255,255,0.06)";
+        event.currentTarget.style.color = active
+          ? "var(--blue)"
+          : danger
+            ? "rgba(248,113,113,0.78)"
+            : "rgba(255,255,255,0.58)";
+      }}
+    >
+      {children}
+      {label}
+    </button>
+  );
+}
+
+function MetadataText({
+  value,
+  title,
+}: {
+  value: string;
+  title?: string;
+}) {
+  return (
+    <span title={title} style={{ color: "rgba(255,255,255,0.34)" }}>
+      {value}
+    </span>
+  );
+}
+
+function MetadataDivider() {
+  return (
+    <span
+      style={{
+        width: 3,
+        height: 3,
+        borderRadius: "50%",
+        background: "rgba(255,255,255,0.14)",
+      }}
+    />
+  );
+}
+
+function editableContentStyle(editing: boolean): CSSProperties {
+  return {
+    width: "100%",
+    minHeight: editing ? 260 : undefined,
+    background: editing ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.02)",
+    border: editing
+      ? "1px solid rgba(255,255,255,0.08)"
+      : "1px solid rgba(255,255,255,0.04)",
+    borderRadius: 18,
+    padding: "22px 24px",
+    outline: "none",
+    resize: "vertical",
+    color: "var(--text-primary)",
+    fontSize: 15,
+    fontFamily: "inherit",
+    lineHeight: 1.9,
+    transition: "background 140ms ease, border-color 140ms ease",
+  };
+}
+
+function editableNoteStyle(editing: boolean): CSSProperties {
+  return {
+    width: "100%",
+    background: editing ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.02)",
+    border: editing
+      ? "1px solid rgba(255,255,255,0.08)"
+      : "1px solid rgba(255,255,255,0.04)",
+    borderRadius: 16,
+    padding: "16px 18px",
+    outline: "none",
+    resize: "vertical",
+    color: "rgba(255,255,255,0.74)",
+    fontSize: 14,
+    fontFamily: "inherit",
+    lineHeight: 1.75,
+    transition: "background 140ms ease, border-color 140ms ease",
+  };
+}
