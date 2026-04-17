@@ -4,6 +4,7 @@ use chrono::Utc;
 use kuchikiki::{parse_html, traits::TendrilSink, NodeRef};
 use reqwest::{header, Client};
 use serde::Deserialize;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
@@ -537,11 +538,21 @@ fn extract_meta_content(document: &NodeRef, attribute: &str, target: &str) -> Op
     None
 }
 
-fn extract_title(document: &NodeRef) -> Option<String> {
+fn extract_first_selector_text(document: &NodeRef, selector: &str) -> Option<String> {
     document
-        .select_first("title")
+        .select_first(selector)
         .ok()
         .and_then(|node| collapse_whitespace(&node.text_contents()))
+}
+
+fn extract_title(document: &NodeRef) -> Option<String> {
+    extract_first_selector_text(document, "title")
+}
+
+fn extract_heading_title(document: &NodeRef) -> Option<String> {
+    extract_first_selector_text(document, "h1")
+        .or_else(|| extract_first_selector_text(document, "article h1"))
+        .or_else(|| extract_first_selector_text(document, "[role='main'] h1"))
 }
 
 fn extract_canonical_url(document: &NodeRef, url: &str) -> Option<String> {
@@ -567,24 +578,224 @@ fn extract_canonical_url(document: &NodeRef, url: &str) -> Option<String> {
     )
 }
 
+fn json_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(collapse_whitespace)
+    })
+}
+
+fn json_image_field(value: &Value) -> Option<String> {
+    let image = value.get("image")?;
+    if let Some(image) = image.as_str() {
+        return collapse_whitespace(image);
+    }
+    if let Some(array) = image.as_array() {
+        return array.iter().find_map(|item| {
+            item.as_str()
+                .and_then(collapse_whitespace)
+                .or_else(|| json_string_field(item, &["url", "contentUrl"]))
+        });
+    }
+    json_string_field(image, &["url", "contentUrl"])
+}
+
+fn merge_json_ld_metadata(
+    metadata: &mut ExtractedLinkMetadata,
+    value: &Value,
+    base_url: &str,
+) {
+    if metadata.resolved_title.is_none() {
+        metadata.resolved_title =
+            json_string_field(value, &["headline", "name", "title", "alternativeHeadline"]);
+    }
+    if metadata.resolved_description.is_none() {
+        metadata.resolved_description =
+            json_string_field(value, &["description", "abstract", "summary"]);
+    }
+    if metadata.resolved_image.is_none() {
+        metadata.resolved_image = resolve_url(base_url, json_image_field(value));
+    }
+    if metadata.resolved_site_name.is_none() {
+        metadata.resolved_site_name = value
+            .get("publisher")
+            .and_then(|publisher| {
+                publisher
+                    .as_str()
+                    .and_then(collapse_whitespace)
+                    .or_else(|| json_string_field(publisher, &["name"]))
+            })
+            .or_else(|| {
+                value
+                    .get("sourceOrganization")
+                    .and_then(|organization| json_string_field(organization, &["name"]))
+            });
+    }
+
+    if let Some(graph) = value.get("@graph").and_then(Value::as_array) {
+        for item in graph {
+            merge_json_ld_metadata(metadata, item, base_url);
+        }
+    }
+    if let Some(array) = value.as_array() {
+        for item in array {
+            merge_json_ld_metadata(metadata, item, base_url);
+        }
+    }
+}
+
+fn extract_json_ld_metadata(document: &NodeRef, base_url: &str) -> ExtractedLinkMetadata {
+    let mut metadata = ExtractedLinkMetadata::default();
+    let Ok(selector) = document.select("script[type='application/ld+json']") else {
+        return metadata;
+    };
+
+    for node in selector {
+        let raw_json = node.text_contents();
+        let Ok(value) = serde_json::from_str::<Value>(raw_json.trim()) else {
+            continue;
+        };
+        merge_json_ld_metadata(&mut metadata, &value, base_url);
+    }
+
+    metadata
+}
+
+fn score_text_candidate(text: &str) -> i32 {
+    let word_count = text.split_whitespace().count() as i32;
+    let punctuation_count = text
+        .chars()
+        .filter(|character| matches!(character, '.' | '!' | '?' | ';' | ':'))
+        .count() as i32;
+    let paragraph_like = text.matches(". ").count() as i32;
+
+    word_count + punctuation_count * 3 + paragraph_like * 8
+}
+
+fn clean_article_text(value: &str) -> Option<String> {
+    let cleaned = value
+        .replace('\u{00a0}', " ")
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            let lowered = line.to_ascii_lowercase();
+            !line.is_empty()
+                && !matches!(
+                    lowered.as_str(),
+                    "menu" | "navigation" | "skip to content" | "share" | "advertisement"
+                )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if cleaned.split_whitespace().count() >= 12 {
+        Some(truncate_chars(&cleaned, 520))
+    } else {
+        None
+    }
+}
+
+fn extract_article_text(document: &NodeRef) -> Option<String> {
+    let selectors = [
+        "article",
+        "main",
+        "[role='main']",
+        ".article",
+        ".post",
+        ".entry-content",
+        ".content",
+        "#content",
+    ];
+
+    let mut best: Option<(i32, String)> = None;
+    for selector in selectors {
+        let Ok(nodes) = document.select(selector) else {
+            continue;
+        };
+        for node in nodes {
+            let Some(text) = clean_article_text(&node.text_contents()) else {
+                continue;
+            };
+            let score = score_text_candidate(&text);
+            if best.as_ref().is_none_or(|(best_score, _)| score > *best_score) {
+                best = Some((score, text));
+            }
+        }
+    }
+
+    best.map(|(_, text)| text).or_else(|| {
+        let body_text = extract_first_selector_text(document, "body")?;
+        clean_article_text(&body_text)
+    })
+}
+
+fn build_github_fallback_metadata(url: &str) -> Option<ExtractedLinkMetadata> {
+    let parsed = parsed_url(url)?;
+    let host = parsed.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
+    if host != "github.com" {
+        return None;
+    }
+
+    let segments = parsed
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .take(4)
+        .collect::<Vec<_>>();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let repo = format!("{}/{}", segments[0], segments[1]);
+    let title = if segments.len() == 2 {
+        format!("GitHub - {repo}")
+    } else {
+        format!("GitHub - {} · {}", repo, segments[2..].join(" / "))
+    };
+
+    Some(ExtractedLinkMetadata {
+        canonical_url: normalize_canonical_url(url).or_else(|| normalize_url_candidate(url)),
+        resolved_title: Some(title),
+        resolved_description: Some(format!("Saved GitHub page for {repo}.")),
+        resolved_image: None,
+        resolved_site_name: Some("GitHub".into()),
+    })
+}
+
 fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMetadata> {
     let document = parse_html().one(html).document_node;
     let canonical_url =
         extract_canonical_url(&document, url).or_else(|| normalize_canonical_url(url));
+    let json_ld = extract_json_ld_metadata(&document, url);
+    let article_text = extract_article_text(&document);
 
     let resolved_title = extract_meta_content(&document, "property", "og:title")
         .or_else(|| extract_meta_content(&document, "name", "twitter:title"))
+        .or_else(|| extract_meta_content(&document, "itemprop", "headline"))
+        .or_else(|| extract_meta_content(&document, "itemprop", "name"))
+        .or(json_ld.resolved_title)
+        .or_else(|| extract_heading_title(&document))
         .or_else(|| extract_title(&document));
     let resolved_description = extract_meta_content(&document, "property", "og:description")
         .or_else(|| extract_meta_content(&document, "name", "description"))
-        .or_else(|| extract_meta_content(&document, "name", "twitter:description"));
+        .or_else(|| extract_meta_content(&document, "name", "twitter:description"))
+        .or_else(|| extract_meta_content(&document, "itemprop", "description"))
+        .or(json_ld.resolved_description)
+        .or(article_text);
     let resolved_image = resolve_url(
         url,
         extract_meta_content(&document, "property", "og:image")
             .or_else(|| extract_meta_content(&document, "name", "twitter:image")),
-    );
+    )
+    .or(json_ld.resolved_image);
     let resolved_site_name = extract_meta_content(&document, "property", "og:site_name")
-        .or_else(|| extract_meta_content(&document, "name", "application-name"));
+        .or_else(|| extract_meta_content(&document, "name", "application-name"))
+        .or_else(|| extract_meta_content(&document, "name", "twitter:site"))
+        .or(json_ld.resolved_site_name);
 
     let metadata = ExtractedLinkMetadata {
         canonical_url,
@@ -599,7 +810,7 @@ fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMeta
         && metadata.resolved_image.is_none()
         && metadata.resolved_site_name.is_none()
     {
-        None
+        build_github_fallback_metadata(url)
     } else {
         Some(metadata)
     }
@@ -1008,6 +1219,86 @@ mod tests {
             Some("A concise summary for search and cards."),
         );
         assert!(metadata.resolved_image.is_none());
+    }
+
+    #[test]
+    fn extracts_json_ld_metadata_when_open_graph_is_missing() {
+        let html = r#"
+          <html>
+            <head>
+              <script type="application/ld+json">
+                {
+                  "@type": "Article",
+                  "headline": "Local-first memory systems",
+                  "description": "A practical guide to reliable local-first capture and recall.",
+                  "image": {"url": "/og/local-first.png"},
+                  "publisher": {"name": "Recall Research"}
+                }
+              </script>
+            </head>
+          </html>
+        "#;
+
+        let metadata = extract_metadata_from_html("https://example.com/research/local-first", html)
+            .expect("json-ld metadata should be extracted");
+
+        assert_eq!(
+            metadata.resolved_title.as_deref(),
+            Some("Local-first memory systems"),
+        );
+        assert_eq!(
+            metadata.resolved_description.as_deref(),
+            Some("A practical guide to reliable local-first capture and recall."),
+        );
+        assert_eq!(
+            metadata.resolved_image.as_deref(),
+            Some("https://example.com/og/local-first.png"),
+        );
+        assert_eq!(
+            metadata.resolved_site_name.as_deref(),
+            Some("Recall Research"),
+        );
+    }
+
+    #[test]
+    fn extracts_article_text_when_description_is_missing() {
+        let html = r#"
+          <html>
+            <body>
+              <article>
+                <h1>Durable capture without forms</h1>
+                <p>Recall should save useful context quickly and quietly.</p>
+                <p>The enrichment layer can then shape raw links into searchable memory objects.</p>
+              </article>
+            </body>
+          </html>
+        "#;
+
+        let metadata = extract_metadata_from_html("https://example.com/capture", html)
+            .expect("article text should be extracted");
+
+        assert_eq!(
+            metadata.resolved_title.as_deref(),
+            Some("Durable capture without forms"),
+        );
+        assert!(metadata
+            .resolved_description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("enrichment layer"));
+    }
+
+    #[test]
+    fn github_fallback_creates_metadata_when_html_has_no_signals() {
+        let metadata =
+            extract_metadata_from_html("https://github.com/D4Vinci/Scrapling", "<html></html>")
+                .expect("github fallback metadata");
+
+        assert_eq!(
+            metadata.resolved_title.as_deref(),
+            Some("GitHub - D4Vinci/Scrapling"),
+        );
+        assert_eq!(metadata.resolved_site_name.as_deref(), Some("GitHub"));
     }
 
     #[test]
