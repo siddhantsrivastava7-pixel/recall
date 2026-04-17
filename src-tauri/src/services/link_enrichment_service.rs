@@ -1693,19 +1693,94 @@ fn score_memory_quality(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
     use chrono::Utc;
     use sqlx::types::Json;
 
+    use crate::{
+        db::repositories::MemoryRepository,
+        errors::app_error::{AppError, AppResult},
+    };
     use crate::models::{
-        LinkEnrichmentStatus, Memory, MemorySourceType, MemoryType,
+        LinkEnrichmentStatus, LinkEnrichmentUpdate, Memory, MemoryInput, MemorySourceType,
+        MemoryType,
     };
 
     use super::{
         build_link_enrichment_update, build_reddit_fallback_metadata, build_reddit_metadata,
         build_x_fallback_metadata, build_x_metadata, extract_metadata_from_html,
-        should_retry_enrichment, EnrichmentOutcome, ExtractedLinkMetadata, RedditEmbedResponse,
-        XEmbedResponse,
+        parsed_url, should_retry_enrichment, summarize_metadata, EnrichmentOutcome,
+        ExtractedLinkMetadata, LinkEnrichmentService, RedditEmbedResponse, XEmbedResponse,
     };
+
+    struct NoopMemoryRepository;
+
+    #[async_trait]
+    impl MemoryRepository for NoopMemoryRepository {
+        async fn list(&self) -> AppResult<Vec<Memory>> {
+            Ok(vec![])
+        }
+
+        async fn find(&self, _id: &str) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn find_by_external_source(
+            &self,
+            _source_app: &str,
+            _external_id: &str,
+        ) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn create(&self, _input: MemoryInput) -> AppResult<Memory> {
+            Err(AppError::Invalid("noop repository".into()))
+        }
+
+        async fn update(&self, _id: &str, _input: MemoryInput) -> AppResult<Memory> {
+            Err(AppError::Invalid("noop repository".into()))
+        }
+
+        async fn update_link_enrichment(
+            &self,
+            _id: &str,
+            _enrichment: LinkEnrichmentUpdate,
+        ) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn set_resurface(
+            &self,
+            _id: &str,
+            _resurface_at: Option<String>,
+            _updated_at: &str,
+        ) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn dismiss_resurface(
+            &self,
+            _id: &str,
+            _dismissed_at: &str,
+            _updated_at: &str,
+        ) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn mark_opened(&self, _id: &str, _opened_at: &str) -> AppResult<Option<Memory>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn clear(&self) -> AppResult<()> {
+            Ok(())
+        }
+    }
 
     fn test_memory(content: &str) -> Memory {
         Memory {
@@ -2098,5 +2173,83 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Save fast"));
+    }
+
+    #[tokio::test]
+    #[ignore = "live network smoke check; run manually when validating parser coverage"]
+    async fn live_popular_sites_description_smoke_check() {
+        let service = LinkEnrichmentService::new(Arc::new(NoopMemoryRepository))
+            .expect("service should initialize");
+        let urls = [
+            "https://github.com/tauri-apps/tauri",
+            "https://docs.tauri.app/plugin/global-shortcut/",
+            "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
+            "https://en.wikipedia.org/wiki/Local-first_software",
+            "https://www.npmjs.com/package/react",
+            "https://stackoverflow.com/questions/11828270/how-do-i-exit-vim",
+            "https://stripe.com/docs",
+            "https://vercel.com/blog",
+            "https://www.figma.com/blog/",
+            "https://www.producthunt.com/",
+            "https://news.ycombinator.com/",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://www.reddit.com/r/ClaudeAI/comments/1sg4x27/codex_vs_claude_brutal/",
+            "https://x.com/VaibhavSisinty/status/204846683083919547",
+            "https://www.linkedin.com/",
+        ];
+
+        let mut successes = 0usize;
+        let mut description_successes = 0usize;
+
+        println!(
+            "\n{:<28} | {:<8} | {:<32} | {}",
+            "site", "status", "fields", "description"
+        );
+        println!("{}", "-".repeat(118));
+
+        for url in urls {
+            let site = parsed_url(url)
+                .and_then(|parsed| parsed.host_str().map(|host| host.to_string()))
+                .unwrap_or_else(|| url.to_string());
+
+            match service.fetch_enrichment(url).await {
+                Ok(metadata) => {
+                    successes += 1;
+                    let description = metadata
+                        .resolved_description
+                        .as_deref()
+                        .unwrap_or_default()
+                        .replace('\n', " ");
+                    if description.len() >= 24 {
+                        description_successes += 1;
+                    }
+
+                    println!(
+                        "{:<28} | {:<8} | {:<32} | {}",
+                        site,
+                        "OK",
+                        summarize_metadata(&metadata),
+                        description.chars().take(110).collect::<String>()
+                    );
+                }
+                Err(error) => {
+                    println!(
+                        "{:<28} | {:<8} | {:<32} | {}",
+                        site,
+                        "FAIL",
+                        "",
+                        error
+                    );
+                }
+            }
+        }
+
+        println!(
+            "\nSummary: metadata_success={}/{} description_success={}/{}",
+            successes,
+            urls.len(),
+            description_successes,
+            urls.len()
+        );
     }
 }

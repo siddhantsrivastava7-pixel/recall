@@ -122,6 +122,122 @@ const getUrlPathDisplay = (url: string | null | undefined, limit = 84) => {
   }
 };
 
+const parseUrl = (value: string | null | undefined) => {
+  const normalized = normalizeDisplayText(value);
+  if (!normalized) return null;
+
+  try {
+    return new URL(normalized);
+  } catch {
+    return null;
+  }
+};
+
+const humanizeSlug = (value: string | null | undefined) => {
+  const normalized = normalizeDisplayText(value);
+  if (!normalized) return null;
+
+  const decoded = decodeURIComponent(normalized)
+    .replace(/\.[a-z0-9]{2,5}$/i, "")
+    .replace(/[_+.-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!decoded || /^[a-z0-9]{6,}$/i.test(decoded)) {
+    return null;
+  }
+
+  return toTitleCase(decoded);
+};
+
+const getUrlSegments = (url: URL) =>
+  url.pathname
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+const getGeneratedLinkTitle = (value: string | null | undefined) => {
+  const url = parseUrl(value);
+  if (!url) return null;
+
+  const domain = url.hostname.replace(/^www\./i, "").toLowerCase();
+  const segments = getUrlSegments(url);
+
+  if (domain === "github.com" && segments.length >= 2) {
+    return `GitHub - ${segments[0]}/${segments[1]}`;
+  }
+
+  if ((domain === "reddit.com" || domain.endsWith(".reddit.com")) && segments[0] === "r") {
+    const subreddit = segments[1];
+    const slug = humanizeSlug(segments[4] ?? segments[3]);
+    if (subreddit && slug) return `Reddit - r/${subreddit}: ${slug}`;
+    if (subreddit) return `Reddit - r/${subreddit}`;
+  }
+
+  if (["x.com", "twitter.com", "mobile.twitter.com"].includes(domain)) {
+    const handle = segments[0];
+    if (handle) return `X post by @${handle}`;
+  }
+
+  const lastMeaningfulSegment = [...segments]
+    .reverse()
+    .map((segment) => humanizeSlug(segment))
+    .find(Boolean);
+
+  if (lastMeaningfulSegment) {
+    return `${domain} - ${lastMeaningfulSegment}`;
+  }
+
+  return domain || null;
+};
+
+const getLinkContextFallback = (
+  memory: Pick<Memory, "content" | "url" | "domain" | "resolvedDomain">,
+) => {
+  const rawUrl = memory.url ?? (isUrlLike(memory.content) ? memory.content : null);
+  const url = parseUrl(rawUrl);
+  if (!url) return null;
+
+  const domain = memory.resolvedDomain ?? memory.domain ?? url.hostname.replace(/^www\./i, "").toLowerCase();
+  const segments = getUrlSegments(url);
+
+  if (domain === "github.com" && segments.length >= 2) {
+    const pathType = segments[2] ? ` ${segments[2].replace(/-/g, " ")}` : "";
+    return `GitHub repository${pathType}: ${segments[0]}/${segments[1]}.`;
+  }
+
+  if ((domain === "reddit.com" || domain.endsWith(".reddit.com")) && segments[0] === "r") {
+    const subreddit = segments[1];
+    const slug = humanizeSlug(segments[4] ?? segments[3]);
+    if (subreddit && slug) return `Reddit thread in r/${subreddit}: ${slug}.`;
+    if (subreddit) return `Reddit thread in r/${subreddit}.`;
+  }
+
+  if (["x.com", "twitter.com", "mobile.twitter.com"].includes(domain)) {
+    const handle = segments[0];
+    if (handle) {
+      return `X post by @${handle}. The full post could not be extracted locally, but the source link is preserved.`;
+    }
+  }
+
+  const generatedTitle = getGeneratedLinkTitle(rawUrl);
+  if (generatedTitle && generatedTitle !== domain) {
+    return `${generatedTitle}.`;
+  }
+
+  const path = getUrlPathDisplay(rawUrl, 120);
+  if (path && path !== "/") {
+    return `${domain}${path}`;
+  }
+
+  return domain;
+};
+
+const isGenericSavedLinkSummary = (value: string | null | undefined) => {
+  const normalized = normalizeDisplayText(value).toLowerCase();
+  return /^saved link from [a-z0-9.-]+\./.test(normalized);
+};
+
 const firstMeaningfulLine = (value: string) =>
   normalizeLineBreaks(value)
     .split("\n")
@@ -187,17 +303,22 @@ export const getMemoryDisplayTitle = (
 ) => {
   const explicitTitle = normalizeDisplayText(memory.title);
   const resolvedTitle = normalizeDisplayText(memory.resolvedTitle);
+  const urlGeneratedTitle = getGeneratedLinkTitle(memory.url ?? memory.content);
 
   if (explicitTitle) {
     if (resolvedTitle && isLowSignalDomainTitle(explicitTitle, memory)) {
       return truncate(resolvedTitle, 120);
     }
 
+    if (isLowSignalDomainTitle(explicitTitle, memory) && urlGeneratedTitle) {
+      return truncate(urlGeneratedTitle, 120);
+    }
+
     if (isUrlLike(explicitTitle)) {
       if (resolvedTitle) {
         return truncate(resolvedTitle, 120);
       }
-      return getUrlDomain(explicitTitle) ?? memory.resolvedDomain ?? memory.domain ?? explicitTitle;
+      return urlGeneratedTitle ?? getUrlDomain(explicitTitle) ?? memory.resolvedDomain ?? memory.domain ?? explicitTitle;
     }
     return truncate(explicitTitle, 120);
   }
@@ -209,7 +330,7 @@ export const getMemoryDisplayTitle = (
   const contentLine = firstMeaningfulLine(memory.content);
   if (contentLine) {
     if (isUrlLike(contentLine)) {
-      return memory.resolvedDomain ?? memory.domain ?? getUrlDomain(contentLine) ?? truncate(contentLine, 120);
+      return urlGeneratedTitle ?? memory.resolvedDomain ?? memory.domain ?? getUrlDomain(contentLine) ?? truncate(contentLine, 120);
     }
     return truncate(contentLine, 120);
   }
@@ -229,6 +350,38 @@ export const getMemoryDisplayTitle = (
 export const memoryPreview = (content: string, limit = 160): string => {
   const normalized = normalizeDisplayText(content);
   return truncate(normalized, limit);
+};
+
+export const getMemoryDetailReadingText = (
+  memory: Pick<
+    Memory,
+    | "content"
+    | "resolvedDescription"
+    | "previewText"
+    | "summaryText"
+    | "url"
+    | "domain"
+    | "resolvedDomain"
+  >,
+) => {
+  const normalizedContent = normalizeReadingText(memory.content);
+
+  if (!isUrlLike(normalizedContent) || /\s/.test(normalizedContent.trim())) {
+    return normalizedContent;
+  }
+
+  const richCandidates = [
+    normalizeReadingText(memory.previewText),
+    normalizeReadingText(memory.resolvedDescription),
+    normalizeReadingText(memory.summaryText),
+  ].filter((candidate) => candidate && !isGenericSavedLinkSummary(candidate));
+
+  if (richCandidates.length > 0) {
+    return richCandidates[0];
+  }
+
+  const genericSummary = normalizeReadingText(memory.summaryText);
+  return getLinkContextFallback(memory) || genericSummary || normalizedContent;
 };
 
 export const getMemoryDisplayPreview = (
@@ -261,11 +414,12 @@ export const getMemoryDisplayPreview = (
   const folderPath = normalizeDisplayText(memory.bookmarkFolderPath ?? memory.folderPath);
   const urlDomain = memory.resolvedDomain ?? memory.domain ?? getUrlDomain(memory.url ?? memory.content);
   const urlPath = getUrlPathDisplay(memory.url ?? memory.content, limit);
+  const richSourcePreview = [previewText, resolvedDescription, summaryText].find(
+    (candidate) => candidate && !isGenericSavedLinkSummary(candidate),
+  );
 
   if (memory.sourceType === "bookmark") {
-    if (summaryText) return truncate(summaryText, limit);
-    if (previewText) return truncate(previewText, limit);
-    if (resolvedDescription) return truncate(resolvedDescription, limit);
+    if (richSourcePreview) return truncate(richSourcePreview, limit);
     if (folderPath) return truncate(folderPath, limit);
     if (note) return truncate(note, limit);
     if (resolvedSiteName && urlDomain) return truncate(`${resolvedSiteName} · ${urlDomain}`, limit);
@@ -273,16 +427,8 @@ export const getMemoryDisplayPreview = (
     if (urlDomain) return urlDomain;
   }
 
-  if (resolvedDescription) {
-    return truncate(resolvedDescription, limit);
-  }
-
-  if (previewText) {
-    return truncate(previewText, limit);
-  }
-
-  if (summaryText) {
-    return truncate(summaryText, limit);
+  if (richSourcePreview) {
+    return truncate(richSourcePreview, limit);
   }
 
   if (note && normalizedContent.length > 0 && normalizedContent.length < 32) {
@@ -291,6 +437,12 @@ export const getMemoryDisplayPreview = (
 
   if (note && isUrlLike(normalizedContent)) {
     return truncate(note, limit);
+  }
+
+  if (isUrlLike(normalizedContent)) {
+    const linkContext = getLinkContextFallback(memory);
+    if (linkContext) return truncate(linkContext, limit);
+    if (summaryText) return truncate(summaryText, limit);
   }
 
   let preview = normalizedContent;
@@ -309,6 +461,34 @@ export const getMemoryDisplayPreview = (
 export const getMemoryDisplayDomain = (
   memory: Pick<Memory, "url" | "domain" | "resolvedDomain" | "content" | "sourceType">,
 ) => memory.resolvedDomain ?? memory.domain ?? getUrlDomain(memory.url ?? (isUrlLike(memory.content) ? memory.content : null));
+
+export const hasMeaningfulMemoryPreview = (
+  memory: Pick<
+    Memory,
+    | "title"
+    | "resolvedTitle"
+    | "resolvedDescription"
+    | "previewText"
+    | "summaryText"
+    | "resolvedSiteName"
+    | "content"
+    | "note"
+    | "url"
+    | "domain"
+    | "resolvedDomain"
+    | "folderPath"
+    | "bookmarkFolderPath"
+    | "sourceType"
+  >,
+) => {
+  const preview = normalizeDisplayText(getMemoryDisplayPreview(memory, 220));
+  if (!preview || isGenericSavedLinkSummary(preview) || isUrlLike(preview)) {
+    return false;
+  }
+
+  const domain = getMemoryDisplayDomain(memory);
+  return preview !== domain;
+};
 
 export const getMemoryDetailSourceLabel = (
   memory: Pick<Memory, "url" | "domain" | "resolvedDomain" | "content" | "sourceType" | "sourceApp" | "resolvedSiteName">,

@@ -17,9 +17,11 @@ import {
   getMemoryDisplayPreview,
   getMemoryDisplaySourceType,
   getMemoryDisplayTitle,
+  hasMeaningfulMemoryPreview,
   normalizeDisplayText,
 } from "@/domain/formatters";
 import { tauriClient } from "@/services/api/tauri-client";
+import { openExternalLink } from "@/services/externalLinkService";
 import {
   formatResurfaceLabel,
   fromDatetimeLocalValue,
@@ -47,6 +49,10 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
 
   const title = useMemo(() => getMemoryDisplayTitle(memory), [memory]);
   const preview = useMemo(() => getMemoryDisplayPreview(memory, 220), [memory]);
+  const hasSourcePreview = useMemo(
+    () => Boolean(memory.url && hasMeaningfulMemoryPreview(memory)),
+    [memory],
+  );
   const metadata = useMemo(() => getMemoryDisplayMetadata(memory), [memory]);
   const domain = useMemo(() => getMemoryDisplayDomain(memory), [memory]);
   const sourceTypeLabel = getMemoryDisplaySourceType(memory);
@@ -150,6 +156,12 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
     onSelect?.(memory);
   }
 
+  async function openSource(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (!memory.url) return;
+    await openExternalLink(memory.url);
+  }
+
   return (
     <article
       className={`memory-card ${resurfaced ? "resurfaced" : ""}`}
@@ -219,6 +231,12 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
             active={resurfaceOpen || Boolean(memory.resurfaceAt)}
           />
           <CardAction
+            icon={<Globe size={13} strokeWidth={1.9} />}
+            label="Open source"
+            onClick={openSource}
+            disabled={!memory.url}
+          />
+          <CardAction
             icon={<ArrowUpRight size={13} strokeWidth={1.9} />}
             label="Open"
             onClick={openMemory}
@@ -274,19 +292,34 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
         {title}
       </div>
 
-      <div
-        style={{
-          fontSize: 13,
-          color: "var(--text-secondary)",
-          lineHeight: 1.65,
-          display: "-webkit-box",
-          WebkitBoxOrient: "vertical",
-          WebkitLineClamp: 2,
-          overflow: "hidden",
-          marginBottom: 16,
-        }}
-      >
-        {preview}
+      <div style={{ marginBottom: 16 }}>
+        {hasSourcePreview && (
+          <div
+            style={{
+              marginBottom: 4,
+              color: "rgba(255,255,255,0.30)",
+              fontSize: 10,
+              fontWeight: 650,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}
+          >
+            Source preview
+          </div>
+        )}
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--text-secondary)",
+            lineHeight: 1.65,
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: hasSourcePreview ? 3 : 2,
+            overflow: "hidden",
+          }}
+        >
+          {preview}
+        </div>
       </div>
 
       {topics.length > 0 && (
@@ -553,13 +586,17 @@ function CardAction({
   onClick,
   danger = false,
   active = false,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   label: string;
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   danger?: boolean;
   active?: boolean;
+  disabled?: boolean;
 }) {
+  if (disabled) return null;
+
   return (
     <button
       aria-label={label}

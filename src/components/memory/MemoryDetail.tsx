@@ -3,6 +3,7 @@ import {
   Clock3,
   Copy,
   FolderOpen,
+  ExternalLink,
   Save,
   Trash,
   X,
@@ -19,16 +20,19 @@ import {
 import {
   formatLongTimestamp,
   formatUrlForDisplay,
+  getMemoryDetailReadingText,
   getMemoryDetailSourceLabel,
   getMemoryDisplayPreview,
   getMemoryDisplayProject,
   getMemoryDisplayTitle,
+  hasMeaningfulMemoryPreview,
   normalizeReadingText,
   formatRelativeTimestamp,
 } from "@/domain/formatters";
 import type { Memory } from "@/domain/types";
 import { tauriClient } from "@/services/api/tauri-client";
 import { getRelatedMemories } from "@/services/context/ContextEngine";
+import { openExternalLink } from "@/services/externalLinkService";
 import {
   formatResurfaceLabel,
   fromDatetimeLocalValue,
@@ -108,35 +112,34 @@ export function MemoryDetail({
     () => normalizeReadingText(contentDraft),
     [contentDraft],
   );
-  const normalizedResolvedDescription = useMemo(
-    () => normalizeReadingText(currentMemory.resolvedDescription),
-    [currentMemory.resolvedDescription],
-  );
-  const normalizedSummaryText = useMemo(
-    () => normalizeReadingText(currentMemory.summaryText),
-    [currentMemory.summaryText],
-  );
-  const normalizedPreviewText = useMemo(
-    () => normalizeReadingText(currentMemory.previewText),
-    [currentMemory.previewText],
-  );
   const detailReadingContent = useMemo(() => {
-    if (isRawUrlContent) {
-      return (
-        normalizedSummaryText ||
-        normalizedResolvedDescription ||
-        normalizedPreviewText ||
-        normalizedContent
-      );
-    }
-    return normalizedContent;
+    return getMemoryDetailReadingText({
+      ...currentMemory,
+      content: contentDraft,
+    });
   }, [
-    normalizedSummaryText,
-    normalizedResolvedDescription,
-    normalizedPreviewText,
-    isRawUrlContent,
-    normalizedContent,
+    currentMemory,
+    contentDraft,
   ]);
+  const hasSourcePreview = useMemo(
+    () =>
+      Boolean(
+        currentMemory.url &&
+          isRawUrlContent &&
+          detailReadingContent !== normalizedContent &&
+          hasMeaningfulMemoryPreview({
+            ...currentMemory,
+            content: contentDraft,
+          }),
+      ),
+    [
+      currentMemory,
+      contentDraft,
+      detailReadingContent,
+      isRawUrlContent,
+      normalizedContent,
+    ],
+  );
   const canEditContentInline = !(
     isRawUrlContent && detailReadingContent !== normalizedContent
   );
@@ -309,6 +312,12 @@ export function MemoryDetail({
     }, 1200);
   }
 
+  async function openSourceUrl(event?: React.MouseEvent<HTMLElement>) {
+    event?.stopPropagation();
+    if (!currentMemory.url) return;
+    await openExternalLink(currentMemory.url);
+  }
+
   async function deleteMemory() {
     if (!confirm("Delete this memory? This cannot be undone.")) return;
     await remove(currentMemory.id);
@@ -409,6 +418,12 @@ export function MemoryDetail({
                 <Copy size={13} strokeWidth={1.9} />
               )}
             </HeaderAction>
+
+            {currentMemory.url && (
+              <HeaderAction label="Open source" onClick={() => void openSourceUrl()}>
+                <ExternalLink size={13} strokeWidth={1.9} />
+              </HeaderAction>
+            )}
 
             <HeaderAction
               label={bringBackOpen ? "Done" : "Bring back"}
@@ -521,14 +536,18 @@ export function MemoryDetail({
                   href={currentMemory.url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void openSourceUrl(event);
+                  }}
                   style={{
                     color: "rgba(255,255,255,0.44)",
                     textDecoration: "none",
                   }}
                   title={currentMemory.url}
-                >
-                  {sourceLabel}
-                </a>
+                  >
+                    {sourceLabel}
+                  </a>
               ) : (
                 <MetadataText value={sourceLabel} />
               )}
@@ -645,9 +664,18 @@ export function MemoryDetail({
                 style={editableContentStyle(true)}
               />
             ) : (
-              <button
+              <div
+                role={canEditContentInline ? "button" : undefined}
+                tabIndex={canEditContentInline ? 0 : undefined}
                 onClick={() => {
                   if (canEditContentInline) {
+                    setEditingContent(true);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (!canEditContentInline) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
                     setEditingContent(true);
                   }
                 }}
@@ -663,6 +691,20 @@ export function MemoryDetail({
                 }}
               >
                 <div style={editableContentStyle(false)}>
+                  {hasSourcePreview && (
+                    <div
+                      style={{
+                        marginBottom: 12,
+                        color: "rgba(255,255,255,0.32)",
+                        fontSize: 11,
+                        fontWeight: 650,
+                        letterSpacing: "0.12em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Source preview
+                    </div>
+                  )}
                   <div
                     style={{
                       whiteSpace: "pre-wrap",
@@ -674,28 +716,58 @@ export function MemoryDetail({
                     {detailReadingContent}
                   </div>
                   {currentMemory.url && (
-                    <a
-                      href={currentMemory.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(event) => event.stopPropagation()}
+                    <span
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
+                        gap: 8,
                         marginTop: 16,
-                        color: "rgba(255,255,255,0.44)",
-                        textDecoration: "none",
                         fontSize: 13,
                         lineHeight: 1.5,
-                        wordBreak: "break-all",
                       }}
-                      title={currentMemory.url}
                     >
-                      {formatUrlForDisplay(currentMemory.url, 96)}
-                    </a>
+                      <a
+                        href={currentMemory.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void openSourceUrl(event);
+                        }}
+                        style={{
+                          color: "rgba(255,255,255,0.44)",
+                          textDecoration: "none",
+                          wordBreak: "break-all",
+                        }}
+                        title={currentMemory.url}
+                      >
+                        {formatUrlForDisplay(currentMemory.url, 96)}
+                      </a>
+                      <button
+                        type="button"
+                        aria-label="Open source in browser"
+                        title="Open source in browser"
+                        onClick={(event) => void openSourceUrl(event)}
+                        style={{
+                          width: 24,
+                          height: 24,
+                          flexShrink: 0,
+                          borderRadius: 8,
+                          border: "1px solid rgba(255,255,255,0.06)",
+                          background: "rgba(255,255,255,0.04)",
+                          color: "rgba(255,255,255,0.46)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <ExternalLink size={12} strokeWidth={1.9} />
+                      </button>
+                    </span>
                   )}
                 </div>
-              </button>
+              </div>
             )}
           </section>
 

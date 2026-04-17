@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { getMemoryDisplayPreview, getMemoryDisplayTitle } from "@/domain/formatters";
+import {
+  getMemoryDetailReadingText,
+  getMemoryDisplayPreview,
+  getMemoryDisplayTitle,
+  hasMeaningfulMemoryPreview,
+} from "@/domain/formatters";
 import type { Memory } from "@/domain/types";
 
 const baseMemory: Memory = {
@@ -77,10 +82,23 @@ describe("getMemoryDisplayTitle", () => {
 
     expect(result).toBe("Reddit - Tauri App Architecture");
   });
+
+  it("generates a useful title from GitHub URLs when metadata is missing", () => {
+    const result = getMemoryDisplayTitle({
+      ...baseMemory,
+      title: "github.com",
+      content: "https://github.com/siddhantsrivastava7-pixel/merapolicyadvisor",
+      url: "https://github.com/siddhantsrivastava7-pixel/merapolicyadvisor",
+      domain: "github.com",
+      resolvedTitle: null,
+    });
+
+    expect(result).toBe("GitHub - siddhantsrivastava7-pixel/merapolicyadvisor");
+  });
 });
 
 describe("getMemoryDisplayPreview", () => {
-  it("uses deterministic summary text before falling back to raw content", () => {
+  it("uses parsable link context before falling back to raw URL content", () => {
     const result = getMemoryDisplayPreview({
       ...baseMemory,
       content: "https://example.com/raw/link",
@@ -89,8 +107,73 @@ describe("getMemoryDisplayPreview", () => {
       summaryText: "Saved link from example.com. Open the source to view the saved page.",
     });
 
-    expect(result).toBe(
-      "Saved link from example.com. Open the source to view the saved page.",
+    expect(result).toBe("example.com - Link.");
+  });
+
+  it("prefers extracted preview over generic bookmark summaries", () => {
+    const memory = {
+      ...baseMemory,
+      sourceType: "bookmark" as const,
+      content: "https://x.com/VaibhavSisinty/status/204846683083919547",
+      url: "https://x.com/VaibhavSisinty/status/204846683083919547",
+      domain: "x.com",
+      resolvedDomain: "x.com",
+      previewText:
+        "Let me explain what OpenAI just did with the new Codex update. Because most people are going to miss the actual story here.",
+      summaryText: "Saved link from x.com. Open the source to view the saved page.",
+    };
+
+    expect(getMemoryDisplayPreview(memory, 220)).toBe(
+      "Let me explain what OpenAI just did with the new Codex update. Because most people are going to miss the actual story here.",
     );
+    expect(hasMeaningfulMemoryPreview(memory)).toBe(true);
+  });
+});
+
+describe("getMemoryDetailReadingText", () => {
+  it("shows extracted social post text instead of a generic saved-link fallback", () => {
+    const result = getMemoryDetailReadingText({
+      ...baseMemory,
+      content: "https://x.com/VaibhavSisinty/status/204846683083919547",
+      url: "https://x.com/VaibhavSisinty/status/204846683083919547",
+      domain: "x.com",
+      resolvedDomain: "x.com",
+      previewText:
+        "Let me explain what OpenAI just did with the new Codex update. Because most people are going to miss the actual story here.",
+      summaryText: "Saved link from x.com. Open the source to view the saved page.",
+    });
+
+    expect(result).toBe(
+      "Let me explain what OpenAI just did with the new Codex update. Because most people are going to miss the actual story here.",
+    );
+  });
+
+  it("falls back to parsable URL context before generic link text", () => {
+    const result = getMemoryDetailReadingText({
+      ...baseMemory,
+      content: "https://www.reddit.com/r/ClaudeAI/comments/1sg4x27/codex_vs_claude_brutal/",
+      url: "https://www.reddit.com/r/ClaudeAI/comments/1sg4x27/codex_vs_claude_brutal/",
+      domain: "reddit.com",
+      resolvedDomain: "reddit.com",
+      previewText: null,
+      resolvedDescription: null,
+      summaryText: "Saved link from reddit.com. Open the source to view the saved page.",
+    });
+
+    expect(result).toBe("Reddit thread in r/ClaudeAI: Codex Vs Claude Brutal.");
+  });
+
+  it("shows repository context for GitHub links without fetched metadata", () => {
+    const result = getMemoryDetailReadingText({
+      ...baseMemory,
+      content: "https://github.com/siddhantsrivastava7-pixel/merapolicyadvisor",
+      url: "https://github.com/siddhantsrivastava7-pixel/merapolicyadvisor",
+      domain: "github.com",
+      previewText: null,
+      resolvedDescription: null,
+      summaryText: "Saved link from github.com. Open the source to view the saved page.",
+    });
+
+    expect(result).toBe("GitHub repository: siddhantsrivastava7-pixel/merapolicyadvisor.");
   });
 });
