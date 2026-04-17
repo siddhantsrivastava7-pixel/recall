@@ -118,6 +118,8 @@ pub struct Memory {
     pub folder_path: Option<String>,
     pub source_app: Option<String>,
     pub source_window: Option<String>,
+    pub resurface_at: Option<String>,
+    pub resurface_dismissed_at: Option<String>,
     pub last_opened_at: Option<String>,
     pub open_count: i64,
     pub created_at: String,

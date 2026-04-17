@@ -54,6 +54,8 @@ export interface Memory {
   folderPath: string | null;
   sourceApp: string | null;
   sourceWindow: string | null;
+  resurfaceAt?: string | null;
+  resurfaceDismissedAt?: string | null;
   lastOpenedAt?: string | null;
   openCount?: number;
   createdAt: string;

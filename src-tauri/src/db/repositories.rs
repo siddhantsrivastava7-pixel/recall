@@ -23,6 +23,18 @@ pub trait MemoryRepository: Send + Sync {
         id: &str,
         enrichment: LinkEnrichmentUpdate,
     ) -> AppResult<Option<Memory>>;
+    async fn set_resurface(
+        &self,
+        id: &str,
+        resurface_at: Option<String>,
+        updated_at: &str,
+    ) -> AppResult<Option<Memory>>;
+    async fn dismiss_resurface(
+        &self,
+        id: &str,
+        dismissed_at: &str,
+        updated_at: &str,
+    ) -> AppResult<Option<Memory>>;
     async fn mark_opened(&self, id: &str, opened_at: &str) -> AppResult<Option<Memory>>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn clear(&self) -> AppResult<()>;

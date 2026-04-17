@@ -648,6 +648,8 @@ mod tests {
             folder_path: Some("Bookmarks Bar / Research".into()),
             source_app: Some("chrome".into()),
             source_window: None,
+            resurface_at: None,
+            resurface_dismissed_at: None,
             last_opened_at: None,
             open_count: 0,
             created_at: created_at.into(),

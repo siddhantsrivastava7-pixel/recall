@@ -53,4 +53,19 @@ impl MemoryService {
     pub async fn mark_opened(&self, id: &str) -> AppResult<Option<Memory>> {
         self.repository.mark_opened(id, &chrono::Utc::now().to_rfc3339()).await
     }
+
+    pub async fn set_resurface(
+        &self,
+        id: &str,
+        resurface_at: Option<String>,
+    ) -> AppResult<Option<Memory>> {
+        self.repository
+            .set_resurface(id, resurface_at, &chrono::Utc::now().to_rfc3339())
+            .await
+    }
+
+    pub async fn dismiss_resurface(&self, id: &str) -> AppResult<Option<Memory>> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.repository.dismiss_resurface(id, &now, &now).await
+    }
 }

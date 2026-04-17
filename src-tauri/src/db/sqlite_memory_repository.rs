@@ -44,6 +44,8 @@ SELECT
   memories.folder_path,
   memories.source_app,
   memories.source_window,
+  memories.resurface_at,
+  memories.resurface_dismissed_at,
   memories.last_opened_at,
   memories.open_count,
   memories.created_at,
@@ -163,11 +165,13 @@ impl MemoryRepository for SqliteMemoryRepository {
               folder_path,
               source_app,
               source_window,
+              resurface_at,
+              resurface_dismissed_at,
               last_opened_at,
               open_count,
               created_at,
               updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
             "#,
         )
         .bind(&id)
@@ -208,8 +212,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             .ok_or_else(|| AppError::Invalid("Memory not found.".into()))?;
         let source_type = input.source_type.unwrap_or(MemorySourceType::Manual);
         let url_changed = input.url != existing.url;
-        let enrichment_input_changed =
-            url_changed || input.content != existing.content || input.note != existing.note;
+        let enrichment_input_changed = url_changed || input.content != existing.content;
         let domain = input.url.as_deref().and_then(extract_domain);
         let resolved_domain = if enrichment_input_changed {
             domain.clone()
@@ -437,6 +440,63 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(enrichment.enrichment_error)
         .bind(enrichment.enriched_at)
         .bind(enrichment.last_enriched_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.find(id).await
+    }
+
+    async fn set_resurface(
+        &self,
+        id: &str,
+        resurface_at: Option<String>,
+        updated_at: &str,
+    ) -> AppResult<Option<Memory>> {
+        let result = sqlx::query(
+            r#"
+            UPDATE memories
+            SET
+              resurface_at = ?,
+              resurface_dismissed_at = NULL,
+              updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(resurface_at)
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.find(id).await
+    }
+
+    async fn dismiss_resurface(
+        &self,
+        id: &str,
+        dismissed_at: &str,
+        updated_at: &str,
+    ) -> AppResult<Option<Memory>> {
+        let result = sqlx::query(
+            r#"
+            UPDATE memories
+            SET
+              resurface_dismissed_at = ?,
+              updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(dismissed_at)
+        .bind(updated_at)
         .bind(id)
         .execute(&self.pool)
         .await?;

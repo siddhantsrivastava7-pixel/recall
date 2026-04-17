@@ -6,6 +6,7 @@ import {
   getProjectRelevantMemories,
   getRecallFeed,
   getRelatedMemories,
+  scoreRelatedMemory,
 } from "@/services/context/ContextEngine";
 
 const memory = ({
@@ -121,6 +122,61 @@ describe("ContextEngine", () => {
     });
 
     expect(getRelatedMemories(current, [current, related], context)[0]?.memory.id).toBe("ci-notes");
+  });
+
+  it("scores related memories with the deterministic weighted formula", () => {
+    const current = memory({
+      id: "stripe-pricing",
+      title: "Stripe pricing guide",
+      content: "https://stripe.com/pricing",
+      domain: "stripe.com",
+      topicLabels: ["Pricing", "SaaS"],
+      qualityScore: 80,
+    });
+    const related = memory({
+      id: "stripe-billing",
+      title: "Stripe billing pricing notes",
+      content: "https://stripe.com/billing",
+      domain: "stripe.com",
+      topicLabels: ["Pricing"],
+      qualityScore: 80,
+      createdAt: "2026-04-10T12:00:00.000Z",
+      updatedAt: "2026-04-10T12:00:00.000Z",
+    });
+
+    const scored = scoreRelatedMemory(current, related);
+
+    expect(scored.score).toBeGreaterThan(45);
+    expect(scored.reason).toBe("Shared topic");
+  });
+
+  it("excludes duplicate urls from related memories", () => {
+    const current = memory({
+      id: "original",
+      title: "Recall roadmap",
+      content: "https://example.com/roadmap",
+      url: "https://example.com/roadmap",
+      canonicalUrl: "https://example.com/roadmap",
+      topicLabels: ["Roadmap"],
+      qualityScore: 90,
+    });
+    const duplicate = memory({
+      id: "duplicate",
+      title: "Recall roadmap copy",
+      content: "https://example.com/roadmap/",
+      url: "https://example.com/roadmap/",
+      canonicalUrl: "https://example.com/roadmap",
+      topicLabels: ["Roadmap"],
+      qualityScore: 90,
+    });
+    const context = buildSessionContext([current, duplicate], {
+      recentQueries: [],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "all",
+    });
+
+    expect(getRelatedMemories(current, [current, duplicate], context)).toHaveLength(0);
   });
 
   it("does not treat shared inbox or weak .com metadata as a relation", () => {

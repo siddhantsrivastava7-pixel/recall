@@ -48,3 +48,27 @@ export const duplicateMemory = async (id: string) => {
     } satisfies ServiceResult<never>;
   }
 };
+
+export const setMemoryResurface = async (id: string, resurfaceAt: string | null) => {
+  try {
+    const memory = await tauriClient.setMemoryResurface(id, resurfaceAt);
+    return { ok: true, data: memory } satisfies ServiceResult<typeof memory>;
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to update bring-back time.",
+    } satisfies ServiceResult<never>;
+  }
+};
+
+export const dismissMemoryResurface = async (id: string) => {
+  try {
+    const memory = await tauriClient.dismissMemoryResurface(id);
+    return { ok: true, data: memory } satisfies ServiceResult<typeof memory>;
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to dismiss resurfaced memory.",
+    } satisfies ServiceResult<never>;
+  }
+};

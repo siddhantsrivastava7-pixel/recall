@@ -49,4 +49,32 @@ describe("getMemoryDisplayTitle", () => {
 
     expect(result).toBe("Tauri repo for later reading");
   });
+
+  it("prefers resolved title over a low-signal domain title", () => {
+    const result = getMemoryDisplayTitle({
+      ...baseMemory,
+      title: "x.com",
+      content: "https://x.com/example/status/123",
+      url: "https://x.com/example/status/123",
+      domain: "x.com",
+      resolvedDomain: "x.com",
+      resolvedTitle: "X post by @example",
+    });
+
+    expect(result).toBe("X post by @example");
+  });
+
+  it("prefers resolved title over Reddit verification shell title", () => {
+    const result = getMemoryDisplayTitle({
+      ...baseMemory,
+      title: "Reddit - Please wait for verification",
+      content: "https://www.reddit.com/r/rust/comments/1abc234/tauri_app_architecture/",
+      url: "https://www.reddit.com/r/rust/comments/1abc234/tauri_app_architecture/",
+      domain: "reddit.com",
+      resolvedDomain: "reddit.com",
+      resolvedTitle: "Reddit - Tauri App Architecture",
+    });
+
+    expect(result).toBe("Reddit - Tauri App Architecture");
+  });
 });

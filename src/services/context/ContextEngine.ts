@@ -5,6 +5,7 @@ import {
   getMemoryDisplayTitle,
   normalizeDisplayText,
 } from "@/domain/formatters";
+import { getDueResurfaceMemories } from "@/services/resurface/memoryResurface";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CONTEXT_TERMS = 12;
@@ -217,22 +218,71 @@ const sharedTokenCount = (left: string[], right: string[]) => {
   return unique(left).filter((token) => rightSet.has(token)).length;
 };
 
-const relatedEvidenceScore = (current: Memory, candidate: Memory) => {
-  const topicOverlap = sharedTokenCount(memoryTopics(current), memoryTopics(candidate));
+const overlapRatio = (left: string[], right: string[]) => {
+  const uniqueLeft = unique(left);
+  const uniqueRight = unique(right);
+  const denominator = Math.max(uniqueLeft.length, uniqueRight.length, 1);
+  return sharedTokenCount(uniqueLeft, uniqueRight) / denominator;
+};
+
+const titleTokens = (memory: Memory) =>
+  tokenize(`${getMemoryDisplayTitle(memory)} ${memory.resolvedTitle ?? ""}`)
+    .filter((token) => !/^\d+$/.test(token));
+
+const sameMeaningfulDomain = (current: Memory, candidate: Memory) => {
   const currentDomains = memoryDomainValues(current);
   const candidateDomains = new Set(memoryDomainValues(candidate));
-  const domainOverlap = currentDomains.filter(
+  return currentDomains.some(
     (domain) => candidateDomains.has(domain) && !BROAD_RELATION_DOMAINS.has(domain),
-  ).length;
-  const currentTextTokens = tokenize(
-    `${getMemoryDisplayTitle(current)} ${getMemoryDisplayPreview(current, 180)}`,
-  ).filter((token) => !/^\d+$/.test(token));
-  const candidateTextTokens = tokenize(
-    `${getMemoryDisplayTitle(candidate)} ${getMemoryDisplayPreview(candidate, 180)}`,
-  ).filter((token) => !/^\d+$/.test(token));
-  const textOverlap = sharedTokenCount(currentTextTokens, candidateTextTokens);
+  );
+};
 
-  return topicOverlap * 3 + domainOverlap * 2 + Math.max(0, textOverlap - 1);
+const duplicateUrlKey = (memory: Memory) =>
+  normalizeDisplayText(memory.canonicalUrl ?? memory.url ?? "")
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/$/, "");
+
+const isDuplicateCandidate = (current: Memory, candidate: Memory) => {
+  if (candidate.isDuplicateOf && candidate.isDuplicateOf === current.id) return true;
+  const currentUrl = duplicateUrlKey(current);
+  const candidateUrl = duplicateUrlKey(candidate);
+  return Boolean(currentUrl && candidateUrl && currentUrl === candidateUrl);
+};
+
+const relatedReason = (
+  topicOverlap: number,
+  titleOverlap: number,
+  domainMatch: number,
+) => {
+  if (topicOverlap >= 0.25) return "Shared topic";
+  if (titleOverlap >= 0.24) return "Similar title";
+  if (domainMatch > 0) return "Same domain";
+  return "Recent and useful";
+};
+
+export const scoreRelatedMemory = (current: Memory, candidate: Memory): ContextualMemory => {
+  const topicOverlap = overlapRatio(memoryTopics(current), memoryTopics(candidate));
+  const titleOverlap = overlapRatio(titleTokens(current), titleTokens(candidate));
+  const domainMatch = sameMeaningfulDomain(current, candidate) ? 1 : 0;
+  const normalizedRecency =
+    recencyScore(candidate.lastOpenedAt ?? candidate.createdAt) / 100;
+  const normalizedQuality = qualityScore(candidate) / 100;
+
+  const score =
+    (topicOverlap * 0.4 +
+      titleOverlap * 0.25 +
+      domainMatch * 0.15 +
+      normalizedRecency * 0.1 +
+      normalizedQuality * 0.1) *
+    100;
+
+  return {
+    memory: candidate,
+    score,
+    reason: relatedReason(topicOverlap, titleOverlap, domainMatch),
+  };
 };
 
 export const scoreMemoryForContext = (
@@ -303,27 +353,19 @@ export const getContextualSearchSuggestions = (
 export const getRelatedMemories = (
   current: Memory,
   memories: Memory[],
-  context: SessionContext,
-  limit = 4,
+  _context: SessionContext,
+  limit = 5,
 ): ContextualMemory[] => {
-  const relatedContext: SessionContext = {
-    ...context,
-    topicWeights: new Map(context.topicWeights),
-    domainWeights: new Map(context.domainWeights),
-  };
-  addWeightedTokens(relatedContext.topicWeights, [
-    ...memoryTopics(current),
-    ...tokenize(getMemoryDisplayTitle(current)),
-    ...tokenize(getMemoryDisplayPreview(current, 180)),
-  ], 8);
-  addWeightedTokens(relatedContext.domainWeights, memoryDomains(current), 8);
-
   return memories
     .filter((memory) => memory.id !== current.id)
-    .map((memory) => scoreMemoryForContext(memory, relatedContext, {
-      projectId: "all",
-    }))
-    .filter((item) => item.score >= 24 && relatedEvidenceScore(current, item.memory) >= 2)
+    .filter((memory) => !isDuplicateCandidate(current, memory))
+    .map((memory) => scoreRelatedMemory(current, memory))
+    .filter((item) => {
+      const enoughEvidence =
+        item.reason !== "Recent and useful" || recencyScore(item.memory.createdAt) >= 82;
+      const minimumQuality = qualityScore(item.memory) >= 8 || item.score >= 28;
+      return item.score >= 18 && enoughEvidence && minimumQuality;
+    })
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
 };
@@ -367,9 +409,20 @@ export const getRecallFeed = (
   const openedIds = new Set(context.recentlyOpenedMemoryIds);
   const recentCaptureIds = new Set(context.recentCaptureIds);
 
-  const usefulAgainNow = scored
+  const dueResurfaceItems = getDueResurfaceMemories(candidates, 4).map((memory) => ({
+    memory,
+    score: 120,
+    reason: "Bring back now",
+  }));
+  const dueIds = new Set(dueResurfaceItems.map((item) => item.memory.id));
+
+  const usefulAgainNow = [
+    ...dueResurfaceItems,
+    ...scored
     .filter((item) => item.score >= 26 && !openedIds.has(item.memory.id))
-    .slice(0, 4);
+      .filter((item) => !dueIds.has(item.memory.id))
+      .slice(0, 4),
+  ].slice(0, 4);
   const relatedFromEarlier = scored
     .filter((item) => {
       const openedAt = item.memory.lastOpenedAt;

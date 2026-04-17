@@ -1,5 +1,6 @@
 import {
   Check,
+  Clock3,
   Copy,
   FolderOpen,
   Save,
@@ -28,6 +29,13 @@ import {
 import type { Memory } from "@/domain/types";
 import { tauriClient } from "@/services/api/tauri-client";
 import { getRelatedMemories } from "@/services/context/ContextEngine";
+import {
+  formatResurfaceLabel,
+  fromDatetimeLocalValue,
+  getResurfacePresetDate,
+  isMemoryDueForResurface,
+  toDatetimeLocalValue,
+} from "@/services/resurface/memoryResurface";
 import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -60,6 +68,7 @@ export function MemoryDetail({
   const [editingContent, setEditingContent] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [movingProject, setMovingProject] = useState(false);
+  const [bringBackOpen, setBringBackOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -127,6 +136,8 @@ export function MemoryDetail({
     sourceLabel,
     formatRelativeTimestamp(currentMemory.updatedAt || currentMemory.createdAt),
   ];
+  const resurfaceLabel = formatResurfaceLabel(currentMemory);
+  const isDueForResurface = isMemoryDueForResurface(currentMemory);
 
   useEffect(() => {
     setActiveMemoryId(memory.id);
@@ -137,7 +148,7 @@ export function MemoryDetail({
         currentMemory,
         memories,
         useContextStore.getState().getSessionContext(),
-        4,
+        5,
       ),
     [currentMemory, memories],
   );
@@ -167,6 +178,7 @@ export function MemoryDetail({
     setEditingContent(false);
     setEditingNote(false);
     setMovingProject(false);
+    setBringBackOpen(false);
     setCopied(false);
   }, [currentMemory]);
 
@@ -246,7 +258,7 @@ export function MemoryDetail({
       sourceApp: currentMemory.sourceApp,
       sourceWindow: currentMemory.sourceWindow,
       createdAt: currentMemory.createdAt,
-      updatedAt: currentMemory.updatedAt,
+      updatedAt: null,
     });
     setSaving(false);
 
@@ -269,6 +281,7 @@ export function MemoryDetail({
     setEditingContent(false);
     setEditingNote(false);
     setMovingProject(false);
+    setBringBackOpen(false);
   }
 
   async function copyContent() {
@@ -287,6 +300,16 @@ export function MemoryDetail({
     if (!confirm("Delete this memory? This cannot be undone.")) return;
     await remove(currentMemory.id);
     onClose();
+  }
+
+  async function setBringBack(iso: string | null) {
+    await useMemoryStore.getState().setResurface(currentMemory.id, iso);
+    setBringBackOpen(false);
+  }
+
+  async function dismissBringBack() {
+    await useMemoryStore.getState().dismissResurface(currentMemory.id);
+    setBringBackOpen(false);
   }
 
   function requestClose() {
@@ -372,6 +395,14 @@ export function MemoryDetail({
               ) : (
                 <Copy size={13} strokeWidth={1.9} />
               )}
+            </HeaderAction>
+
+            <HeaderAction
+              label={bringBackOpen ? "Done" : "Bring back"}
+              onClick={() => setBringBackOpen((value) => !value)}
+              active={bringBackOpen || Boolean(currentMemory.resurfaceAt)}
+            >
+              <Clock3 size={13} strokeWidth={1.9} />
             </HeaderAction>
 
             <HeaderAction
@@ -530,6 +561,64 @@ export function MemoryDetail({
                 </select>
               </div>
             )}
+
+            {bringBackOpen && (
+              <div style={{ marginTop: 14 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <BringBackPill label="Later today" onClick={() => void setBringBack(getResurfacePresetDate("later_today"))} />
+                  <BringBackPill label="Tomorrow" onClick={() => void setBringBack(getResurfacePresetDate("tomorrow"))} />
+                  <BringBackPill label="Next week" onClick={() => void setBringBack(getResurfacePresetDate("next_week"))} />
+                  <input
+                    type="datetime-local"
+                    defaultValue={toDatetimeLocalValue(currentMemory.resurfaceAt)}
+                    onChange={(event) => void setBringBack(fromDatetimeLocalValue(event.target.value))}
+                    style={{
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      borderRadius: 10,
+                      color: "rgba(255,255,255,0.62)",
+                      fontSize: 12,
+                      fontFamily: "inherit",
+                      outline: "none",
+                      padding: "8px 10px",
+                    }}
+                  />
+                  {isDueForResurface && (
+                    <BringBackPill label="Dismiss" onClick={() => void dismissBringBack()} />
+                  )}
+                  {currentMemory.resurfaceAt && (
+                    <BringBackPill label="Clear" onClick={() => void setBringBack(null)} muted />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {resurfaceLabel && !bringBackOpen && (
+              <div
+                style={{
+                  marginTop: 14,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  background: isDueForResurface ? "var(--blue-dim)" : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${isDueForResurface ? "var(--blue-border)" : "rgba(255,255,255,0.06)"}`,
+                  color: isDueForResurface ? "var(--blue)" : "rgba(255,255,255,0.42)",
+                  fontSize: 12,
+                }}
+              >
+                <Clock3 size={12} strokeWidth={1.9} />
+                {resurfaceLabel}
+              </div>
+            )}
           </section>
 
           <section style={{ marginBottom: normalizedNote ? 26 : 0 }}>
@@ -681,7 +770,7 @@ export function MemoryDetail({
                   marginBottom: 12,
                 }}
               >
-                Related from earlier
+                Related
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
                 {relatedMemories.map((item) => (
@@ -705,6 +794,34 @@ export function MemoryDetail({
   );
 }
 
+function BringBackPill({
+  label,
+  onClick,
+  muted = false,
+}: {
+  label: string;
+  onClick: () => void;
+  muted?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        border: "1px solid rgba(255,255,255,0.07)",
+        background: "rgba(255,255,255,0.04)",
+        color: muted ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.62)",
+        borderRadius: 999,
+        padding: "8px 11px",
+        fontSize: 12,
+        fontFamily: "inherit",
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function RelatedMemoryButton({
   memory,
   reason,
@@ -714,6 +831,8 @@ function RelatedMemoryButton({
   reason: string;
   onClick: () => void;
 }) {
+  const domain = getMemoryDetailSourceLabel(memory);
+
   return (
     <button
       onClick={onClick}
@@ -756,7 +875,19 @@ function RelatedMemoryButton({
       >
         {getMemoryDisplayPreview(memory, 100)}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.28)" }}>{reason}</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 11,
+          color: "rgba(255,255,255,0.28)",
+        }}
+      >
+        <span>{domain}</span>
+        <MetadataDivider />
+        <span>{reason}</span>
+      </div>
     </button>
   );
 }

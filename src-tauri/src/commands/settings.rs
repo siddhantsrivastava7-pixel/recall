@@ -131,8 +131,8 @@ pub async fn import_data(app: AppHandle, state: State<'_, AppState>) -> AppResul
         sqlx::query(
             r#"
             INSERT INTO memories (
-              id, source_type, title, content, note, project_id, url, domain, resolved_domain, canonical_url, resolved_title, resolved_description, resolved_image, resolved_site_name, preview_text, memory_type, topic_labels, primary_topic, quality_score, bookmark_quality_score, is_duplicate_of, bookmark_folder_path, enrichment_status, enrichment_error, enriched_at, last_enriched_at, external_id, folder_path, source_app, source_window, last_opened_at, open_count, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              id, source_type, title, content, note, project_id, url, domain, resolved_domain, canonical_url, resolved_title, resolved_description, resolved_image, resolved_site_name, preview_text, memory_type, topic_labels, primary_topic, quality_score, bookmark_quality_score, is_duplicate_of, bookmark_folder_path, enrichment_status, enrichment_error, enriched_at, last_enriched_at, external_id, folder_path, source_app, source_window, resurface_at, resurface_dismissed_at, last_opened_at, open_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(memory.id)
@@ -165,6 +165,8 @@ pub async fn import_data(app: AppHandle, state: State<'_, AppState>) -> AppResul
         .bind(memory.folder_path)
         .bind(memory.source_app)
         .bind(memory.source_window)
+        .bind(memory.resurface_at)
+        .bind(memory.resurface_dismissed_at)
         .bind(memory.last_opened_at)
         .bind(memory.open_count)
         .bind(memory.created_at)

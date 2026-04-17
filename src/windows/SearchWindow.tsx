@@ -19,6 +19,7 @@ import {
 import type { Memory, SearchResult } from "@/domain/types";
 import { useRecallDataSyncEvents } from "@/hooks/useRecallDataSyncEvents";
 import { tauriClient } from "@/services/api/tauri-client";
+import { getDueResurfaceMemories } from "@/services/resurface/memoryResurface";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useSearchStore } from "@/stores/searchStore";
 
@@ -30,7 +31,11 @@ export function SearchWindow() {
   const inputRef = useRef<HTMLInputElement>(null);
   useRecallDataSyncEvents();
 
-  const recentMemories = memories.slice(0, 8);
+  const dueMemoryIds = new Set(getDueResurfaceMemories(memories, 4).map((memory) => memory.id));
+  const recentMemories = [
+    ...getDueResurfaceMemories(memories, 4),
+    ...memories.filter((memory) => !dueMemoryIds.has(memory.id)),
+  ].slice(0, 8);
   const hasQuery = query.trim().length > 0;
   const items: SearchListItem[] = hasQuery
     ? results

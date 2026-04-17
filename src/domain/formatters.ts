@@ -134,6 +134,30 @@ const firstSentence = (value: string) => {
   return match?.[1]?.trim() ?? "";
 };
 
+const isLowSignalDomainTitle = (
+  title: string,
+  memory: Pick<Memory, "url" | "domain" | "resolvedDomain" | "content">,
+) => {
+  const normalizedTitle = title.toLowerCase().replace(/^www\./, "");
+  const domain = (
+    memory.resolvedDomain ??
+    memory.domain ??
+    getUrlDomain(memory.url ?? memory.content) ??
+    ""
+  )
+    .toLowerCase()
+    .replace(/^www\./, "");
+
+  return (
+    normalizedTitle === domain ||
+    ["x.com", "twitter.com", "mobile.twitter.com"].includes(normalizedTitle) ||
+    (normalizedTitle.includes("reddit") &&
+      normalizedTitle.includes("please wait") &&
+      normalizedTitle.includes("verification")) ||
+    (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(title) && title.split(/\s+/).length === 1)
+  );
+};
+
 export const getMemoryDisplayProject = (memory: Pick<Memory, "projectName">) =>
   normalizeDisplayText(memory.projectName) || "Inbox";
 
@@ -165,6 +189,10 @@ export const getMemoryDisplayTitle = (
   const resolvedTitle = normalizeDisplayText(memory.resolvedTitle);
 
   if (explicitTitle) {
+    if (resolvedTitle && isLowSignalDomainTitle(explicitTitle, memory)) {
+      return truncate(resolvedTitle, 120);
+    }
+
     if (isUrlLike(explicitTitle)) {
       if (resolvedTitle) {
         return truncate(resolvedTitle, 120);

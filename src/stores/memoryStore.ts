@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { Memory, MemoryFilters, MemoryInput } from "@/domain/types";
-import { deleteMemory, duplicateMemory, updateMemory } from "@/services/memories";
+import {
+  deleteMemory,
+  dismissMemoryResurface,
+  duplicateMemory,
+  setMemoryResurface,
+  updateMemory,
+} from "@/services/memories";
 import { saveCapturedMemory } from "@/services/capture/saveCapturedMemory";
 import { tauriClient } from "@/services/api/tauri-client";
 import {
@@ -37,6 +43,8 @@ interface MemoryStoreState {
   remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
   duplicate: (id: string) => Promise<{ ok: boolean; error?: string }>;
   markOpened: (id: string) => Promise<void>;
+  setResurface: (id: string, resurfaceAt: string | null) => Promise<{ ok: boolean; error?: string }>;
+  dismissResurface: (id: string) => Promise<{ ok: boolean; error?: string }>;
   upsertMemory: (memory: Memory) => void;
   replaceMemory: (memory: Memory) => void;
   clearOperationMessage: () => void;
@@ -143,6 +151,34 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => ({
     } catch (error) {
       console.warn("[recall] Unable to mark memory opened", error);
     }
+  },
+
+  async setResurface(id, resurfaceAt) {
+    const result = await setMemoryResurface(id, resurfaceAt);
+    if (result.ok && result.data) {
+      set(state => ({
+        memories: sortMemoriesByUpdatedAt(
+          state.memories.map(m => m.id === id ? result.data! : m),
+        ),
+        operationMessage: resurfaceAt ? "Memory will come back later." : "Bring back cleared.",
+      }));
+      return { ok: true };
+    }
+    return { ok: false, error: result.error ?? "Failed to update bring-back time." };
+  },
+
+  async dismissResurface(id) {
+    const result = await dismissMemoryResurface(id);
+    if (result.ok && result.data) {
+      set(state => ({
+        memories: sortMemoriesByUpdatedAt(
+          state.memories.map(m => m.id === id ? result.data! : m),
+        ),
+        operationMessage: "Resurfaced memory dismissed.",
+      }));
+      return { ok: true };
+    }
+    return { ok: false, error: result.error ?? "Failed to dismiss resurfaced memory." };
   },
 
   upsertMemory(memory) {

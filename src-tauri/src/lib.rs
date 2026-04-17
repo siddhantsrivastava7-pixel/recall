@@ -12,7 +12,7 @@ use commands::{
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
         create_memory, delete_memory, duplicate_memory, get_memory, list_memories,
-        mark_memory_opened, update_memory,
+        dismiss_memory_resurface, mark_memory_opened, set_memory_resurface, update_memory,
     },
     platform::{detect_app_context, read_clipboard_text, write_clipboard_text},
     projects::{create_project, delete_project, list_projects, update_project},
@@ -301,6 +301,8 @@ pub fn run() {
             delete_memory,
             duplicate_memory,
             mark_memory_opened,
+            set_memory_resurface,
+            dismiss_memory_resurface,
             list_projects,
             create_project,
             update_project,

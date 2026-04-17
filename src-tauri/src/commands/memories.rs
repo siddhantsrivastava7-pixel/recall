@@ -80,3 +80,30 @@ pub async fn mark_memory_opened(
     }
     Ok(memory)
 }
+
+#[tauri::command]
+pub async fn set_memory_resurface(
+    app: AppHandle,
+    id: String,
+    resurface_at: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<Option<Memory>> {
+    let memory = state.memory_service.set_resurface(&id, resurface_at).await?;
+    if let Some(ref memory) = memory {
+        app.emit("recall://memory-saved", memory)?;
+    }
+    Ok(memory)
+}
+
+#[tauri::command]
+pub async fn dismiss_memory_resurface(
+    app: AppHandle,
+    id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<Memory>> {
+    let memory = state.memory_service.dismiss_resurface(&id).await?;
+    if let Some(ref memory) = memory {
+        app.emit("recall://memory-saved", memory)?;
+    }
+    Ok(memory)
+}

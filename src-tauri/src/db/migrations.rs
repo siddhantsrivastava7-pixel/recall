@@ -100,6 +100,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "last_enriched_at", "TEXT").await?;
     ensure_column(pool, "memories", "external_id", "TEXT").await?;
     ensure_column(pool, "memories", "folder_path", "TEXT").await?;
+    ensure_column(pool, "memories", "resurface_at", "TEXT").await?;
+    ensure_column(pool, "memories", "resurface_dismissed_at", "TEXT").await?;
     ensure_column(pool, "memories", "last_opened_at", "TEXT").await?;
     ensure_column(
         pool,

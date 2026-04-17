@@ -25,7 +25,14 @@ export function MemoriesView() {
     .filter(m => {
       if (!filter.trim()) return true;
       const q = filter.toLowerCase();
-      return (m.title || "").toLowerCase().includes(q) || m.content.toLowerCase().includes(q);
+      return [
+        m.title,
+        m.resolvedTitle,
+        m.content,
+        m.previewText,
+        m.resolvedDescription,
+        m.note,
+      ].some((value) => (value || "").toLowerCase().includes(q));
     });
 
   if (sortOrder === "oldest") list = [...list].reverse();
