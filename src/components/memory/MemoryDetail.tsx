@@ -112,21 +112,34 @@ export function MemoryDetail({
     () => normalizeReadingText(currentMemory.resolvedDescription),
     [currentMemory.resolvedDescription],
   );
+  const normalizedSummaryText = useMemo(
+    () => normalizeReadingText(currentMemory.summaryText),
+    [currentMemory.summaryText],
+  );
   const normalizedPreviewText = useMemo(
     () => normalizeReadingText(currentMemory.previewText),
     [currentMemory.previewText],
   );
   const detailReadingContent = useMemo(() => {
     if (isRawUrlContent) {
-      return normalizedResolvedDescription || normalizedPreviewText || normalizedContent;
+      return (
+        normalizedSummaryText ||
+        normalizedResolvedDescription ||
+        normalizedPreviewText ||
+        normalizedContent
+      );
     }
     return normalizedContent;
   }, [
+    normalizedSummaryText,
     normalizedResolvedDescription,
     normalizedPreviewText,
     isRawUrlContent,
     normalizedContent,
   ]);
+  const canEditContentInline = !(
+    isRawUrlContent && detailReadingContent !== normalizedContent
+  );
   const normalizedNote = useMemo(
     () => normalizeReadingText(noteDraft),
     [noteDraft],
@@ -622,7 +635,7 @@ export function MemoryDetail({
           </section>
 
           <section style={{ marginBottom: normalizedNote ? 26 : 0 }}>
-            {editingContent ? (
+            {editingContent && canEditContentInline ? (
               <textarea
                 ref={contentTextareaRef}
                 value={contentDraft}
@@ -633,7 +646,11 @@ export function MemoryDetail({
               />
             ) : (
               <button
-                onClick={() => setEditingContent(true)}
+                onClick={() => {
+                  if (canEditContentInline) {
+                    setEditingContent(true);
+                  }
+                }}
                 style={{
                   width: "100%",
                   background: "none",
@@ -641,7 +658,7 @@ export function MemoryDetail({
                   padding: 0,
                   margin: 0,
                   textAlign: "left",
-                  cursor: "text",
+                  cursor: canEditContentInline ? "text" : "default",
                   font: "inherit",
                 }}
               >

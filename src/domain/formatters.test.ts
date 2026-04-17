@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getMemoryDisplayTitle } from "@/domain/formatters";
+import { getMemoryDisplayPreview, getMemoryDisplayTitle } from "@/domain/formatters";
 import type { Memory } from "@/domain/types";
 
 const baseMemory: Memory = {
@@ -76,5 +76,21 @@ describe("getMemoryDisplayTitle", () => {
     });
 
     expect(result).toBe("Reddit - Tauri App Architecture");
+  });
+});
+
+describe("getMemoryDisplayPreview", () => {
+  it("uses deterministic summary text before falling back to raw content", () => {
+    const result = getMemoryDisplayPreview({
+      ...baseMemory,
+      content: "https://example.com/raw/link",
+      url: "https://example.com/raw/link",
+      domain: "example.com",
+      summaryText: "Saved link from example.com. Open the source to view the saved page.",
+    });
+
+    expect(result).toBe(
+      "Saved link from example.com. Open the source to view the saved page.",
+    );
   });
 });

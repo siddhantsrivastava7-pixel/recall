@@ -20,6 +20,7 @@ import { SettingsView } from "@/components/settings/SettingsView";
 import { InstantCaptureToast } from "@/components/capture/InstantCaptureToast";
 import { tauriClient } from "@/services/api/tauri-client";
 import { useRecallDataSyncEvents } from "@/hooks/useRecallDataSyncEvents";
+import { useResurfaceNotifications } from "@/hooks/useResurfaceNotifications";
 
 export type MainView = "dashboard" | "memories" | "projects" | "settings";
 
@@ -36,6 +37,7 @@ export function MainWindow() {
   const maybeCheckOnStartup = useUpdateStore((state) => state.maybeCheckOnStartup);
   const downloadAndInstallUpdate = useUpdateStore((state) => state.downloadAndInstallUpdate);
   useRecallDataSyncEvents();
+  useResurfaceNotifications();
 
   useEffect(() => {
     let disposed = false;

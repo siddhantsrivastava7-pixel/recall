@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
   Check,
@@ -7,6 +7,7 @@ import {
   Globe,
   MessageSquare,
   Trash,
+  X,
 } from "lucide-react";
 
 import type { Memory } from "@/domain/types";
@@ -41,6 +42,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
   const [noteDraft, setNoteDraft] = useState(memory.note ?? "");
   const [resurfaceOpen, setResurfaceOpen] = useState(false);
   const { remove, update, setResurface, dismissResurface } = useMemoryStore();
+  const resurfaceMenuRef = useRef<HTMLDivElement | null>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
 
   const title = useMemo(() => getMemoryDisplayTitle(memory), [memory]);
@@ -70,6 +72,30 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!resurfaceOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Node && resurfaceMenuRef.current?.contains(target)) {
+        return;
+      }
+      setResurfaceOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setResurfaceOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", closeOnOutsideClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", closeOnOutsideClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [resurfaceOpen]);
 
   async function copyValue(event: React.MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
@@ -220,12 +246,14 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
 
       {resurfaceOpen && (
         <BringBackMenu
+          ref={resurfaceMenuRef}
           currentValue={memory.resurfaceAt}
           due={isDue}
           onPreset={(preset) => void setBringBack(getResurfacePresetDate(preset))}
           onCustom={(value) => void setBringBack(fromDatetimeLocalValue(value))}
           onClear={() => void setBringBack(null)}
           onDismiss={dismissBringBack}
+          onClose={() => setResurfaceOpen(false)}
         />
       )}
 
@@ -381,23 +409,26 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
   );
 }
 
-function BringBackMenu({
-  currentValue,
-  due,
-  onPreset,
-  onCustom,
-  onClear,
-  onDismiss,
-}: {
+const BringBackMenu = forwardRef<HTMLDivElement, {
   currentValue?: string | null;
   due: boolean;
   onPreset: (preset: "later_today" | "tomorrow" | "next_week") => void;
   onCustom: (value: string) => void;
   onClear: () => void;
   onDismiss: (event: React.MouseEvent<HTMLButtonElement>) => void;
-}) {
+  onClose: () => void;
+}>(function BringBackMenu({
+  currentValue,
+  due,
+  onPreset,
+  onCustom,
+  onClear,
+  onDismiss,
+  onClose,
+}, ref) {
   return (
     <div
+      ref={ref}
       onClick={(event) => event.stopPropagation()}
       style={{
         position: "absolute",
@@ -412,6 +443,48 @@ function BringBackMenu({
         boxShadow: "0 18px 50px rgba(0,0,0,0.34)",
       }}
     >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "2px 2px 6px 8px",
+        }}
+      >
+        <span
+          style={{
+            color: "rgba(255,255,255,0.34)",
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+          }}
+        >
+          Bring back
+        </span>
+        <button
+          aria-label="Close bring back menu"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.05)",
+            background: "rgba(255,255,255,0.04)",
+            color: "rgba(255,255,255,0.42)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+          }}
+        >
+          <X size={12} strokeWidth={1.9} />
+        </button>
+      </div>
       <MenuButton label="Later today" onClick={() => onPreset("later_today")} />
       <MenuButton label="Tomorrow" onClick={() => onPreset("tomorrow")} />
       <MenuButton label="Next week" onClick={() => onPreset("next_week")} />
@@ -436,7 +509,7 @@ function BringBackMenu({
       {currentValue && <MenuButton label="Clear bring-back" onClick={onClear} muted />}
     </div>
   );
-}
+});
 
 function MenuButton({
   label,

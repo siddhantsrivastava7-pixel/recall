@@ -238,6 +238,7 @@ export const getMemoryDisplayPreview = (
     | "resolvedTitle"
     | "resolvedDescription"
     | "previewText"
+    | "summaryText"
     | "resolvedSiteName"
     | "content"
     | "note"
@@ -247,10 +248,11 @@ export const getMemoryDisplayPreview = (
     | "folderPath"
     | "bookmarkFolderPath"
     | "sourceType"
-  >,
+>,
   limit = 180,
 ) => {
   const note = normalizeDisplayText(memory.note);
+  const summaryText = normalizeDisplayText(memory.summaryText);
   const previewText = normalizeDisplayText(memory.previewText);
   const resolvedDescription = normalizeDisplayText(memory.resolvedDescription);
   const resolvedSiteName = normalizeDisplayText(memory.resolvedSiteName);
@@ -261,6 +263,7 @@ export const getMemoryDisplayPreview = (
   const urlPath = getUrlPathDisplay(memory.url ?? memory.content, limit);
 
   if (memory.sourceType === "bookmark") {
+    if (summaryText) return truncate(summaryText, limit);
     if (previewText) return truncate(previewText, limit);
     if (resolvedDescription) return truncate(resolvedDescription, limit);
     if (folderPath) return truncate(folderPath, limit);
@@ -276,6 +279,10 @@ export const getMemoryDisplayPreview = (
 
   if (previewText) {
     return truncate(previewText, limit);
+  }
+
+  if (summaryText) {
+    return truncate(summaryText, limit);
   }
 
   if (note && normalizedContent.length > 0 && normalizedContent.length < 32) {

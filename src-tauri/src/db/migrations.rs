@@ -87,6 +87,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "resolved_image", "TEXT").await?;
     ensure_column(pool, "memories", "resolved_site_name", "TEXT").await?;
     ensure_column(pool, "memories", "preview_text", "TEXT").await?;
+    ensure_column(pool, "memories", "summary_text", "TEXT").await?;
     ensure_column(pool, "memories", "memory_type", "TEXT").await?;
     ensure_column(pool, "memories", "topic_labels", "TEXT").await?;
     ensure_column(pool, "memories", "primary_topic", "TEXT").await?;
@@ -109,6 +110,33 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
         "open_count",
         "INTEGER NOT NULL DEFAULT 0",
     )
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE memories
+        SET summary_text = CASE
+          WHEN trim(COALESCE(content, '')) LIKE 'http://%'
+            OR trim(COALESCE(content, '')) LIKE 'https://%'
+          THEN CASE
+            WHEN title IS NOT NULL
+              AND trim(title) != ''
+              AND trim(title) NOT LIKE 'http://%'
+              AND trim(title) NOT LIKE 'https://%'
+              AND instr(trim(title), '.') = 0
+            THEN trim(title)
+            WHEN note IS NOT NULL AND trim(note) != ''
+            THEN substr(replace(replace(trim(note), char(13), ' '), char(10), ' '), 1, 220)
+            WHEN COALESCE(resolved_domain, domain) IS NOT NULL
+            THEN 'Saved link from ' || COALESCE(resolved_domain, domain) || '. Open the source to view the saved page.'
+            ELSE substr(replace(replace(trim(content), char(13), ' '), char(10), ' '), 1, 220)
+          END
+          ELSE substr(replace(replace(trim(content), char(13), ' '), char(10), ' '), 1, 220)
+        END
+        WHERE summary_text IS NULL OR trim(summary_text) = ''
+        "#,
+    )
+    .execute(pool)
     .await?;
     ensure_column(
         pool,

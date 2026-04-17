@@ -39,6 +39,7 @@ export interface Memory {
   resolvedImage?: string | null;
   resolvedSiteName?: string | null;
   previewText?: string | null;
+  summaryText?: string | null;
   memoryType?: MemoryType | null;
   topicLabels?: string[] | null;
   primaryTopic?: string | null;

@@ -497,7 +497,7 @@ const buildFieldAnalyses = (
   const resolvedProjectName =
     projects.find((project) => project.id === memory.projectId)?.name ?? memory.projectName;
   const titleText = [memory.title, memory.resolvedTitle].filter(Boolean).join("\n");
-  const contentText = [memory.content, memory.previewText, memory.resolvedDescription]
+  const contentText = [memory.content, memory.summaryText, memory.previewText, memory.resolvedDescription]
     .filter(Boolean)
     .join("\n");
   const urlText = [

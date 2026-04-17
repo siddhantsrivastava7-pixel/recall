@@ -29,6 +29,7 @@ SELECT
   memories.resolved_image,
   memories.resolved_site_name,
   memories.preview_text,
+  memories.summary_text,
   memories.memory_type,
   memories.topic_labels,
   memories.primary_topic,
@@ -73,6 +74,98 @@ fn source_type_label(source_type: MemorySourceType) -> &'static str {
 
 fn pending_enrichment_status() -> Option<LinkEnrichmentStatus> {
     Some(LinkEnrichmentStatus::Pending)
+}
+
+fn clean_summary_text(value: &str) -> Option<String> {
+    let collapsed = value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
+}
+
+fn trim_summary(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+
+    let truncated = value.chars().take(max_chars).collect::<String>();
+    if let Some((index, _)) = truncated
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '.' | '!' | '?'))
+    {
+        if index >= 48 {
+            return truncated[..=index].trim().to_string();
+        }
+    }
+
+    truncated
+        .rsplit_once(' ')
+        .map(|(head, _)| head)
+        .unwrap_or(truncated.as_str())
+        .trim()
+        .to_string()
+}
+
+fn is_url_only(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("http://") || trimmed.starts_with("https://")
+}
+
+fn looks_like_domain(value: &str) -> bool {
+    let trimmed = value.trim().trim_start_matches("www.").to_ascii_lowercase();
+    trimmed.contains('.') && !trimmed.contains(' ') && !trimmed.starts_with("http")
+}
+
+fn build_summary_text(
+    title: Option<&str>,
+    note: Option<&str>,
+    content: &str,
+    url: Option<&str>,
+    domain: Option<&str>,
+) -> Option<String> {
+    let normalized_content = clean_summary_text(content)?;
+    let content_is_url = is_url_only(&normalized_content);
+
+    let candidates = [
+        if !content_is_url {
+            Some(normalized_content.as_str())
+        } else {
+            None
+        },
+        note,
+        title.filter(|value| !is_url_only(value) && !looks_like_domain(value)),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(cleaned) = clean_summary_text(candidate) {
+            return Some(trim_summary(&cleaned, 220));
+        }
+    }
+
+    if let Some(domain) = domain {
+        return Some(format!(
+            "Saved link from {domain}. Open the source to view the saved page."
+        ));
+    }
+
+    url.and_then(extract_domain).map(|domain| {
+        format!("Saved link from {domain}. Open the source to view the saved page.")
+    })
 }
 
 #[async_trait]
@@ -124,6 +217,13 @@ impl MemoryRepository for SqliteMemoryRepository {
         let domain = input.url.as_deref().and_then(extract_domain);
         let resolved_domain = domain.clone();
         let canonical_url = input.url.clone();
+        let summary_text = build_summary_text(
+            input.title.as_deref(),
+            input.note.as_deref(),
+            &input.content,
+            input.url.as_deref(),
+            domain.as_deref(),
+        );
         let enrichment_status = pending_enrichment_status();
         let bookmark_folder_path = if source_type == MemorySourceType::Bookmark {
             input.folder_path.clone()
@@ -150,6 +250,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_image,
               resolved_site_name,
               preview_text,
+              summary_text,
               memory_type,
               topic_labels,
               primary_topic,
@@ -171,7 +272,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               open_count,
               created_at,
               updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
             "#,
         )
         .bind(&id)
@@ -184,6 +285,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(domain)
         .bind(resolved_domain)
         .bind(canonical_url)
+        .bind(summary_text)
         .bind(bookmark_folder_path)
         .bind(enrichment_status)
         .bind(input.external_id)
@@ -213,6 +315,8 @@ impl MemoryRepository for SqliteMemoryRepository {
         let source_type = input.source_type.unwrap_or(MemorySourceType::Manual);
         let url_changed = input.url != existing.url;
         let enrichment_input_changed = url_changed || input.content != existing.content;
+        let summary_input_changed =
+            enrichment_input_changed || input.title != existing.title || input.note != existing.note;
         let domain = input.url.as_deref().and_then(extract_domain);
         let resolved_domain = if enrichment_input_changed {
             domain.clone()
@@ -259,6 +363,17 @@ impl MemoryRepository for SqliteMemoryRepository {
             None
         } else {
             existing.preview_text.clone()
+        };
+        let summary_text = if summary_input_changed {
+            build_summary_text(
+                input.title.as_deref(),
+                input.note.as_deref(),
+                &input.content,
+                input.url.as_deref(),
+                domain.as_deref(),
+            )
+        } else {
+            existing.summary_text.clone()
         };
         let memory_type = if enrichment_input_changed {
             None
@@ -328,6 +443,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_image = ?,
               resolved_site_name = ?,
               preview_text = ?,
+              summary_text = ?,
               memory_type = ?,
               topic_labels = ?,
               primary_topic = ?,
@@ -361,6 +477,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(resolved_image)
         .bind(resolved_site_name)
         .bind(preview_text)
+        .bind(summary_text)
         .bind(memory_type)
         .bind(topic_labels)
         .bind(primary_topic)
@@ -405,6 +522,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_image = ?,
               resolved_site_name = ?,
               preview_text = ?,
+              summary_text = ?,
               memory_type = ?,
               topic_labels = ?,
               primary_topic = ?,
@@ -429,6 +547,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(enrichment.resolved_image)
         .bind(enrichment.resolved_site_name)
         .bind(enrichment.preview_text)
+        .bind(enrichment.summary_text)
         .bind(enrichment.memory_type)
         .bind(enrichment.topic_labels.map(Json))
         .bind(enrichment.primary_topic)

@@ -633,6 +633,7 @@ mod tests {
             resolved_image: None,
             resolved_site_name: None,
             preview_text: None,
+            summary_text: None,
             memory_type: Some(MemoryType::Bookmark),
             topic_labels: Some(Json(vec![])),
             primary_topic: None,

@@ -459,6 +459,10 @@ mod tests {
         assert_eq!(memory.source_type, MemorySourceType::Manual);
         assert_eq!(memory.title.as_deref(), Some("Pricing strategy"));
         assert_eq!(memory.content, "Pricing strategy\n\nKeep this for later.");
+        assert_eq!(
+            memory.summary_text.as_deref(),
+            Some("Pricing strategy Keep this for later."),
+        );
         assert_eq!(memory.note.as_deref(), Some("Why this matters."));
         assert_eq!(memory.project_id.as_deref(), Some(DEFAULT_INBOX_PROJECT_ID));
         assert_eq!(memory.source_app.as_deref(), Some("Chrome"));
@@ -492,6 +496,10 @@ mod tests {
             Some(LinkEnrichmentStatus::Pending)
         );
         assert_eq!(memory.content, "https://platform.openai.com/docs/pricing");
+        assert_eq!(
+            memory.summary_text.as_deref(),
+            Some("OpenAI pricing docs"),
+        );
         assert_eq!(memory.external_id.as_deref(), Some("bookmark-1"));
         assert_eq!(memory.source_app.as_deref(), Some("chrome"));
         assert_eq!(memory.folder_path.as_deref(), Some("Research / API"));
@@ -549,6 +557,10 @@ mod tests {
             Some("https://example.com/docs/render")
         );
         assert_eq!(memory.domain.as_deref(), Some("example.com"));
+        assert_eq!(
+            memory.summary_text.as_deref(),
+            Some("Saved link from example.com. Open the source to view the saved page."),
+        );
         assert_eq!(
             memory.enrichment_status,
             Some(LinkEnrichmentStatus::Pending)

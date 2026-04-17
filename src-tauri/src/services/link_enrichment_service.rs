@@ -1393,6 +1393,13 @@ fn build_link_enrichment_update(
     let canonical_url = intelligence.canonical_url.or(canonical_url);
     let resolved_domain = intelligence.resolved_domain.or(resolved_domain);
     let preview_text = build_preview_text(memory, resolved_description.as_deref());
+    let summary_text = build_summary_text(
+        memory,
+        resolved_title.as_deref(),
+        resolved_description.as_deref(),
+        preview_text.as_deref(),
+        resolved_domain.as_deref(),
+    );
     let memory_type = classify_memory_type(
         memory,
         resolved_title.as_deref(),
@@ -1423,6 +1430,7 @@ fn build_link_enrichment_update(
         resolved_image,
         resolved_site_name,
         preview_text,
+        summary_text,
         memory_type: Some(memory_type),
         topic_labels: Some(intelligence.topic_labels),
         primary_topic,
@@ -1483,6 +1491,53 @@ fn build_preview_text(memory: &Memory, resolved_description: Option<&str>) -> Op
         .or_else(|| memory.note.as_deref().and_then(clean_display_text))
         .or_else(|| clean_display_text(&memory.content))
         .map(|value| smart_trim_sentence(&value, 190))
+}
+
+fn looks_like_url_or_domain(value: &str) -> bool {
+    let trimmed = value.trim().trim_start_matches("www.").to_ascii_lowercase();
+    trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || (trimmed.contains('.') && !trimmed.contains(' '))
+}
+
+fn build_summary_text(
+    memory: &Memory,
+    resolved_title: Option<&str>,
+    resolved_description: Option<&str>,
+    preview_text: Option<&str>,
+    resolved_domain: Option<&str>,
+) -> Option<String> {
+    let content = clean_display_text(&memory.content);
+    let content_is_url = content
+        .as_deref()
+        .is_some_and(looks_like_url_or_domain);
+
+    let candidates = [
+        resolved_description,
+        preview_text,
+        memory.note.as_deref(),
+        if !content_is_url {
+            content.as_deref()
+        } else {
+            None
+        },
+        resolved_title.filter(|value| !looks_like_url_or_domain(value)),
+        memory
+            .title
+            .as_deref()
+            .filter(|value| !looks_like_url_or_domain(value)),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if let Some(cleaned) = clean_preview_candidate(candidate).or_else(|| clean_display_text(candidate)) {
+            return Some(smart_trim_sentence(&cleaned, 220));
+        }
+    }
+
+    resolved_domain
+        .or(memory.resolved_domain.as_deref())
+        .or(memory.domain.as_deref())
+        .map(|domain| format!("Saved link from {domain}. Open the source to view the saved page."))
 }
 
 fn classify_memory_type(
@@ -1670,6 +1725,7 @@ mod tests {
             resolved_image: None,
             resolved_site_name: None,
             preview_text: None,
+            summary_text: None,
             memory_type: None,
             topic_labels: Some(Json(vec![])),
             primary_topic: None,
