@@ -88,6 +88,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "resolved_site_name", "TEXT").await?;
     ensure_column(pool, "memories", "preview_text", "TEXT").await?;
     ensure_column(pool, "memories", "summary_text", "TEXT").await?;
+    ensure_column(pool, "memories", "extracted_text", "TEXT").await?;
     ensure_column(pool, "memories", "memory_type", "TEXT").await?;
     ensure_column(pool, "memories", "topic_labels", "TEXT").await?;
     ensure_column(pool, "memories", "primary_topic", "TEXT").await?;

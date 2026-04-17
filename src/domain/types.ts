@@ -40,6 +40,7 @@ export interface Memory {
   resolvedSiteName?: string | null;
   previewText?: string | null;
   summaryText?: string | null;
+  extractedText?: string | null;
   memoryType?: MemoryType | null;
   topicLabels?: string[] | null;
   primaryTopic?: string | null;

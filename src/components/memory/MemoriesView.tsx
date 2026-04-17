@@ -29,6 +29,7 @@ export function MemoriesView() {
         m.title,
         m.resolvedTitle,
         m.content,
+        m.extractedText,
         m.previewText,
         m.resolvedDescription,
         m.note,

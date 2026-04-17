@@ -30,6 +30,7 @@ SELECT
   memories.resolved_site_name,
   memories.preview_text,
   memories.summary_text,
+  memories.extracted_text,
   memories.memory_type,
   memories.topic_labels,
   memories.primary_topic,
@@ -251,6 +252,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_site_name,
               preview_text,
               summary_text,
+              extracted_text,
               memory_type,
               topic_labels,
               primary_topic,
@@ -272,7 +274,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               open_count,
               created_at,
               updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
             "#,
         )
         .bind(&id)
@@ -364,6 +366,11 @@ impl MemoryRepository for SqliteMemoryRepository {
         } else {
             existing.preview_text.clone()
         };
+        let extracted_text = if enrichment_input_changed {
+            None
+        } else {
+            existing.extracted_text.clone()
+        };
         let summary_text = if summary_input_changed {
             build_summary_text(
                 input.title.as_deref(),
@@ -444,6 +451,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_site_name = ?,
               preview_text = ?,
               summary_text = ?,
+              extracted_text = ?,
               memory_type = ?,
               topic_labels = ?,
               primary_topic = ?,
@@ -478,6 +486,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(resolved_site_name)
         .bind(preview_text)
         .bind(summary_text)
+        .bind(extracted_text)
         .bind(memory_type)
         .bind(topic_labels)
         .bind(primary_topic)
@@ -523,6 +532,7 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_site_name = ?,
               preview_text = ?,
               summary_text = ?,
+              extracted_text = ?,
               memory_type = ?,
               topic_labels = ?,
               primary_topic = ?,
@@ -548,6 +558,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(enrichment.resolved_site_name)
         .bind(enrichment.preview_text)
         .bind(enrichment.summary_text)
+        .bind(enrichment.extracted_text)
         .bind(enrichment.memory_type)
         .bind(enrichment.topic_labels.map(Json))
         .bind(enrichment.primary_topic)

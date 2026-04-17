@@ -22,6 +22,7 @@ const baseMemory: Memory = {
   resolvedDescription: null,
   resolvedImage: null,
   resolvedSiteName: null,
+  extractedText: null,
   enrichmentStatus: "pending",
   enrichedAt: null,
   externalId: null,
@@ -146,6 +147,23 @@ describe("getMemoryDetailReadingText", () => {
     expect(result).toBe(
       "Let me explain what OpenAI just did with the new Codex update. Because most people are going to miss the actual story here.",
     );
+  });
+
+  it("uses full extracted link text in detail instead of the shorter card preview", () => {
+    const result = getMemoryDetailReadingText({
+      ...baseMemory,
+      content: "https://example.com/article",
+      url: "https://example.com/article",
+      domain: "example.com",
+      previewText: "Short card preview for the saved article.",
+      resolvedDescription: "A concise metadata description.",
+      extractedText:
+        "This is the full extracted article body that should be readable after opening the memory. It preserves enough context that the user understands the link without reopening the browser.",
+      summaryText: "Saved link from example.com. Open the source to view the saved page.",
+    });
+
+    expect(result).toContain("full extracted article body");
+    expect(result).toContain("without reopening the browser");
   });
 
   it("falls back to parsable URL context before generic link text", () => {

@@ -24,6 +24,7 @@ use crate::{
 const MAX_CONCURRENT_ENRICHMENTS: usize = 3;
 const ENRICHMENT_TIMEOUT_SECONDS: u64 = 4;
 const STARTUP_RETRY_LIMIT: usize = 24;
+const MAX_EXTRACTED_TEXT_CHARS: usize = 18_000;
 
 #[derive(Clone, Debug)]
 struct CachedEnrichment {
@@ -37,6 +38,7 @@ struct ExtractedLinkMetadata {
     resolved_description: Option<String>,
     resolved_image: Option<String>,
     resolved_site_name: Option<String>,
+    extracted_text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -463,6 +465,11 @@ fn summarize_metadata(metadata: &ExtractedLinkMetadata) -> String {
             .as_ref()
             .map(|_| "site_name")
             .unwrap_or_default(),
+        metadata
+            .extracted_text
+            .as_ref()
+            .map(|_| "extracted_text")
+            .unwrap_or_default(),
     ]
     .into_iter()
     .filter(|field| !field.is_empty())
@@ -471,12 +478,31 @@ fn summarize_metadata(metadata: &ExtractedLinkMetadata) -> String {
 }
 
 fn collapse_whitespace(value: &str) -> Option<String> {
-    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = decode_basic_entities(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if collapsed.is_empty() {
         None
     } else {
         Some(collapsed)
     }
+}
+
+fn decode_basic_entities(value: &str) -> String {
+    value
+        .replace('\u{00a0}', " ")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&mdash;", "-")
+        .replace("&ndash;", "-")
+        .replace("&hellip;", "...")
 }
 
 fn resolve_url(base_url: &str, value: Option<String>) -> Option<String> {
@@ -588,9 +614,25 @@ fn should_retry_enrichment(memory: &Memory) -> bool {
         .or_else(|| normalize_url_candidate(&memory.content));
     let is_x = url_candidate.as_deref().is_some_and(is_x_or_twitter_url);
     let is_reddit = url_candidate.as_deref().is_some_and(is_reddit_url);
+    let is_done = matches!(memory.enrichment_status, Some(LinkEnrichmentStatus::Done));
+    let extracted_text_missing = memory
+        .extracted_text
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty);
+    let link_should_receive_readable_text = url_candidate.is_some()
+        && is_done
+        && extracted_text_missing
+        && (is_x
+            || is_reddit
+            || matches!(
+                memory.memory_type,
+                Some(MemoryType::Article | MemoryType::Bookmark | MemoryType::Post)
+            ));
 
     (is_x && is_low_signal_x_metadata(memory))
         || (is_reddit && is_low_signal_reddit_metadata(memory))
+        || link_should_receive_readable_text
 }
 
 fn extract_x_handle(url: &str) -> Option<String> {
@@ -653,11 +695,15 @@ fn build_x_metadata(url: &str, embed: XEmbedResponse) -> Option<ExtractedLinkMet
         embed.author_name.as_deref(),
         embed.author_url.as_deref(),
     );
-    let description = embed
+    let extracted_text = embed
         .html
         .as_deref()
         .and_then(extract_text_from_html_fragment)
         .filter(|text| text.len() >= 8);
+    let description = extracted_text
+        .as_deref()
+        .and_then(clean_preview_candidate)
+        .or_else(|| extracted_text.clone());
     let canonical_url = normalize_canonical_url(url).or_else(|| normalize_url_candidate(url));
 
     Some(ExtractedLinkMetadata {
@@ -670,6 +716,7 @@ fn build_x_metadata(url: &str, embed: XEmbedResponse) -> Option<ExtractedLinkMet
         }),
         resolved_image: None,
         resolved_site_name: Some("X".into()),
+        extracted_text,
     })
 }
 
@@ -803,6 +850,7 @@ fn build_reddit_fallback_metadata(url: &str) -> Option<ExtractedLinkMetadata> {
         resolved_description: Some(reddit_description(url, None)),
         resolved_image: None,
         resolved_site_name: Some("Reddit".into()),
+        extracted_text: None,
     })
 }
 
@@ -818,12 +866,16 @@ fn build_reddit_metadata(url: &str, embed: RedditEmbedResponse) -> Option<Extrac
         .and_then(clean_display_text)
         .filter(|title| !looks_like_reddit_verification_text(Some(title)))
         .or(fallback.resolved_title);
-    let description = embed
+    let extracted_text = embed
         .html
         .as_deref()
         .and_then(extract_text_from_html_fragment)
         .filter(|text| text.len() >= 24)
-        .filter(|text| !looks_like_reddit_verification_text(Some(text)))
+        .filter(|text| !looks_like_reddit_verification_text(Some(text)));
+    let description = extracted_text
+        .as_deref()
+        .and_then(clean_preview_candidate)
+        .or_else(|| extracted_text.clone())
         .or_else(|| Some(reddit_description(url, embed.author_name.as_deref())));
     let resolved_image = embed
         .thumbnail_url
@@ -846,6 +898,7 @@ fn build_reddit_metadata(url: &str, embed: RedditEmbedResponse) -> Option<Extrac
         resolved_description: description,
         resolved_image,
         resolved_site_name,
+        extracted_text,
     })
 }
 
@@ -1112,12 +1165,7 @@ fn smart_trim_sentence(value: &str, max_chars: usize) -> String {
 }
 
 fn clean_preview_candidate(value: &str) -> Option<String> {
-    let without_html = value
-        .replace('\u{00a0}', " ")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
+    let without_html = decode_basic_entities(value);
     let cleaned = without_html
         .lines()
         .map(str::trim)
@@ -1134,6 +1182,65 @@ fn clean_preview_candidate(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn clean_extracted_text_candidate(value: &str) -> Option<String> {
+    let decoded = decode_basic_entities(value);
+    let mut lines = Vec::new();
+    let mut previous = String::new();
+
+    for raw_line in decoded.lines() {
+        let line = raw_line
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string();
+
+        if line.len() < 2
+            || is_boilerplate_line(&line)
+            || looks_like_shell_noise(Some(&line))
+            || line.eq_ignore_ascii_case(&previous)
+        {
+            continue;
+        }
+
+        previous = line.clone();
+        lines.push(line);
+    }
+
+    let cleaned = lines.join("\n\n");
+    let word_count = cleaned.split_whitespace().count();
+    if word_count < 8 || cleaned.len() < 50 || looks_like_shell_noise(Some(&cleaned)) {
+        return None;
+    }
+
+    if cleaned.chars().count() <= MAX_EXTRACTED_TEXT_CHARS {
+        return Some(cleaned);
+    }
+
+    let mut end = 0;
+    for (index, character) in cleaned.char_indices() {
+        if index > MAX_EXTRACTED_TEXT_CHARS {
+            break;
+        }
+        if matches!(character, '.' | '!' | '?' | '\n') {
+            end = index + character.len_utf8();
+        }
+    }
+
+    let end = if end >= 800 {
+        end
+    } else {
+        cleaned
+            .char_indices()
+            .take_while(|(index, _)| *index <= MAX_EXTRACTED_TEXT_CHARS)
+            .last()
+            .map(|(index, character)| index + character.len_utf8())
+            .unwrap_or(cleaned.len())
+    };
+
+    Some(format!("{}...", cleaned[..end].trim_end()))
 }
 
 fn remove_non_content_nodes(document: &NodeRef) {
@@ -1176,19 +1283,27 @@ fn remove_non_content_nodes(document: &NodeRef) {
     }
 }
 
-fn clean_article_text(value: &str) -> Option<String> {
-    let cleaned = value
-        .replace('\u{00a0}', " ")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !is_boilerplate_line(line))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+fn extract_readable_node_text(node: &NodeRef) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Ok(nodes) = node.select("h1,h2,h3,p,li,blockquote,pre,code") {
+        for child in nodes {
+            let text = child
+                .as_node()
+                .text_contents()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.len() >= 2 && !is_boilerplate_line(&text) {
+                parts.push(text);
+            }
+        }
+    }
 
-    clean_preview_candidate(&cleaned)
+    if !parts.is_empty() {
+        return clean_extracted_text_candidate(&parts.join("\n\n"));
+    }
+
+    clean_extracted_text_candidate(&node.text_contents())
 }
 
 fn extract_article_text(document: &NodeRef) -> Option<String> {
@@ -1209,7 +1324,7 @@ fn extract_article_text(document: &NodeRef) -> Option<String> {
             continue;
         };
         for node in nodes {
-            let Some(text) = clean_article_text(&node.text_contents()) else {
+            let Some(text) = extract_readable_node_text(node.as_node()) else {
                 continue;
             };
             let score = score_text_candidate(&text);
@@ -1221,7 +1336,7 @@ fn extract_article_text(document: &NodeRef) -> Option<String> {
 
     best.map(|(_, text)| text).or_else(|| {
         let body_text = extract_first_selector_text(document, "body")?;
-        clean_article_text(&body_text)
+        clean_extracted_text_candidate(&body_text)
     })
 }
 
@@ -1254,6 +1369,7 @@ fn build_github_fallback_metadata(url: &str) -> Option<ExtractedLinkMetadata> {
         resolved_description: Some(format!("Saved GitHub page for {repo}.")),
         resolved_image: None,
         resolved_site_name: Some("GitHub".into()),
+        extracted_text: None,
     })
 }
 
@@ -1282,7 +1398,7 @@ fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMeta
         extract_canonical_url(&document, url).or_else(|| normalize_canonical_url(url));
     let json_ld = extract_json_ld_metadata(&document, url);
     remove_non_content_nodes(&document);
-    let article_text = extract_article_text(&document);
+    let extracted_text = extract_article_text(&document);
 
     let title_signal = extract_meta_content(&document, "property", "og:title")
         .or_else(|| extract_meta_content(&document, "name", "twitter:title"))
@@ -1301,7 +1417,7 @@ fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMeta
         .or_else(|| extract_meta_content(&document, "itemprop", "description"))
         .or(json_ld.resolved_description)
         .and_then(|description| clean_preview_candidate(&description))
-        .or(article_text)
+        .or_else(|| extracted_text.as_deref().and_then(clean_preview_candidate))
         .or_else(|| {
             extract_first_selector_text(&document, "body")
                 .and_then(|text| clean_preview_candidate(&text))
@@ -1323,6 +1439,7 @@ fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMeta
         resolved_description,
         resolved_image,
         resolved_site_name,
+        extracted_text,
     };
 
     if title_signal.is_none()
@@ -1371,6 +1488,9 @@ fn build_link_enrichment_update(
     let resolved_description = metadata_ref
         .and_then(|metadata| metadata.resolved_description.clone())
         .or_else(|| memory.resolved_description.clone());
+    let extracted_text = metadata_ref
+        .and_then(|metadata| metadata.extracted_text.clone())
+        .or_else(|| memory.extracted_text.clone());
     let resolved_image = metadata_ref
         .and_then(|metadata| metadata.resolved_image.clone())
         .or_else(|| memory.resolved_image.clone());
@@ -1392,11 +1512,16 @@ fn build_link_enrichment_update(
     );
     let canonical_url = intelligence.canonical_url.or(canonical_url);
     let resolved_domain = intelligence.resolved_domain.or(resolved_domain);
-    let preview_text = build_preview_text(memory, resolved_description.as_deref());
+    let preview_text = build_preview_text(
+        memory,
+        resolved_description.as_deref(),
+        extracted_text.as_deref(),
+    );
     let summary_text = build_summary_text(
         memory,
         resolved_title.as_deref(),
         resolved_description.as_deref(),
+        extracted_text.as_deref(),
         preview_text.as_deref(),
         resolved_domain.as_deref(),
     );
@@ -1411,6 +1536,7 @@ fn build_link_enrichment_update(
         memory,
         resolved_title.as_deref(),
         resolved_description.as_deref(),
+        extracted_text.as_deref(),
         preview_text.as_deref(),
         resolved_domain.as_deref(),
         resolved_image.as_deref(),
@@ -1431,6 +1557,7 @@ fn build_link_enrichment_update(
         resolved_site_name,
         preview_text,
         summary_text,
+        extracted_text,
         memory_type: Some(memory_type),
         topic_labels: Some(intelligence.topic_labels),
         primary_topic,
@@ -1485,9 +1612,14 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn build_preview_text(memory: &Memory, resolved_description: Option<&str>) -> Option<String> {
+fn build_preview_text(
+    memory: &Memory,
+    resolved_description: Option<&str>,
+    extracted_text: Option<&str>,
+) -> Option<String> {
     resolved_description
         .and_then(clean_preview_candidate)
+        .or_else(|| extracted_text.and_then(clean_preview_candidate))
         .or_else(|| memory.note.as_deref().and_then(clean_display_text))
         .or_else(|| clean_display_text(&memory.content))
         .map(|value| smart_trim_sentence(&value, 190))
@@ -1504,6 +1636,7 @@ fn build_summary_text(
     memory: &Memory,
     resolved_title: Option<&str>,
     resolved_description: Option<&str>,
+    extracted_text: Option<&str>,
     preview_text: Option<&str>,
     resolved_domain: Option<&str>,
 ) -> Option<String> {
@@ -1514,6 +1647,7 @@ fn build_summary_text(
 
     let candidates = [
         resolved_description,
+        extracted_text,
         preview_text,
         memory.note.as_deref(),
         if !content_is_url {
@@ -1628,6 +1762,7 @@ fn score_memory_quality(
     memory: &Memory,
     resolved_title: Option<&str>,
     resolved_description: Option<&str>,
+    extracted_text: Option<&str>,
     preview_text: Option<&str>,
     resolved_domain: Option<&str>,
     resolved_image: Option<&str>,
@@ -1647,6 +1782,9 @@ fn score_memory_quality(
     }
     if resolved_description.is_some_and(|value| value.trim().len() >= 32) {
         score += 18.0;
+    }
+    if extracted_text.is_some_and(|value| value.split_whitespace().count() >= 16) {
+        score += 12.0;
     }
     if preview_text.is_some_and(|value| value.trim().len() >= 40) {
         score += 12.0;
@@ -1801,6 +1939,7 @@ mod tests {
             resolved_site_name: None,
             preview_text: None,
             summary_text: None,
+            extracted_text: None,
             memory_type: None,
             topic_labels: Some(Json(vec![])),
             primary_topic: None,
@@ -1990,6 +2129,9 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Recall should save useful context"));
+        let extracted = metadata.extracted_text.as_deref().unwrap_or_default();
+        assert!(extracted.contains("Recall should save useful context"));
+        assert!(extracted.contains("shape raw links into searchable memory objects"));
     }
 
     #[test]
@@ -2051,6 +2193,10 @@ mod tests {
                     resolved_description: Some("Register global shortcuts in a Tauri app.".into()),
                     resolved_image: Some("https://docs.tauri.app/og.png".into()),
                     resolved_site_name: Some("Tauri Docs".into()),
+                    extracted_text: Some(
+                        "Register global shortcuts in a Tauri app without blocking the main UI thread."
+                            .into(),
+                    ),
                 }),
                 error: None,
             },
@@ -2091,6 +2237,19 @@ mod tests {
         memory.preview_text =
             Some("<style> body { font-family: Helvetica; background-color: #fff; }".into());
         memory.enrichment_status = Some(LinkEnrichmentStatus::Done);
+
+        assert!(should_retry_enrichment(&memory));
+    }
+
+    #[test]
+    fn done_link_without_extracted_text_is_retried_for_readable_body() {
+        let mut memory = test_memory("https://example.com/article");
+        memory.url = Some("https://example.com/article".into());
+        memory.domain = Some("example.com".into());
+        memory.memory_type = Some(MemoryType::Article);
+        memory.enrichment_status = Some(LinkEnrichmentStatus::Done);
+        memory.resolved_description = Some("A short existing card preview.".into());
+        memory.extracted_text = None;
 
         assert!(should_retry_enrichment(&memory));
     }
@@ -2137,6 +2296,11 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Tauri app architecture"));
+        assert!(metadata
+            .extracted_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Tauri app architecture"));
     }
 
     #[test]
@@ -2170,6 +2334,11 @@ mod tests {
         );
         assert!(metadata
             .resolved_description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Save fast"));
+        assert!(metadata
+            .extracted_text
             .as_deref()
             .unwrap_or_default()
             .contains("Save fast"));

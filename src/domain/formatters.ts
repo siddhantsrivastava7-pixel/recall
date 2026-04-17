@@ -359,6 +359,7 @@ export const getMemoryDetailReadingText = (
     | "resolvedDescription"
     | "previewText"
     | "summaryText"
+    | "extractedText"
     | "url"
     | "domain"
     | "resolvedDomain"
@@ -371,6 +372,7 @@ export const getMemoryDetailReadingText = (
   }
 
   const richCandidates = [
+    normalizeReadingText(memory.extractedText),
     normalizeReadingText(memory.previewText),
     normalizeReadingText(memory.resolvedDescription),
     normalizeReadingText(memory.summaryText),
@@ -392,6 +394,7 @@ export const getMemoryDisplayPreview = (
     | "resolvedDescription"
     | "previewText"
     | "summaryText"
+    | "extractedText"
     | "resolvedSiteName"
     | "content"
     | "note"
@@ -407,6 +410,7 @@ export const getMemoryDisplayPreview = (
   const note = normalizeDisplayText(memory.note);
   const summaryText = normalizeDisplayText(memory.summaryText);
   const previewText = normalizeDisplayText(memory.previewText);
+  const extractedText = normalizeDisplayText(memory.extractedText);
   const resolvedDescription = normalizeDisplayText(memory.resolvedDescription);
   const resolvedSiteName = normalizeDisplayText(memory.resolvedSiteName);
   const normalizedContent = normalizeDisplayText(memory.content);
@@ -414,7 +418,7 @@ export const getMemoryDisplayPreview = (
   const folderPath = normalizeDisplayText(memory.bookmarkFolderPath ?? memory.folderPath);
   const urlDomain = memory.resolvedDomain ?? memory.domain ?? getUrlDomain(memory.url ?? memory.content);
   const urlPath = getUrlPathDisplay(memory.url ?? memory.content, limit);
-  const richSourcePreview = [previewText, resolvedDescription, summaryText].find(
+  const richSourcePreview = [previewText, resolvedDescription, summaryText, extractedText].find(
     (candidate) => candidate && !isGenericSavedLinkSummary(candidate),
   );
 
@@ -470,6 +474,7 @@ export const hasMeaningfulMemoryPreview = (
     | "resolvedDescription"
     | "previewText"
     | "summaryText"
+    | "extractedText"
     | "resolvedSiteName"
     | "content"
     | "note"
