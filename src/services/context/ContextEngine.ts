@@ -14,24 +14,54 @@ const STOPWORDS = new Set([
   "about",
   "an",
   "and",
+  "app",
+  "browser",
+  "co",
+  "com",
+  "context",
+  "dev",
   "for",
   "from",
+  "http",
+  "https",
   "i",
   "in",
+  "inbox",
+  "io",
   "it",
+  "link",
   "me",
   "my",
+  "net",
   "of",
   "on",
   "or",
+  "org",
+  "page",
+  "project",
+  "recall",
   "saved",
   "show",
+  "site",
   "that",
   "the",
   "thing",
   "this",
   "to",
+  "url",
   "with",
+  "www",
+]);
+
+const BROAD_RELATION_DOMAINS = new Set([
+  "docs.google.com",
+  "github.com",
+  "google.com",
+  "mobile.twitter.com",
+  "twitter.com",
+  "x.com",
+  "youtu.be",
+  "youtube.com",
 ]);
 
 export interface SessionContextInput {
@@ -71,7 +101,7 @@ const tokenize = (value: string | null | undefined) =>
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .split(" ")
-    .filter((token) => token.length > 2 && !STOPWORDS.has(token));
+    .filter((token) => token.length > 1 && !STOPWORDS.has(token));
 
 const unique = <T>(values: T[]) => Array.from(new Set(values));
 
@@ -90,6 +120,14 @@ const memoryDomains = (memory: Memory) =>
     ]
       .filter(Boolean)
       .flatMap((domain) => tokenize(domain)),
+  );
+
+const memoryDomainValues = (memory: Memory) =>
+  unique(
+    [getMemoryDisplayDomain(memory), memory.domain, memory.resolvedDomain, memory.sourceApp]
+      .filter(Boolean)
+      .map((domain) => normalizeDisplayText(domain).toLowerCase().replace(/^www\./, ""))
+      .filter(Boolean),
   );
 
 const qualityScore = (memory: Memory) =>
@@ -168,10 +206,33 @@ const relationReason = (
   domainOverlap: number,
   projectBoost: number,
 ) => {
-  if (projectBoost > 0) return "Project context";
   if (domainOverlap > topicOverlap) return "Same domain";
   if (topicOverlap > 0) return "Related topic";
+  if (projectBoost > 0) return "Project context";
   return "Useful again";
+};
+
+const sharedTokenCount = (left: string[], right: string[]) => {
+  const rightSet = new Set(right);
+  return unique(left).filter((token) => rightSet.has(token)).length;
+};
+
+const relatedEvidenceScore = (current: Memory, candidate: Memory) => {
+  const topicOverlap = sharedTokenCount(memoryTopics(current), memoryTopics(candidate));
+  const currentDomains = memoryDomainValues(current);
+  const candidateDomains = new Set(memoryDomainValues(candidate));
+  const domainOverlap = currentDomains.filter(
+    (domain) => candidateDomains.has(domain) && !BROAD_RELATION_DOMAINS.has(domain),
+  ).length;
+  const currentTextTokens = tokenize(
+    `${getMemoryDisplayTitle(current)} ${getMemoryDisplayPreview(current, 180)}`,
+  ).filter((token) => !/^\d+$/.test(token));
+  const candidateTextTokens = tokenize(
+    `${getMemoryDisplayTitle(candidate)} ${getMemoryDisplayPreview(candidate, 180)}`,
+  ).filter((token) => !/^\d+$/.test(token));
+  const textOverlap = sharedTokenCount(currentTextTokens, candidateTextTokens);
+
+  return topicOverlap * 3 + domainOverlap * 2 + Math.max(0, textOverlap - 1);
 };
 
 export const scoreMemoryForContext = (
@@ -260,9 +321,9 @@ export const getRelatedMemories = (
   return memories
     .filter((memory) => memory.id !== current.id)
     .map((memory) => scoreMemoryForContext(memory, relatedContext, {
-      projectId: current.projectId ?? context.activeProjectId,
+      projectId: "all",
     }))
-    .filter((item) => item.score >= 24)
+    .filter((item) => item.score >= 24 && relatedEvidenceScore(current, item.memory) >= 2)
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
 };

@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use chrono::Utc;
 use kuchikiki::{parse_html, traits::TendrilSink, NodeRef};
 use reqwest::{header, Client};
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
@@ -35,6 +36,13 @@ struct ExtractedLinkMetadata {
     resolved_description: Option<String>,
     resolved_image: Option<String>,
     resolved_site_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XEmbedResponse {
+    author_name: Option<String>,
+    author_url: Option<String>,
+    html: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +266,28 @@ impl LinkEnrichmentService {
     }
 
     async fn fetch_enrichment(&self, url: &str) -> AppResult<ExtractedLinkMetadata> {
+        match self.fetch_html_metadata(url).await {
+            Ok(metadata) => Ok(metadata),
+            Err(primary_error) => {
+                if is_x_or_twitter_url(url) {
+                    match self.fetch_x_embed_metadata(url).await {
+                        Ok(metadata) => Ok(metadata),
+                        Err(embed_error) => {
+                            debug_enrichment_log(format!(
+                                "x-embed-fallback url={} html_error={} embed_error={}",
+                                url, primary_error, embed_error
+                            ));
+                            build_x_fallback_metadata(url).ok_or(primary_error)
+                        }
+                    }
+                } else {
+                    Err(primary_error)
+                }
+            }
+        }
+    }
+
+    async fn fetch_html_metadata(&self, url: &str) -> AppResult<ExtractedLinkMetadata> {
         let response = self.client.get(url).send().await?;
         let status = response.status();
         if !status.is_success() {
@@ -286,6 +316,32 @@ impl LinkEnrichmentService {
         extract_metadata_from_html(url, &html).ok_or_else(|| {
             crate::errors::app_error::AppError::Invalid(
                 "No usable metadata found for URL enrichment.".into(),
+            )
+        })
+    }
+
+    async fn fetch_x_embed_metadata(&self, url: &str) -> AppResult<ExtractedLinkMetadata> {
+        let endpoint = Url::parse_with_params(
+            "https://publish.twitter.com/oembed",
+            &[("url", url), ("omit_script", "true"), ("dnt", "true")],
+        )?;
+        let response = self
+            .client
+            .get(endpoint)
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(crate::errors::app_error::AppError::Invalid(format!(
+                "X oEmbed failed with status {status}",
+            )));
+        }
+
+        let embed = response.json::<XEmbedResponse>().await?;
+        build_x_metadata(url, embed).ok_or_else(|| {
+            crate::errors::app_error::AppError::Invalid(
+                "No usable X oEmbed metadata found.".into(),
             )
         })
     }
@@ -349,6 +405,112 @@ fn resolve_url(base_url: &str, value: Option<String>) -> Option<String> {
     let base = Url::parse(base_url).ok()?;
     let joined = base.join(&value).ok()?;
     normalize_url_candidate(joined.as_str())
+}
+
+fn parsed_url(url: &str) -> Option<Url> {
+    normalize_url_candidate(url).and_then(|normalized| Url::parse(&normalized).ok())
+}
+
+fn is_x_or_twitter_url(url: &str) -> bool {
+    parsed_url(url)
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        .is_some_and(|host| {
+            matches!(
+                host.trim_start_matches("www."),
+                "x.com" | "twitter.com" | "mobile.twitter.com"
+            )
+        })
+}
+
+fn extract_x_handle(url: &str) -> Option<String> {
+    let parsed = parsed_url(url)?;
+    let host = parsed.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
+    if !matches!(host.as_str(), "x.com" | "twitter.com" | "mobile.twitter.com") {
+        return None;
+    }
+
+    parsed
+        .path_segments()?
+        .find(|segment| {
+            !segment.is_empty()
+                && !matches!(
+                    segment.to_ascii_lowercase().as_str(),
+                    "i" | "status" | "statuses" | "intent" | "share"
+                )
+        })
+        .map(|segment| segment.trim_start_matches('@').to_string())
+        .filter(|handle| !handle.is_empty())
+}
+
+fn clean_embed_text(value: &str) -> Option<String> {
+    clean_display_text(value).map(|text| {
+        text.replace("pic.twitter.com", " pic.twitter.com")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
+fn extract_text_from_html_fragment(html: &str) -> Option<String> {
+    let document = parse_html().one(html).document_node;
+    clean_embed_text(&document.text_contents())
+}
+
+fn x_author_label(url: &str, author_name: Option<&str>, author_url: Option<&str>) -> String {
+    let author = author_name.and_then(clean_embed_text);
+    let handle = author_url
+        .and_then(extract_x_handle)
+        .or_else(|| extract_x_handle(url));
+
+    match (author, handle) {
+        (Some(author), Some(handle)) if !author.eq_ignore_ascii_case(&handle) => {
+            format!("{author} (@{handle})")
+        }
+        (Some(author), _) => author,
+        (_, Some(handle)) => format!("@{handle}"),
+        _ => "X".into(),
+    }
+}
+
+fn build_x_metadata(url: &str, embed: XEmbedResponse) -> Option<ExtractedLinkMetadata> {
+    if !is_x_or_twitter_url(url) {
+        return None;
+    }
+
+    let author_label = x_author_label(
+        url,
+        embed.author_name.as_deref(),
+        embed.author_url.as_deref(),
+    );
+    let description = embed
+        .html
+        .as_deref()
+        .and_then(extract_text_from_html_fragment)
+        .filter(|text| text.len() >= 8);
+    let canonical_url = normalize_canonical_url(url).or_else(|| normalize_url_candidate(url));
+
+    Some(ExtractedLinkMetadata {
+        canonical_url,
+        resolved_title: Some(format!("X post by {author_label}")),
+        resolved_description: description.or_else(|| {
+            Some(format!(
+                "Saved X post by {author_label}. Open the source to read the full post."
+            ))
+        }),
+        resolved_image: None,
+        resolved_site_name: Some("X".into()),
+    })
+}
+
+fn build_x_fallback_metadata(url: &str) -> Option<ExtractedLinkMetadata> {
+    build_x_metadata(
+        url,
+        XEmbedResponse {
+            author_name: None,
+            author_url: None,
+            html: None,
+        },
+    )
 }
 
 fn attribute_value(node: &NodeRef, key: &str) -> Option<String> {
@@ -753,8 +915,8 @@ mod tests {
     };
 
     use super::{
-        build_link_enrichment_update, extract_metadata_from_html, EnrichmentOutcome,
-        ExtractedLinkMetadata,
+        build_link_enrichment_update, build_x_fallback_metadata, build_x_metadata,
+        extract_metadata_from_html, EnrichmentOutcome, ExtractedLinkMetadata, XEmbedResponse,
     };
 
     fn test_memory(content: &str) -> Memory {
@@ -905,5 +1067,45 @@ mod tests {
         assert_eq!(update.resolved_title.as_deref(), Some("Global Shortcut Plugin"));
         assert_eq!(update.resolved_domain.as_deref(), Some("docs.tauri.app"));
         assert!(update.quality_score.unwrap_or_default() >= 70.0);
+    }
+
+    #[test]
+    fn x_url_fallback_creates_searchable_metadata() {
+        let metadata = build_x_fallback_metadata("https://x.com/VaibhavSainty/status/204846683083919547")
+            .expect("x fallback metadata");
+
+        assert_eq!(
+            metadata.resolved_title.as_deref(),
+            Some("X post by @VaibhavSainty"),
+        );
+        assert_eq!(metadata.resolved_site_name.as_deref(), Some("X"));
+        assert!(metadata
+            .resolved_description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("@VaibhavSainty"));
+    }
+
+    #[test]
+    fn x_oembed_metadata_uses_embedded_post_text() {
+        let metadata = build_x_metadata(
+            "https://x.com/RecallHQ/status/123",
+            XEmbedResponse {
+                author_name: Some("Recall".into()),
+                author_url: Some("https://x.com/RecallHQ".into()),
+                html: Some("<blockquote>Save fast, find fast. <a>April 17, 2026</a></blockquote>".into()),
+            },
+        )
+        .expect("x embed metadata");
+
+        assert_eq!(
+            metadata.resolved_title.as_deref(),
+            Some("X post by Recall (@RecallHQ)"),
+        );
+        assert!(metadata
+            .resolved_description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Save fast"));
     }
 }

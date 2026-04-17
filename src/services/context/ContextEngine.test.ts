@@ -123,6 +123,37 @@ describe("ContextEngine", () => {
     expect(getRelatedMemories(current, [current, related], context)[0]?.memory.id).toBe("ci-notes");
   });
 
+  it("does not treat shared inbox or weak .com metadata as a relation", () => {
+    const current = memory({
+      id: "x-post",
+      title: "X post by @founder",
+      content: "https://x.com/founder/status/123456789",
+      projectId: "inbox",
+      projectName: "Inbox",
+      domain: "x.com",
+      topicLabels: ["Founder"],
+      qualityScore: 42,
+    });
+    const unrelated = memory({
+      id: "hotel",
+      title: "The Waverly Hotel",
+      content: "https://makemytrip.com/hotels/example",
+      projectId: "inbox",
+      projectName: "Inbox",
+      domain: "makemytrip.com",
+      topicLabels: ["Hotel"],
+      qualityScore: 90,
+    });
+    const context = buildSessionContext([current, unrelated], {
+      recentQueries: [],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "inbox",
+    });
+
+    expect(getRelatedMemories(current, [current, unrelated], context)).toHaveLength(0);
+  });
+
   it("suggests memories relevant to an active project", () => {
     const projects = [project("project-pricing", "Pricing")];
     const memories = [
