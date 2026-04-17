@@ -4,6 +4,8 @@ import { searchMemories } from "@/services/search/searchMemories";
 export type CaptureTraceOrigin =
   | "quick-capture"
   | "shortcut"
+  | "drop-capture"
+  | "instant-clipboard"
   | "manual"
   | "bookmark-import";
 

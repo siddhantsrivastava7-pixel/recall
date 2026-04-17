@@ -255,6 +255,12 @@ export function QuickSaveWindow() {
               ref={textareaRef}
               value={content}
               onChange={(event) => setContent(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+                  event.preventDefault();
+                  void handleSave();
+                }
+              }}
               placeholder="Capture a thought..."
               rows={expanded ? 3 : 4}
               style={{

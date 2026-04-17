@@ -86,15 +86,28 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "resolved_description", "TEXT").await?;
     ensure_column(pool, "memories", "resolved_image", "TEXT").await?;
     ensure_column(pool, "memories", "resolved_site_name", "TEXT").await?;
+    ensure_column(pool, "memories", "preview_text", "TEXT").await?;
+    ensure_column(pool, "memories", "memory_type", "TEXT").await?;
     ensure_column(pool, "memories", "topic_labels", "TEXT").await?;
+    ensure_column(pool, "memories", "primary_topic", "TEXT").await?;
+    ensure_column(pool, "memories", "quality_score", "REAL").await?;
     ensure_column(pool, "memories", "bookmark_quality_score", "REAL").await?;
     ensure_column(pool, "memories", "is_duplicate_of", "TEXT").await?;
     ensure_column(pool, "memories", "bookmark_folder_path", "TEXT").await?;
     ensure_column(pool, "memories", "enrichment_status", "TEXT").await?;
+    ensure_column(pool, "memories", "enrichment_error", "TEXT").await?;
     ensure_column(pool, "memories", "enriched_at", "TEXT").await?;
     ensure_column(pool, "memories", "last_enriched_at", "TEXT").await?;
     ensure_column(pool, "memories", "external_id", "TEXT").await?;
     ensure_column(pool, "memories", "folder_path", "TEXT").await?;
+    ensure_column(pool, "memories", "last_opened_at", "TEXT").await?;
+    ensure_column(
+        pool,
+        "memories",
+        "open_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     ensure_column(
         pool,
         "license_state",

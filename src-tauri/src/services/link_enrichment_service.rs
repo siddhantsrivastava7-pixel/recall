@@ -10,7 +10,7 @@ use url::Url;
 use crate::{
     db::repositories::SharedMemoryRepository,
     errors::app_error::AppResult,
-    models::{LinkEnrichmentStatus, LinkEnrichmentUpdate, Memory},
+    models::{LinkEnrichmentStatus, LinkEnrichmentUpdate, Memory, MemorySourceType, MemoryType},
     services::{
         bookmark_intelligence_service::{
             derive_bookmark_intelligence, normalize_canonical_url, BookmarkMetadataContext,
@@ -35,6 +35,15 @@ struct ExtractedLinkMetadata {
     resolved_description: Option<String>,
     resolved_image: Option<String>,
     resolved_site_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+enum EnrichmentOutcome {
+    Link {
+        metadata: Option<ExtractedLinkMetadata>,
+        error: Option<String>,
+    },
+    Text,
 }
 
 #[derive(Clone)]
@@ -85,13 +94,20 @@ impl LinkEnrichmentService {
     }
 
     pub async fn schedule_for_memory(&self, app: AppHandle, memory: Memory) {
-        let Some(url) = memory.url.as_deref().and_then(normalize_url_candidate) else {
-            return;
-        };
-
         if matches!(memory.enrichment_status, Some(LinkEnrichmentStatus::Done)) {
             return;
         }
+
+        let Some(url) = memory.url.as_deref().and_then(normalize_url_candidate) else {
+            let service = self.clone();
+            let memory_id = memory.id.clone();
+            tauri::async_runtime::spawn(async move {
+                service
+                    .apply_enrichment_to_memory(app, &memory_id, EnrichmentOutcome::Text)
+                    .await;
+            });
+            return;
+        };
 
         if let Some(cached) = self.cache.lock().await.get(&url).cloned() {
             let service = self.clone();
@@ -123,7 +139,6 @@ impl LinkEnrichmentService {
     pub async fn resume_incomplete_enrichments(&self, app: AppHandle, memories: Vec<Memory>) {
         let candidates = memories
             .into_iter()
-            .filter(|memory| memory.url.is_some())
             .filter(|memory| !matches!(memory.enrichment_status, Some(LinkEnrichmentStatus::Done)))
             .take(STARTUP_RETRY_LIMIT)
             .collect::<Vec<_>>();
@@ -145,8 +160,14 @@ impl LinkEnrichmentService {
         memory_id: String,
         metadata: ExtractedLinkMetadata,
     ) {
-        let all_memories = self.repository.list().await.unwrap_or_default();
-        self.apply_metadata_to_memory(app, &memory_id, Some(&metadata), &all_memories)
+        self.apply_enrichment_to_memory(
+            app,
+            &memory_id,
+            EnrichmentOutcome::Link {
+                metadata: Some(metadata),
+                error: None,
+            },
+        )
             .await;
     }
 
@@ -159,7 +180,7 @@ impl LinkEnrichmentService {
         let started_at = Instant::now();
         debug_enrichment_log(format!("started url={url}"));
 
-        let fetched_metadata = match self.fetch_enrichment(&url).await {
+        let (fetched_metadata, fetch_error) = match self.fetch_enrichment(&url).await {
             Ok(metadata) => {
                 debug_enrichment_log(format!(
                     "success url={} duration_ms={} fields={}",
@@ -167,16 +188,17 @@ impl LinkEnrichmentService {
                     started_at.elapsed().as_millis(),
                     summarize_metadata(&metadata),
                 ));
-                Some(metadata)
+                (Some(metadata), None)
             }
             Err(error) => {
+                let error_message = error.to_string();
                 debug_enrichment_log(format!(
                     "failure url={} duration_ms={} error={}",
                     url,
                     started_at.elapsed().as_millis(),
-                    error,
+                    error_message,
                 ));
-                None
+                (None, Some(error_message))
             }
         };
 
@@ -189,14 +211,15 @@ impl LinkEnrichmentService {
             let mut inflight = self.inflight_urls.lock().await;
             inflight.remove(&url).unwrap_or_default()
         };
-        let all_memories = self.repository.list().await.unwrap_or_default();
 
         for memory_id in waiting_ids {
-            self.apply_metadata_to_memory(
+            self.apply_enrichment_to_memory(
                 app.clone(),
                 &memory_id,
-                fetched_metadata.as_ref(),
-                &all_memories,
+                EnrichmentOutcome::Link {
+                    metadata: fetched_metadata.clone(),
+                    error: fetch_error.clone(),
+                },
             )
             .await;
         }
@@ -204,17 +227,17 @@ impl LinkEnrichmentService {
         drop(permit);
     }
 
-    async fn apply_metadata_to_memory(
+    async fn apply_enrichment_to_memory(
         &self,
         app: AppHandle,
         memory_id: &str,
-        metadata: Option<&ExtractedLinkMetadata>,
-        all_memories: &[Memory],
+        outcome: EnrichmentOutcome,
     ) {
         let Some(memory) = self.repository.find(memory_id).await.ok().flatten() else {
             return;
         };
-        let update = build_link_enrichment_update(&memory, metadata, all_memories);
+        let all_memories = self.repository.list().await.unwrap_or_default();
+        let update = build_link_enrichment_update(&memory, outcome, &all_memories);
 
         match self
             .repository
@@ -422,10 +445,15 @@ fn extract_metadata_from_html(url: &str, html: &str) -> Option<ExtractedLinkMeta
 
 fn build_link_enrichment_update(
     memory: &Memory,
-    metadata: Option<&ExtractedLinkMetadata>,
+    outcome: EnrichmentOutcome,
     all_memories: &[Memory],
 ) -> LinkEnrichmentUpdate {
-    let canonical_url = metadata
+    let (metadata, fetch_error, is_text_only) = match outcome {
+        EnrichmentOutcome::Link { metadata, error } => (metadata, error, false),
+        EnrichmentOutcome::Text => (None, None, true),
+    };
+    let metadata_ref = metadata.as_ref();
+    let canonical_url = metadata_ref
         .and_then(|metadata| metadata.canonical_url.as_deref())
         .and_then(normalize_canonical_url)
         .or_else(|| {
@@ -438,69 +466,336 @@ fn build_link_enrichment_update(
     let effective_url = canonical_url
         .clone()
         .or_else(|| memory.url.clone())
-        .unwrap_or_else(|| memory.content.clone());
+        .or_else(|| normalize_url_candidate(&memory.content));
     let resolved_domain = canonical_url
         .as_deref()
         .and_then(extract_domain)
         .or_else(|| memory.url.as_deref().and_then(extract_domain))
         .or_else(|| memory.domain.clone());
+    let resolved_title = metadata_ref
+        .and_then(|metadata| metadata.resolved_title.clone())
+        .or_else(|| memory.resolved_title.clone());
+    let resolved_description = metadata_ref
+        .and_then(|metadata| metadata.resolved_description.clone())
+        .or_else(|| memory.resolved_description.clone());
+    let resolved_image = metadata_ref
+        .and_then(|metadata| metadata.resolved_image.clone())
+        .or_else(|| memory.resolved_image.clone());
+    let resolved_site_name = metadata_ref
+        .and_then(|metadata| metadata.resolved_site_name.clone())
+        .or_else(|| memory.resolved_site_name.clone());
 
     let intelligence = derive_bookmark_intelligence(
         memory,
         &BookmarkMetadataContext {
-            url: effective_url.clone(),
+            url: effective_url.clone().unwrap_or_else(|| memory.content.clone()),
             canonical_url: canonical_url.clone(),
-            resolved_title: metadata
-                .and_then(|metadata| metadata.resolved_title.clone())
-                .or_else(|| memory.resolved_title.clone()),
-            resolved_description: metadata
-                .and_then(|metadata| metadata.resolved_description.clone())
-                .or_else(|| memory.resolved_description.clone()),
-            resolved_image: metadata
-                .and_then(|metadata| metadata.resolved_image.clone())
-                .or_else(|| memory.resolved_image.clone()),
-            resolved_site_name: metadata
-                .and_then(|metadata| metadata.resolved_site_name.clone())
-                .or_else(|| memory.resolved_site_name.clone()),
+            resolved_title: resolved_title.clone(),
+            resolved_description: resolved_description.clone(),
+            resolved_image: resolved_image.clone(),
+            resolved_site_name: resolved_site_name.clone(),
         },
         all_memories,
     );
+    let canonical_url = intelligence.canonical_url.or(canonical_url);
+    let resolved_domain = intelligence.resolved_domain.or(resolved_domain);
+    let preview_text = build_preview_text(memory, resolved_description.as_deref());
+    let memory_type = classify_memory_type(
+        memory,
+        resolved_title.as_deref(),
+        resolved_description.as_deref(),
+        resolved_site_name.as_deref(),
+        effective_url.as_deref().or(memory.url.as_deref()),
+    );
+    let quality_score = score_memory_quality(
+        memory,
+        resolved_title.as_deref(),
+        resolved_description.as_deref(),
+        preview_text.as_deref(),
+        resolved_domain.as_deref(),
+        resolved_image.as_deref(),
+        intelligence.is_duplicate_of.is_some(),
+        metadata.is_some() || is_text_only,
+    );
+    let primary_topic = intelligence.topic_labels.first().cloned();
     let timestamp = Some(Utc::now().to_rfc3339());
 
     LinkEnrichmentUpdate {
         url: effective_url,
         domain: resolved_domain.clone(),
-        resolved_domain: intelligence.resolved_domain.or(resolved_domain),
+        resolved_domain,
         canonical_url,
-        resolved_title: metadata
-            .and_then(|metadata| metadata.resolved_title.clone())
-            .or_else(|| memory.resolved_title.clone()),
-        resolved_description: metadata
-            .and_then(|metadata| metadata.resolved_description.clone())
-            .or_else(|| memory.resolved_description.clone()),
-        resolved_image: metadata
-            .and_then(|metadata| metadata.resolved_image.clone())
-            .or_else(|| memory.resolved_image.clone()),
-        resolved_site_name: metadata
-            .and_then(|metadata| metadata.resolved_site_name.clone())
-            .or_else(|| memory.resolved_site_name.clone()),
+        resolved_title,
+        resolved_description,
+        resolved_image,
+        resolved_site_name,
+        preview_text,
+        memory_type: Some(memory_type),
         topic_labels: Some(intelligence.topic_labels),
+        primary_topic,
+        quality_score: Some(quality_score),
         bookmark_quality_score: Some(intelligence.bookmark_quality_score),
         is_duplicate_of: intelligence.is_duplicate_of,
         bookmark_folder_path: intelligence.bookmark_folder_path,
-        enrichment_status: if metadata.is_some() {
+        enrichment_status: if metadata.is_some() || is_text_only {
             LinkEnrichmentStatus::Done
         } else {
             LinkEnrichmentStatus::Failed
         },
+        enrichment_error: fetch_error,
         enriched_at: timestamp.clone(),
         last_enriched_at: timestamp,
     }
 }
 
+fn strip_code_fence_markers(value: &str) -> &str {
+    value
+        .trim()
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+}
+
+fn clean_display_text(value: &str) -> Option<String> {
+    let collapsed = strip_code_fence_markers(value)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn build_preview_text(memory: &Memory, resolved_description: Option<&str>) -> Option<String> {
+    resolved_description
+        .and_then(clean_display_text)
+        .or_else(|| memory.note.as_deref().and_then(clean_display_text))
+        .or_else(|| clean_display_text(&memory.content))
+        .map(|value| truncate_chars(&value, 260))
+}
+
+fn classify_memory_type(
+    memory: &Memory,
+    resolved_title: Option<&str>,
+    resolved_description: Option<&str>,
+    resolved_site_name: Option<&str>,
+    effective_url: Option<&str>,
+) -> MemoryType {
+    if memory.source_type == MemorySourceType::Bookmark {
+        return MemoryType::Bookmark;
+    }
+
+    let haystack = [
+        memory.title.as_deref(),
+        resolved_title,
+        resolved_description,
+        resolved_site_name,
+        memory.note.as_deref(),
+        Some(memory.content.as_str()),
+        effective_url,
+        memory.folder_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase();
+
+    let domain = effective_url.and_then(extract_domain).unwrap_or_default();
+    if looks_like_code(&memory.content) {
+        return MemoryType::CodeSnippet;
+    }
+    if domain.contains("youtube.com")
+        || domain.contains("youtu.be")
+        || haystack.contains(" watch ")
+        || haystack.contains(" video ")
+    {
+        return MemoryType::Video;
+    }
+    if domain.contains("x.com")
+        || domain.contains("twitter.com")
+        || domain.contains("reddit.com")
+        || domain.contains("linkedin.com")
+        || domain.contains("threads.net")
+    {
+        return MemoryType::Post;
+    }
+    if haystack.contains("/docs")
+        || haystack.contains(" docs ")
+        || haystack.contains(" documentation")
+        || domain.contains("docs.")
+        || domain.contains("developer.")
+    {
+        return MemoryType::Docs;
+    }
+    if domain.contains("github.com")
+        || domain.contains("npmjs.com")
+        || domain.contains("figma.com")
+        || haystack.contains(" tool ")
+        || haystack.contains(" dashboard ")
+    {
+        return MemoryType::Tool;
+    }
+    if effective_url.is_some() {
+        return MemoryType::Article;
+    }
+
+    MemoryType::Note
+}
+
+fn looks_like_code(content: &str) -> bool {
+    let lowered = content.to_ascii_lowercase();
+    content.contains("```")
+        || lowered.contains("function ")
+        || lowered.contains("const ")
+        || lowered.contains("let ")
+        || lowered.contains("import ")
+        || lowered.contains("class ")
+        || lowered.contains("fn ")
+        || lowered.contains("select ")
+        || lowered.contains("<div")
+        || lowered.contains("</")
+        || (content.lines().count() >= 3 && content.contains('{') && content.contains('}'))
+}
+
+fn score_memory_quality(
+    memory: &Memory,
+    resolved_title: Option<&str>,
+    resolved_description: Option<&str>,
+    preview_text: Option<&str>,
+    resolved_domain: Option<&str>,
+    resolved_image: Option<&str>,
+    is_duplicate: bool,
+    enrichment_succeeded: bool,
+) -> f64 {
+    let mut score: f64 = 18.0;
+
+    if memory
+        .title
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| value.len() >= 8)
+        || resolved_title.is_some_and(|value| value.trim().len() >= 8)
+    {
+        score += 18.0;
+    }
+    if resolved_description.is_some_and(|value| value.trim().len() >= 32) {
+        score += 18.0;
+    }
+    if preview_text.is_some_and(|value| value.trim().len() >= 40) {
+        score += 12.0;
+    }
+    if resolved_domain.is_some() {
+        score += 10.0;
+    }
+    if resolved_image.is_some() {
+        score += 6.0;
+    }
+    if memory
+        .note
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| value.len() >= 12)
+    {
+        score += 8.0;
+    }
+    if memory
+        .folder_path
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || memory
+            .bookmark_folder_path
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    {
+        score += 5.0;
+    }
+    if enrichment_succeeded {
+        score += 4.0;
+    }
+    if looks_like_code(&memory.content) {
+        score += 4.0;
+    }
+    if is_duplicate {
+        score -= 24.0;
+    }
+
+    score.clamp(0.0, 100.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_metadata_from_html;
+    use chrono::Utc;
+    use sqlx::types::Json;
+
+    use crate::models::{
+        LinkEnrichmentStatus, Memory, MemorySourceType, MemoryType,
+    };
+
+    use super::{
+        build_link_enrichment_update, extract_metadata_from_html, EnrichmentOutcome,
+        ExtractedLinkMetadata,
+    };
+
+    fn test_memory(content: &str) -> Memory {
+        Memory {
+            id: "memory-1".into(),
+            source_type: MemorySourceType::Manual,
+            title: None,
+            content: content.into(),
+            note: None,
+            project_id: None,
+            project_name: None,
+            url: None,
+            domain: None,
+            resolved_domain: None,
+            canonical_url: None,
+            resolved_title: None,
+            resolved_description: None,
+            resolved_image: None,
+            resolved_site_name: None,
+            preview_text: None,
+            memory_type: None,
+            topic_labels: Some(Json(vec![])),
+            primary_topic: None,
+            quality_score: Some(0.0),
+            bookmark_quality_score: Some(0.0),
+            is_duplicate_of: None,
+            bookmark_folder_path: None,
+            enrichment_status: Some(LinkEnrichmentStatus::Pending),
+            enrichment_error: None,
+            enriched_at: None,
+            last_enriched_at: None,
+            external_id: None,
+            folder_path: None,
+            source_app: None,
+            source_window: None,
+            last_opened_at: None,
+            open_count: 0,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        }
+    }
 
     #[test]
     fn extracts_og_metadata_and_fallbacks() {
@@ -551,5 +846,64 @@ mod tests {
             Some("A concise summary for search and cards."),
         );
         assert!(metadata.resolved_image.is_none());
+    }
+
+    #[test]
+    fn text_enrichment_shapes_preview_and_classifies_note() {
+        let memory = test_memory("   Capture pipeline idea\r\n\r\n\r\nKeep saves fast and searchable.   ");
+        let update = build_link_enrichment_update(&memory, EnrichmentOutcome::Text, &[]);
+
+        assert_eq!(update.enrichment_status, LinkEnrichmentStatus::Done);
+        assert_eq!(
+            update.preview_text.as_deref(),
+            Some("Capture pipeline idea Keep saves fast and searchable."),
+        );
+        assert_eq!(update.memory_type, Some(MemoryType::Note));
+        assert_eq!(update.primary_topic.as_deref(), Some("Capture Pipeline"));
+        assert!(update.quality_score.unwrap_or_default() > 20.0);
+        assert!(update.enrichment_error.is_none());
+    }
+
+    #[test]
+    fn code_snippet_enrichment_classifies_code() {
+        let memory = test_memory("```ts\nconst saveFast = true;\nfunction capture() { return saveFast; }\n```");
+        let update = build_link_enrichment_update(&memory, EnrichmentOutcome::Text, &[]);
+
+        assert_eq!(update.memory_type, Some(MemoryType::CodeSnippet));
+        assert!(
+            update
+                .preview_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("const saveFast"),
+        );
+    }
+
+    #[test]
+    fn url_enrichment_adds_metadata_preview_and_quality() {
+        let mut memory = test_memory("https://docs.tauri.app/plugin/global-shortcut");
+        memory.url = Some("https://docs.tauri.app/plugin/global-shortcut".into());
+        memory.domain = Some("docs.tauri.app".into());
+
+        let update = build_link_enrichment_update(
+            &memory,
+            EnrichmentOutcome::Link {
+                metadata: Some(ExtractedLinkMetadata {
+                    canonical_url: Some("https://docs.tauri.app/plugin/global-shortcut".into()),
+                    resolved_title: Some("Global Shortcut Plugin".into()),
+                    resolved_description: Some("Register global shortcuts in a Tauri app.".into()),
+                    resolved_image: Some("https://docs.tauri.app/og.png".into()),
+                    resolved_site_name: Some("Tauri Docs".into()),
+                }),
+                error: None,
+            },
+            &[],
+        );
+
+        assert_eq!(update.enrichment_status, LinkEnrichmentStatus::Done);
+        assert_eq!(update.memory_type, Some(MemoryType::Docs));
+        assert_eq!(update.resolved_title.as_deref(), Some("Global Shortcut Plugin"));
+        assert_eq!(update.resolved_domain.as_deref(), Some("docs.tauri.app"));
+        assert!(update.quality_score.unwrap_or_default() >= 70.0);
     }
 }

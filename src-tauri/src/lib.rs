@@ -11,7 +11,8 @@ use commands::{
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
-        create_memory, delete_memory, duplicate_memory, get_memory, list_memories, update_memory,
+        create_memory, delete_memory, duplicate_memory, get_memory, list_memories,
+        mark_memory_opened, update_memory,
     },
     platform::{detect_app_context, read_clipboard_text, write_clipboard_text},
     projects::{create_project, delete_project, list_projects, update_project},
@@ -26,7 +27,10 @@ use commands::{
 };
 use db::seed::ensure_seed_data;
 use platform::factory::create_platform_services;
-use services::shortcut_service::normalize_accelerator;
+use services::{
+    clipboard_watcher_service::start_clipboard_watcher,
+    shortcut_service::normalize_accelerator,
+};
 use state::app_state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{
@@ -263,6 +267,7 @@ pub fn run() {
                     eprintln!("[recall] Shortcut registration warning: {e}");
                 }
                 start_bookmark_sync_loop(handle.clone());
+                start_clipboard_watcher(handle.clone());
 
                 if let Ok(memories) = runtime.block_on(managed.memory_service.list()) {
                     runtime.block_on(
@@ -295,6 +300,7 @@ pub fn run() {
             update_memory,
             delete_memory,
             duplicate_memory,
+            mark_memory_opened,
             list_projects,
             create_project,
             update_project,

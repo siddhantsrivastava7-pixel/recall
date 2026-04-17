@@ -63,13 +63,13 @@ impl ShortcutAdapter for MacShortcutAdapter {
             },
             ShortcutBinding {
                 action: "open-quick-save".into(),
-                accelerator: "Ctrl+Shift+S".into(),
+                accelerator: "Super+Shift+S".into(),
                 editable: true,
                 description: "Open quick save with clipboard prefill".into(),
             },
             ShortcutBinding {
                 action: "open-main-app".into(),
-                accelerator: "Ctrl+Shift+O".into(),
+                accelerator: "Super+Shift+O".into(),
                 editable: true,
                 description: "Open main app".into(),
             },

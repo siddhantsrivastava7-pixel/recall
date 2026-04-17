@@ -16,7 +16,9 @@ import {
   getTopBookmarkDomains,
   getUsefulForgottenBookmarks,
 } from "@/services/bookmarks/bookmarkIntelligence";
+import { getRecallFeed, summarizeSessionContext } from "@/services/context/ContextEngine";
 import { searchMemories } from "@/services/search/searchMemories";
+import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -35,6 +37,10 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
   const { memories } = useMemoryStore();
   const { projects, activeProjectId, setActiveProject } = useProjectStore();
   const shortcuts = useSettingsStore((state) => state.shortcuts);
+  const recentQueries = useContextStore((state) => state.recentQueries);
+  const recentlyOpenedMemoryIds = useContextStore((state) => state.recentlyOpenedMemoryIds);
+  const recentCaptureIds = useContextStore((state) => state.recentCaptureIds);
+  const recordQuery = useContextStore((state) => state.recordQuery);
 
   const recentMemories = useMemo(
     () =>
@@ -121,9 +127,19 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
   const visibleMemories = searchQuery.trim()
     ? dashboardSearchResults.map((result) => result.memory)
     : recentMemories;
+  const sessionContext = useMemo(
+    () => useContextStore.getState().getSessionContext(),
+    [memories, activeProjectId, recentQueries, recentlyOpenedMemoryIds, recentCaptureIds],
+  );
+  const recallFeed = useMemo(
+    () => getRecallFeed(memories, projects, sessionContext),
+    [memories, projects, sessionContext],
+  );
+  const sessionSummary = useMemo(() => summarizeSessionContext(sessionContext), [sessionContext]);
 
   function handleSearchSubmit(event: React.FormEvent) {
     event.preventDefault();
+    recordQuery(searchQuery);
     const firstResult = dashboardSearchResults[0]?.memory;
     if (firstResult) {
       setDetailMemory(firstResult);
@@ -274,6 +290,76 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
           )}
         </section>
       </div>
+
+      {(recallFeed.usefulAgainNow.length > 0 ||
+        recallFeed.relatedFromEarlier.length > 0 ||
+        recallFeed.youMightAlsoNeed.length > 0) && (
+        <section style={{ marginTop: 38 }}>
+          <SectionHeader
+            eyebrow="Context"
+            title="Recall feed"
+            subtitle={
+              sessionSummary.topics.length > 0
+                ? `Based on ${sessionSummary.topics.slice(0, 3).join(", ")}.`
+                : "Useful memories resurfaced from quality, activity, and project context."
+            }
+          />
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 18,
+              alignItems: "start",
+            }}
+          >
+            <InsightPanel
+              title="You might also need"
+              subtitle="Contextually relevant items from this session."
+              emptyMessage="Search, open, or capture more to build session context."
+            >
+              {recallFeed.youMightAlsoNeed.map((item) => (
+                <BookmarkInsightRow
+                  key={item.memory.id}
+                  memory={item.memory}
+                  meta={item.reason}
+                  onClick={() => setDetailMemory(item.memory)}
+                />
+              ))}
+            </InsightPanel>
+
+            <InsightPanel
+              title="Related from earlier"
+              subtitle="Things you used before that connect to now."
+              emptyMessage="Previously opened related memories will appear here."
+            >
+              {recallFeed.relatedFromEarlier.map((item) => (
+                <BookmarkInsightRow
+                  key={item.memory.id}
+                  memory={item.memory}
+                  meta={item.reason}
+                  onClick={() => setDetailMemory(item.memory)}
+                />
+              ))}
+            </InsightPanel>
+
+            <InsightPanel
+              title="Useful again now"
+              subtitle="High-quality saved items worth resurfacing."
+              emptyMessage="High-quality forgotten memories will appear here."
+            >
+              {recallFeed.usefulAgainNow.map((item) => (
+                <BookmarkInsightRow
+                  key={item.memory.id}
+                  memory={item.memory}
+                  meta={item.reason}
+                  onClick={() => setDetailMemory(item.memory)}
+                />
+              ))}
+            </InsightPanel>
+          </div>
+        </section>
+      )}
 
       <section style={{ marginTop: 38 }}>
         <SectionHeader

@@ -1,7 +1,7 @@
 {
   "name": "recall",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "ai": "node .claude/codex-wrapper.js",
@@ -10,7 +10,7 @@
     "evaluate:capture": "vitest run src/services/capture/CaptureTrustHarness.test.ts --reporter=verbose",
     "evaluate:search": "vitest run src/services/search/SearchEvaluationHarness.test.ts --reporter=verbose",
     "test:capture": "vitest run src/services/capture/CaptureInputBuilder.test.ts src/services/capture/captureSync.test.ts src/services/capture/captureTrust.test.ts",
-    "test:search": "vitest run src/services/search/KeywordSearchProvider.test.ts src/services/search/SearchEvaluationHarness.test.ts",
+    "test:search": "vitest run src/services/search/KeywordSearchProvider.test.ts src/services/search/SearchEvaluationHarness.test.ts src/services/search/searchSuggestions.test.ts src/services/context/ContextEngine.test.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

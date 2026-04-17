@@ -204,7 +204,7 @@ export const searchEvaluationCases: SearchEvaluationCase[] = [
     expectedTopIds: ["pricing-strategy"],
     minimumRanks: {
       "pricing-strategy": 1,
-      "standup-pricing-mention": 3,
+      "standup-pricing-mention": 5,
     },
     note: "Exact title phrase should outrank a recent body mention.",
   },
@@ -280,8 +280,8 @@ export const searchEvaluationCases: SearchEvaluationCase[] = [
     expectedTopIds: ["openai-pricing-docs"],
     minimumRanks: {
       "openai-pricing-docs": 1,
-      "billing-portal-bookmark": 5,
     },
+    shouldNotAppear: ["billing-portal-bookmark"],
     note: "Folder path should help, but the result still needs strong title/URL relevance.",
   },
   {
@@ -299,9 +299,8 @@ export const searchEvaluationCases: SearchEvaluationCase[] = [
     expectedTopIds: ["investor-pricing-deck"],
     minimumRanks: {
       "investor-pricing-deck": 1,
-      "daily-notes-investor": 5,
     },
-    shouldNotAppear: ["random-apple-article"],
+    shouldNotAppear: ["daily-notes-investor", "random-apple-article"],
     note: "Recent weak mentions should not outrank a highly relevant older exact title.",
   },
   {

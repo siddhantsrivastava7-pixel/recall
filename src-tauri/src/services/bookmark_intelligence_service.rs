@@ -7,7 +7,7 @@ use crate::{
     services::link_utils::extract_domain,
 };
 
-const MAX_TOPIC_LABELS: usize = 4;
+const MAX_TOPIC_LABELS: usize = 5;
 
 const GENERIC_FOLDER_LABELS: &[&str] = &[
     "bookmark",
@@ -25,7 +25,9 @@ const GENERIC_TOPIC_TOKENS: &[&str] = &[
     "article",
     "bookmark",
     "bookmarks",
+    "co",
     "com",
+    "dev",
     "for",
     "from",
     "github",
@@ -34,7 +36,10 @@ const GENERIC_TOPIC_TOKENS: &[&str] = &[
     "http",
     "https",
     "info",
+    "io",
     "link",
+    "net",
+    "org",
     "page",
     "post",
     "site",
@@ -318,6 +323,12 @@ fn extract_topic_labels(
         }
     }
 
+    if let Some(domain) = resolved_domain {
+        for token in tokenize(domain).iter().take(3) {
+            score_topic_candidate(&mut scores, format_topic_label(token), 2.4);
+        }
+    }
+
     let title_sources = [context.resolved_title.as_deref(), memory.title.as_deref()];
     for source in title_sources.into_iter().flatten() {
         let tokens = tokenize(source);
@@ -338,6 +349,19 @@ fn extract_topic_labels(
         }
     }
 
+    for source in [Some(memory.content.as_str()), memory.note.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let tokens = tokenize(source);
+        for token in tokens.iter().take(5) {
+            score_topic_candidate(&mut scores, format_topic_label(token), 1.2);
+        }
+        for window in tokens.windows(2).take(3) {
+            score_topic_candidate(&mut scores, format_topic_label(&window.join(" ")), 1.8);
+        }
+    }
+
     for token in extract_path_tokens(canonical_url.or(Some(&context.url)))
         .iter()
         .take(4)
@@ -348,18 +372,8 @@ fn extract_topic_labels(
         score_topic_candidate(&mut scores, format_topic_label(token), 2.0);
     }
 
-    let resolved_domain_tokens = resolved_domain
-        .map(tokenize)
-        .unwrap_or_default()
-        .into_iter()
-        .collect::<HashSet<_>>();
-
     let mut topic_labels = scores
         .into_iter()
-        .filter(|(label, _)| {
-            let normalized = label.to_ascii_lowercase();
-            !resolved_domain_tokens.contains(&normalized)
-        })
         .collect::<Vec<_>>();
 
     topic_labels.sort_by(|left, right| {
@@ -574,7 +588,7 @@ fn compute_quality_score(
     score += domain_quality_score(resolved_domain);
 
     if duplicate_of.is_some() {
-        score -= 32.0;
+        score -= 40.0;
     }
 
     if context
@@ -592,7 +606,7 @@ fn compute_quality_score(
 mod tests {
     use sqlx::types::Json;
 
-    use crate::models::{LinkEnrichmentStatus, MemorySourceType};
+    use crate::models::{LinkEnrichmentStatus, MemorySourceType, MemoryType};
 
     use super::{derive_bookmark_intelligence, normalize_canonical_url, BookmarkMetadataContext};
 
@@ -618,17 +632,24 @@ mod tests {
             resolved_description: None,
             resolved_image: None,
             resolved_site_name: None,
+            preview_text: None,
+            memory_type: Some(MemoryType::Bookmark),
             topic_labels: Some(Json(vec![])),
+            primary_topic: None,
+            quality_score: Some(0.0),
             bookmark_quality_score: Some(0.0),
             is_duplicate_of: None,
             bookmark_folder_path: Some("Bookmarks Bar / Research".into()),
             enrichment_status: Some(LinkEnrichmentStatus::Pending),
+            enrichment_error: None,
             enriched_at: None,
             last_enriched_at: None,
             external_id: None,
             folder_path: Some("Bookmarks Bar / Research".into()),
             source_app: Some("chrome".into()),
             source_window: None,
+            last_opened_at: None,
+            open_count: 0,
             created_at: created_at.into(),
             updated_at: created_at.into(),
         }

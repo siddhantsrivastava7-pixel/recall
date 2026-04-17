@@ -19,6 +19,7 @@ import {
   formatLongTimestamp,
   formatUrlForDisplay,
   getMemoryDetailSourceLabel,
+  getMemoryDisplayPreview,
   getMemoryDisplayProject,
   getMemoryDisplayTitle,
   normalizeReadingText,
@@ -26,6 +27,8 @@ import {
 } from "@/domain/formatters";
 import type { Memory } from "@/domain/types";
 import { tauriClient } from "@/services/api/tauri-client";
+import { getRelatedMemories } from "@/services/context/ContextEngine";
+import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 
@@ -36,12 +39,15 @@ export function MemoryDetail({
   memory: Memory;
   onClose: () => void;
 }) {
+  const [activeMemoryId, setActiveMemoryId] = useState(memory.id);
   const liveMemory = useMemoryStore((state) =>
-    state.memories.find((item) => item.id === memory.id),
+    state.memories.find((item) => item.id === activeMemoryId),
   );
+  const memories = useMemoryStore((state) => state.memories);
   const currentMemory = liveMemory ?? memory;
 
-  const { update, remove } = useMemoryStore();
+  const { update, remove, markOpened } = useMemoryStore();
+  const recordMemoryOpened = useContextStore((state) => state.recordMemoryOpened);
   const { projects } = useProjectStore();
 
   const [titleDraft, setTitleDraft] = useState(currentMemory.title ?? "");
@@ -62,6 +68,7 @@ export function MemoryDetail({
   const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollTopRef = useRef(0);
   const loadedMemoryIdRef = useRef(currentMemory.id);
+  const openedMemoryIdRef = useRef<string | null>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
 
   const generatedTitle = useMemo(
@@ -120,6 +127,30 @@ export function MemoryDetail({
     sourceLabel,
     formatRelativeTimestamp(currentMemory.updatedAt || currentMemory.createdAt),
   ];
+
+  useEffect(() => {
+    setActiveMemoryId(memory.id);
+  }, [memory.id]);
+  const relatedMemories = useMemo(
+    () =>
+      getRelatedMemories(
+        currentMemory,
+        memories,
+        useContextStore.getState().getSessionContext(),
+        4,
+      ),
+    [currentMemory, memories],
+  );
+
+  useEffect(() => {
+    if (openedMemoryIdRef.current === currentMemory.id) {
+      return;
+    }
+
+    openedMemoryIdRef.current = currentMemory.id;
+    recordMemoryOpened(currentMemory);
+    void markOpened(currentMemory.id);
+  }, [currentMemory, markOpened, recordMemoryOpened]);
 
   useEffect(() => {
     if (loadedMemoryIdRef.current === currentMemory.id) {
@@ -638,9 +669,95 @@ export function MemoryDetail({
               Add a note
             </button>
           )}
+
+          {relatedMemories.length > 0 && (
+            <section style={{ marginTop: 34 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "rgba(255,255,255,0.26)",
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  marginBottom: 12,
+                }}
+              >
+                Related from earlier
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                {relatedMemories.map((item) => (
+                  <RelatedMemoryButton
+                    key={item.memory.id}
+                    memory={item.memory}
+                    reason={item.reason}
+                    onClick={() => {
+                      loadedMemoryIdRef.current = "";
+                      openedMemoryIdRef.current = null;
+                      setActiveMemoryId(item.memory.id);
+                    }}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+function RelatedMemoryButton({
+  memory,
+  reason,
+  onClick,
+}: {
+  memory: Memory;
+  reason: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: "rgba(255,255,255,0.025)",
+        border: "1px solid rgba(255,255,255,0.05)",
+        borderRadius: 16,
+        padding: "14px 15px",
+        textAlign: "left",
+        cursor: "pointer",
+        fontFamily: "inherit",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 620,
+          color: "var(--text-primary)",
+          lineHeight: 1.4,
+          marginBottom: 5,
+          display: "-webkit-box",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: 1,
+          overflow: "hidden",
+        }}
+      >
+        {getMemoryDisplayTitle(memory)}
+      </div>
+      <div
+        style={{
+          fontSize: 12,
+          color: "rgba(255,255,255,0.42)",
+          lineHeight: 1.55,
+          display: "-webkit-box",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: 2,
+          overflow: "hidden",
+          marginBottom: 8,
+        }}
+      >
+        {getMemoryDisplayPreview(memory, 100)}
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.28)" }}>{reason}</div>
+    </button>
   );
 }
 

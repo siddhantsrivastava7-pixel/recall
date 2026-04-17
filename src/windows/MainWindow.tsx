@@ -17,6 +17,7 @@ import { Dashboard } from "@/components/dashboard/Dashboard";
 import { MemoriesView } from "@/components/memory/MemoriesView";
 import { ProjectsView } from "@/components/memory/ProjectsView";
 import { SettingsView } from "@/components/settings/SettingsView";
+import { InstantCaptureToast } from "@/components/capture/InstantCaptureToast";
 import { tauriClient } from "@/services/api/tauri-client";
 import { useRecallDataSyncEvents } from "@/hooks/useRecallDataSyncEvents";
 
@@ -123,6 +124,7 @@ export function MainWindow() {
         {view === "memories" && <MemoriesView />}
         {view === "projects" && <ProjectsView setView={setView} />}
         {view === "settings" && <SettingsView />}
+        <InstantCaptureToast />
       </main>
     </div>
   );

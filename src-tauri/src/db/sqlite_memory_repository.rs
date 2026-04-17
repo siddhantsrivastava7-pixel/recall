@@ -28,17 +28,24 @@ SELECT
   memories.resolved_description,
   memories.resolved_image,
   memories.resolved_site_name,
+  memories.preview_text,
+  memories.memory_type,
   memories.topic_labels,
+  memories.primary_topic,
+  memories.quality_score,
   memories.bookmark_quality_score,
   memories.is_duplicate_of,
   memories.bookmark_folder_path,
   memories.enrichment_status,
+  memories.enrichment_error,
   memories.enriched_at,
   memories.last_enriched_at,
   memories.external_id,
   memories.folder_path,
   memories.source_app,
   memories.source_window,
+  memories.last_opened_at,
+  memories.open_count,
   memories.created_at,
   memories.updated_at
 FROM memories
@@ -62,8 +69,8 @@ fn source_type_label(source_type: MemorySourceType) -> &'static str {
     }
 }
 
-fn pending_enrichment_status(url: Option<&str>) -> Option<LinkEnrichmentStatus> {
-    url.map(|_| LinkEnrichmentStatus::Pending)
+fn pending_enrichment_status() -> Option<LinkEnrichmentStatus> {
+    Some(LinkEnrichmentStatus::Pending)
 }
 
 #[async_trait]
@@ -115,7 +122,7 @@ impl MemoryRepository for SqliteMemoryRepository {
         let domain = input.url.as_deref().and_then(extract_domain);
         let resolved_domain = domain.clone();
         let canonical_url = input.url.clone();
-        let enrichment_status = pending_enrichment_status(input.url.as_deref());
+        let enrichment_status = pending_enrichment_status();
         let bookmark_folder_path = if source_type == MemorySourceType::Bookmark {
             input.folder_path.clone()
         } else {
@@ -140,20 +147,27 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_description,
               resolved_image,
               resolved_site_name,
+              preview_text,
+              memory_type,
               topic_labels,
+              primary_topic,
+              quality_score,
               bookmark_quality_score,
               is_duplicate_of,
               bookmark_folder_path,
               enrichment_status,
+              enrichment_error,
               enriched_at,
               last_enriched_at,
               external_id,
               folder_path,
               source_app,
               source_window,
+              last_opened_at,
+              open_count,
               created_at,
               updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, 0, ?, ?)
             "#,
         )
         .bind(&id)
@@ -194,49 +208,71 @@ impl MemoryRepository for SqliteMemoryRepository {
             .ok_or_else(|| AppError::Invalid("Memory not found.".into()))?;
         let source_type = input.source_type.unwrap_or(MemorySourceType::Manual);
         let url_changed = input.url != existing.url;
+        let enrichment_input_changed =
+            url_changed || input.content != existing.content || input.note != existing.note;
         let domain = input.url.as_deref().and_then(extract_domain);
-        let resolved_domain = if url_changed {
+        let resolved_domain = if enrichment_input_changed {
             domain.clone()
         } else {
             existing.resolved_domain.clone().or(domain.clone())
         };
-        let canonical_url = if url_changed {
+        let canonical_url = if enrichment_input_changed {
             input.url.clone()
         } else {
             existing.canonical_url.clone().or(input.url.clone())
         };
 
-        let resolved_title = if url_changed {
+        let resolved_title = if enrichment_input_changed {
             None
         } else {
             existing.resolved_title.clone()
         };
-        let resolved_description = if url_changed {
+        let resolved_description = if enrichment_input_changed {
             None
         } else {
             existing.resolved_description.clone()
         };
-        let resolved_image = if url_changed {
+        let resolved_image = if enrichment_input_changed {
             None
         } else {
             existing.resolved_image.clone()
         };
-        let resolved_site_name = if url_changed {
+        let resolved_site_name = if enrichment_input_changed {
             None
         } else {
             existing.resolved_site_name.clone()
         };
-        let topic_labels = if url_changed {
+        let topic_labels = if enrichment_input_changed {
             None
         } else {
             existing.topic_labels.clone()
         };
-        let bookmark_quality_score = if url_changed {
+        let bookmark_quality_score = if enrichment_input_changed {
             Some(0.0)
         } else {
             existing.bookmark_quality_score
         };
-        let is_duplicate_of = if url_changed {
+        let preview_text = if enrichment_input_changed {
+            None
+        } else {
+            existing.preview_text.clone()
+        };
+        let memory_type = if enrichment_input_changed {
+            None
+        } else {
+            existing.memory_type
+        };
+        let quality_score = if enrichment_input_changed {
+            Some(0.0)
+        } else {
+            existing.quality_score
+        };
+        let primary_topic = if enrichment_input_changed {
+            None
+        } else {
+            existing.primary_topic.clone()
+        };
+        let is_duplicate_of = if enrichment_input_changed {
             None
         } else {
             existing.is_duplicate_of.clone()
@@ -249,17 +285,22 @@ impl MemoryRepository for SqliteMemoryRepository {
         } else {
             None
         };
-        let enrichment_status = if url_changed {
-            pending_enrichment_status(input.url.as_deref())
+        let enrichment_status = if enrichment_input_changed {
+            pending_enrichment_status()
         } else {
             existing.enrichment_status
         };
-        let enriched_at = if url_changed {
+        let enrichment_error = if enrichment_input_changed {
+            None
+        } else {
+            existing.enrichment_error.clone()
+        };
+        let enriched_at = if enrichment_input_changed {
             None
         } else {
             existing.enriched_at.clone()
         };
-        let last_enriched_at = if url_changed {
+        let last_enriched_at = if enrichment_input_changed {
             None
         } else {
             existing.last_enriched_at.clone()
@@ -283,11 +324,16 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_description = ?,
               resolved_image = ?,
               resolved_site_name = ?,
+              preview_text = ?,
+              memory_type = ?,
               topic_labels = ?,
+              primary_topic = ?,
+              quality_score = ?,
               bookmark_quality_score = ?,
               is_duplicate_of = ?,
               bookmark_folder_path = ?,
               enrichment_status = ?,
+              enrichment_error = ?,
               enriched_at = ?,
               last_enriched_at = ?,
               external_id = ?,
@@ -311,11 +357,16 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(resolved_description)
         .bind(resolved_image)
         .bind(resolved_site_name)
+        .bind(preview_text)
+        .bind(memory_type)
         .bind(topic_labels)
+        .bind(primary_topic)
+        .bind(quality_score)
         .bind(bookmark_quality_score)
         .bind(is_duplicate_of)
         .bind(bookmark_folder_path)
         .bind(enrichment_status)
+        .bind(enrichment_error)
         .bind(enriched_at)
         .bind(last_enriched_at)
         .bind(input.external_id)
@@ -350,11 +401,16 @@ impl MemoryRepository for SqliteMemoryRepository {
               resolved_description = ?,
               resolved_image = ?,
               resolved_site_name = ?,
+              preview_text = ?,
+              memory_type = ?,
               topic_labels = ?,
+              primary_topic = ?,
+              quality_score = ?,
               bookmark_quality_score = ?,
               is_duplicate_of = ?,
               bookmark_folder_path = ?,
               enrichment_status = ?,
+              enrichment_error = ?,
               enriched_at = ?
               ,
               last_enriched_at = ?
@@ -369,13 +425,40 @@ impl MemoryRepository for SqliteMemoryRepository {
         .bind(enrichment.resolved_description)
         .bind(enrichment.resolved_image)
         .bind(enrichment.resolved_site_name)
+        .bind(enrichment.preview_text)
+        .bind(enrichment.memory_type)
         .bind(enrichment.topic_labels.map(Json))
+        .bind(enrichment.primary_topic)
+        .bind(enrichment.quality_score)
         .bind(enrichment.bookmark_quality_score)
         .bind(enrichment.is_duplicate_of)
         .bind(enrichment.bookmark_folder_path)
         .bind(enrichment.enrichment_status)
+        .bind(enrichment.enrichment_error)
         .bind(enrichment.enriched_at)
         .bind(enrichment.last_enriched_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.find(id).await
+    }
+
+    async fn mark_opened(&self, id: &str, opened_at: &str) -> AppResult<Option<Memory>> {
+        let result = sqlx::query(
+            r#"
+            UPDATE memories
+            SET
+              last_opened_at = ?,
+              open_count = COALESCE(open_count, 0) + 1
+            WHERE id = ?
+            "#,
+        )
+        .bind(opened_at)
         .bind(id)
         .execute(&self.pool)
         .await?;

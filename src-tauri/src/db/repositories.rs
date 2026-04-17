@@ -23,6 +23,7 @@ pub trait MemoryRepository: Send + Sync {
         id: &str,
         enrichment: LinkEnrichmentUpdate,
     ) -> AppResult<Option<Memory>>;
+    async fn mark_opened(&self, id: &str, opened_at: &str) -> AppResult<Option<Memory>>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn clear(&self) -> AppResult<()>;
 }

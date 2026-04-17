@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { MemoryCard } from "./MemoryCard";
 import { MemoryDetail } from "./MemoryDetail";
+import { getProjectRelevantMemories } from "@/services/context/ContextEngine";
 
 export function MemoriesView() {
   const [filter,     setFilter]     = useState("");
@@ -11,6 +12,10 @@ export function MemoriesView() {
 
   const { memories, selectedMemoryId, selectMemory } = useMemoryStore();
   const { projects, activeProjectId, setActiveProject } = useProjectStore();
+  const projectSuggestions = useMemo(
+    () => getProjectRelevantMemories(memories, projects, activeProjectId, 3),
+    [memories, projects, activeProjectId],
+  );
   const detail = selectedMemoryId
     ? memories.find((memory) => memory.id === selectedMemoryId) ?? null
     : null;
@@ -79,6 +84,23 @@ export function MemoriesView() {
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.22)", marginBottom: 18 }}>
               {list.length} memor{list.length !== 1 ? "ies" : "y"} · {bookmarkCount} bookmark{bookmarkCount === 1 ? "" : "s"}
             </div>
+            {projectSuggestions.length > 0 && (
+              <div style={{ maxWidth: 920, marginBottom: 24 }}>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>
+                  Project-relevant
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {projectSuggestions.map((item) => (
+                    <MemoryCard
+                      key={item.memory.id}
+                      memory={item.memory}
+                      resurfaced
+                      onSelect={(memory) => selectMemory(memory.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 920 }}>
               {list.map(m => (
                 <MemoryCard

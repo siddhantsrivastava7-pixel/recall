@@ -497,18 +497,23 @@ const buildFieldAnalyses = (
   const resolvedProjectName =
     projects.find((project) => project.id === memory.projectId)?.name ?? memory.projectName;
   const titleText = [memory.title, memory.resolvedTitle].filter(Boolean).join("\n");
-  const contentText = [memory.content, memory.resolvedDescription].filter(Boolean).join("\n");
+  const contentText = [memory.content, memory.previewText, memory.resolvedDescription]
+    .filter(Boolean)
+    .join("\n");
   const urlText = [
     memory.url,
     memory.canonicalUrl,
     memory.domain,
     memory.resolvedDomain,
     memory.resolvedSiteName,
+    memory.memoryType,
   ]
     .filter(Boolean)
     .join(" ");
   const folderText = [memory.bookmarkFolderPath, memory.folderPath].filter(Boolean).join(" ");
-  const topicsText = (memory.topicLabels ?? []).join(" ");
+  const topicsText = [memory.primaryTopic, ...(memory.topicLabels ?? [])]
+    .filter(Boolean)
+    .join(" ");
 
   return [
     analyzeField("title", titleText, query),
@@ -541,7 +546,12 @@ const computeNoisePenalty = (
 
   let penalty = 0;
 
-  if (primaryScore === 0 && metadataScore > 0 && !query.looksLikeSourceLookup) {
+  if (
+    primaryScore === 0 &&
+    metadataScore > 0 &&
+    tokenCoverageRatio < 1 &&
+    !query.looksLikeSourceLookup
+  ) {
     penalty += 24;
   }
 
@@ -571,10 +581,16 @@ const computeRecencyTieBreaker = (memory: Memory) => {
   return Math.max(0, 4 - Math.min(4, ageHours / 168));
 };
 
+const clamp = (value: number, min = 0, max = 100) =>
+  Math.max(min, Math.min(max, value));
+
+const qualitySignal = (memory: Memory) =>
+  clamp(memory.qualityScore ?? memory.bookmarkQualityScore ?? 0);
+
 const minimumUsefulScore = (query: QueryProfile) => {
-  if (query.effectiveTokens.length >= 3) return 30;
-  if (query.effectiveTokens.length === 2) return 18;
-  return 10;
+  if (query.effectiveTokens.length >= 3) return 20;
+  if (query.effectiveTokens.length === 2) return 9;
+  return 7;
 };
 
 /*
@@ -597,6 +613,7 @@ export const scoreMemoryForKeywordQuery = (
   const fieldScores = fieldAnalyses.map((analysis) =>
     scoreField(analysis, query),
   );
+  const scoreByLabel = new Map(fieldScores.map((score) => [score.label, score.score]));
   const matchedTokens = new Set(
     fieldAnalyses.flatMap((analysis) => analysis.matches.map((match) => match.queryToken)),
   );
@@ -604,19 +621,26 @@ export const scoreMemoryForKeywordQuery = (
   const coverageBonus =
     matchedTokens.size * 18 +
     tokenCoverageRatio * 24 * Math.min(1, query.effectiveTokens.length / 4);
-  const bookmarkQualityBoost =
-    memory.sourceType === "bookmark"
-      ? Math.max(0, Math.min(16, (memory.bookmarkQualityScore ?? 0) / 6))
-      : 0;
+  const rawTextScore =
+    fieldScores.reduce((sum, fieldScore) => sum + fieldScore.score, 0) + coverageBonus;
+  const textMatchScore = clamp(rawTextScore / 7);
+  const titleMatchBoost = clamp((scoreByLabel.get("Title") ?? 0) / 4.2);
+  const topicMatchScore = clamp((scoreByLabel.get("Topics") ?? 0) / 1.8);
+  const recencyScore = clamp((computeRecencyTieBreaker(memory) / 4) * 100);
+  const qualityScore = qualitySignal(memory);
+  // V2 intelligence ranking keeps the final relevance blend easy to reason about:
+  // text match leads, title/topic intelligence steer intent, recency/quality break close ties.
+  const weightedRelevanceScore =
+    textMatchScore * 0.4 +
+    titleMatchBoost * 0.2 +
+    recencyScore * 0.15 +
+    qualityScore * 0.15 +
+    topicMatchScore * 0.1;
   const duplicatePenalty =
-    memory.sourceType === "bookmark" && memory.isDuplicateOf ? 42 : 0;
-  const scoreBeforePenalties = fieldScores.reduce((sum, score) => sum + score.score, 0);
+    memory.sourceType === "bookmark" && memory.isDuplicateOf ? 28 : 0;
   const score =
-    scoreBeforePenalties +
-    coverageBonus -
-    computeNoisePenalty(fieldScores, query, tokenCoverageRatio) +
-    computeRecencyTieBreaker(memory) +
-    bookmarkQualityBoost -
+    weightedRelevanceScore -
+    computeNoisePenalty(fieldScores, query, tokenCoverageRatio) / 4 -
     duplicatePenalty;
 
   if (score < minimumUsefulScore(query)) {

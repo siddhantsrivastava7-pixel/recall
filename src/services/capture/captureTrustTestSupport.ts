@@ -24,6 +24,7 @@ import {
 import { resetCaptureSyncState } from "@/services/capture/captureSync";
 import { searchMemories } from "@/services/search/searchMemories";
 import { useAppStore } from "@/stores/appStore";
+import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useSearchStore } from "@/stores/searchStore";
@@ -42,6 +43,7 @@ const defaultBootstrapPayload = captureTrustBaseBootstrapPayload([]);
 export const resetRecallStoresForCaptureTrust = () => {
   resetCaptureTelemetry();
   resetCaptureSyncState();
+  useContextStore.getState().resetSession();
 
   useMemoryStore.setState({
     memories: [],

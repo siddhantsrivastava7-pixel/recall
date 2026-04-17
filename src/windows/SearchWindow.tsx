@@ -25,7 +25,7 @@ import { useSearchStore } from "@/stores/searchStore";
 type SearchListItem = SearchResult | { memory: Memory; score: number; highlights: string[] };
 
 export function SearchWindow() {
-  const { query, results, selectedIndex, setQuery, moveSelection, reset } = useSearchStore();
+  const { query, results, suggestions, selectedIndex, setQuery, moveSelection, reset } = useSearchStore();
   const { memories } = useMemoryStore();
   const inputRef = useRef<HTMLInputElement>(null);
   useRecallDataSyncEvents();
@@ -185,6 +185,51 @@ export function SearchWindow() {
               >
                 {hasQuery ? `${items.length} result${items.length !== 1 ? "s" : ""}` : "Recent"}
               </div>
+              {hasQuery && suggestions.length > 0 && (
+                <div
+                  style={{
+                    padding: "2px 20px 8px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "rgba(255,255,255,0.30)",
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    You might be looking for
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {suggestions.map((suggestion) => (
+                      <button
+                        key={suggestion.memory.id}
+                        onClick={() => void openMemory(suggestion.memory)}
+                        style={{
+                          border: "1px solid rgba(79,124,255,0.16)",
+                          background: "rgba(79,124,255,0.08)",
+                          color: "rgba(229,231,235,0.84)",
+                          borderRadius: 999,
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          cursor: "pointer",
+                          maxWidth: 180,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={suggestion.reason}
+                      >
+                        {getMemoryDisplayTitle(suggestion.memory)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {items.map((item, index) => (
                 <ResultRow
                   key={item.memory.id}
@@ -239,6 +284,7 @@ function ResultRow({
   const metadata = getMemoryDisplayMetadata(memory);
   const title = getMemoryDisplayTitle(memory);
   const preview = getMemoryDisplayPreview(memory, 116);
+  const topics = (memory.topicLabels ?? []).slice(0, 3);
 
   return (
     <div
@@ -312,11 +358,26 @@ function ResultRow({
         >
           <HighlightedText text={preview} query={query} />
         </div>
+        {topics.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 7,
+              flexWrap: "wrap",
+            }}
+          >
+            {topics.map((topic) => (
+              <TopicChip key={topic} value={topic} query={query} />
+            ))}
+          </div>
+        )}
         <div
           style={{
             fontSize: 11,
             color: "rgba(255,255,255,0.30)",
-            marginTop: 7,
+            marginTop: topics.length > 0 ? 6 : 7,
             display: "flex",
             alignItems: "center",
             gap: 6,
@@ -335,6 +396,26 @@ function ResultRow({
 
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.22)", flexShrink: 0 }}>↵</div>
     </div>
+  );
+}
+
+function TopicChip({ value, query }: { value: string; query: string }) {
+  const matched = getHighlightParts(value, query).some((part) => part.matched);
+
+  return (
+    <span
+      style={{
+        border: matched ? "1px solid rgba(79,124,255,0.22)" : "1px solid rgba(255,255,255,0.06)",
+        background: matched ? "rgba(79,124,255,0.10)" : "rgba(255,255,255,0.04)",
+        color: matched ? "rgba(229,231,235,0.82)" : "rgba(255,255,255,0.34)",
+        borderRadius: 999,
+        padding: "2px 7px",
+        fontSize: 10,
+        lineHeight: 1.4,
+      }}
+    >
+      {value}
+    </span>
   );
 }
 

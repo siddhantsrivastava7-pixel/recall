@@ -1,13 +1,18 @@
-import { useEffect, useRef } from "react";
-import type { MouseEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { DragEvent, MouseEvent } from "react";
 import { Save, Search, LayoutGrid } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getPlatformAdapters } from "@/app-runtime";
 import { tauriClient } from "@/services/api/tauri-client";
+import { buildQuickCaptureInput } from "@/services/capture/CaptureInputBuilder";
+import { markUiConfirmationShown } from "@/services/capture/captureTelemetry";
+import { useMemoryStore } from "@/stores/memoryStore";
 
 export function WidgetWindow() {
   const { window: win } = getPlatformAdapters();
+  const { create } = useMemoryStore();
   const dragTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     // Widget window must stay fully transparent, especially on macOS WKWebView.
@@ -43,10 +48,55 @@ export function WidgetWindow() {
     void getCurrentWindow().startDragging();
   };
 
+  const saveDroppedContent = async (rawContent: string) => {
+    const content = rawContent.trim();
+    if (!content) return;
+
+    const ctx = await tauriClient
+      .detectAppContext()
+      .catch(() => ({ sourceApp: null, sourceWindow: null }));
+    const result = await create(
+      buildQuickCaptureInput(
+        {
+          title: "",
+          content,
+          note: "",
+          projectId: "",
+        },
+        ctx,
+      ),
+      { origin: "drop-capture" },
+    );
+
+    if (result.ok && result.traceId) {
+      markUiConfirmationShown(result.traceId);
+    }
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDropActive(false);
+    const content = getDroppedText(event.dataTransfer);
+    if (content) {
+      void saveDroppedContent(content);
+    }
+  };
+
   return (
     <div
       data-tauri-drag-region
       onMouseDown={startWindowDrag}
+      onDragEnter={() => setDropActive(true)}
+      onDragLeave={() => setDropActive(false)}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
       style={
         {
           width: "100vw",
@@ -63,7 +113,13 @@ export function WidgetWindow() {
         className="pill"
         data-tauri-drag-region
         onMouseDown={startWindowDrag}
-        style={{ position: "relative", WebkitAppRegion: "drag" } as React.CSSProperties}
+        style={
+          {
+            position: "relative",
+            WebkitAppRegion: "drag",
+            borderColor: dropActive ? "rgba(79,124,255,0.38)" : undefined,
+          } as React.CSSProperties
+        }
       >
         <div
           style={{
@@ -109,4 +165,18 @@ export function WidgetWindow() {
       </div>
     </div>
   );
+}
+
+function getDroppedText(dataTransfer: DataTransfer) {
+  const uriList = dataTransfer
+    .getData("text/uri-list")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+  if (uriList) return uriList;
+
+  const plainText = dataTransfer.getData("text/plain").trim();
+  if (plainText) return plainText;
+
+  return null;
 }

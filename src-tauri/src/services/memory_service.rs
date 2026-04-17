@@ -49,4 +49,8 @@ impl MemoryService {
 
         self.capture_service.duplicate_from_memory(original).await
     }
+
+    pub async fn mark_opened(&self, id: &str) -> AppResult<Option<Memory>> {
+        self.repository.mark_opened(id, &chrono::Utc::now().to_rfc3339()).await
+    }
 }

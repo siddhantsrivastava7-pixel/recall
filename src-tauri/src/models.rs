@@ -22,6 +22,21 @@ pub enum LinkEnrichmentStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "TEXT")]
+#[sqlx(rename_all = "snake_case")]
+pub enum MemoryType {
+    Article,
+    Docs,
+    Tool,
+    Bookmark,
+    Note,
+    CodeSnippet,
+    Video,
+    Post,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum BookmarkBrowser {
@@ -87,17 +102,24 @@ pub struct Memory {
     pub resolved_description: Option<String>,
     pub resolved_image: Option<String>,
     pub resolved_site_name: Option<String>,
+    pub preview_text: Option<String>,
+    pub memory_type: Option<MemoryType>,
     pub topic_labels: Option<Json<Vec<String>>>,
+    pub primary_topic: Option<String>,
+    pub quality_score: Option<f64>,
     pub bookmark_quality_score: Option<f64>,
     pub is_duplicate_of: Option<String>,
     pub bookmark_folder_path: Option<String>,
     pub enrichment_status: Option<LinkEnrichmentStatus>,
+    pub enrichment_error: Option<String>,
     pub enriched_at: Option<String>,
     pub last_enriched_at: Option<String>,
     pub external_id: Option<String>,
     pub folder_path: Option<String>,
     pub source_app: Option<String>,
     pub source_window: Option<String>,
+    pub last_opened_at: Option<String>,
+    pub open_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -121,7 +143,7 @@ pub struct MemoryInput {
 
 #[derive(Debug, Clone)]
 pub struct LinkEnrichmentUpdate {
-    pub url: String,
+    pub url: Option<String>,
     pub domain: Option<String>,
     pub resolved_domain: Option<String>,
     pub canonical_url: Option<String>,
@@ -129,11 +151,16 @@ pub struct LinkEnrichmentUpdate {
     pub resolved_description: Option<String>,
     pub resolved_image: Option<String>,
     pub resolved_site_name: Option<String>,
+    pub preview_text: Option<String>,
+    pub memory_type: Option<MemoryType>,
     pub topic_labels: Option<Vec<String>>,
+    pub primary_topic: Option<String>,
+    pub quality_score: Option<f64>,
     pub bookmark_quality_score: Option<f64>,
     pub is_duplicate_of: Option<String>,
     pub bookmark_folder_path: Option<String>,
     pub enrichment_status: LinkEnrichmentStatus,
+    pub enrichment_error: Option<String>,
     pub enriched_at: Option<String>,
     pub last_enriched_at: Option<String>,
 }

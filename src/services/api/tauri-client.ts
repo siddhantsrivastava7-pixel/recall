@@ -26,6 +26,7 @@ export const tauriClient = {
   createMemory: (input: MemoryInput) => invoke<Memory>("create_memory", { input }),
   updateMemory: (id: string, input: MemoryInput) =>
     invoke<Memory>("update_memory", { id, input }),
+  markMemoryOpened: (id: string) => invoke<Memory | null>("mark_memory_opened", { id }),
   deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),
   duplicateMemory: (id: string) => invoke<Memory>("duplicate_memory", { id }),
   listProjects: () => invoke<Project[]>("list_projects"),

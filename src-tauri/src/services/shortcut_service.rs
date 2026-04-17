@@ -250,6 +250,7 @@ mod tests {
         assert_eq!(normalize_accelerator("alt+space"), "Alt+Space");
         assert_eq!(normalize_accelerator("Control+Shift+KeyS"), "Ctrl+Shift+S");
         assert_eq!(normalize_accelerator("Control+Shift+KeyO"), "Ctrl+Shift+O");
+        assert_eq!(normalize_accelerator("Command+Shift+KeyS"), "Super+Shift+S");
     }
 
     #[test]

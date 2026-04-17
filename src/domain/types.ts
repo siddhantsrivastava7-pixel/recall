@@ -4,6 +4,15 @@ export type SearchStrategy = "keyword" | "semantic";
 export type MemorySourceType = "manual" | "bookmark";
 export type BookmarkBrowser = "chrome" | "edge" | "brave" | "safari";
 export type LinkEnrichmentStatus = "pending" | "done" | "failed";
+export type MemoryType =
+  | "article"
+  | "docs"
+  | "tool"
+  | "bookmark"
+  | "note"
+  | "code_snippet"
+  | "video"
+  | "post";
 
 export interface Project {
   id: string;
@@ -29,17 +38,24 @@ export interface Memory {
   resolvedDescription?: string | null;
   resolvedImage?: string | null;
   resolvedSiteName?: string | null;
+  previewText?: string | null;
+  memoryType?: MemoryType | null;
   topicLabels?: string[] | null;
+  primaryTopic?: string | null;
+  qualityScore?: number | null;
   bookmarkQualityScore?: number | null;
   isDuplicateOf?: string | null;
   bookmarkFolderPath?: string | null;
   enrichmentStatus?: LinkEnrichmentStatus | null;
+  enrichmentError?: string | null;
   enrichedAt?: string | null;
   lastEnrichedAt?: string | null;
   externalId: string | null;
   folderPath: string | null;
   sourceApp: string | null;
   sourceWindow: string | null;
+  lastOpenedAt?: string | null;
+  openCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -123,6 +139,13 @@ export interface SearchResult {
   highlights: string[];
   strategy?: SearchStrategy;
   providerId?: string;
+}
+
+export interface SearchSuggestion {
+  memory: Memory;
+  score: number;
+  reason: string;
+  matchedTopics: string[];
 }
 
 export interface SearchQuery {

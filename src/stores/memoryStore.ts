@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Memory, MemoryFilters, MemoryInput } from "@/domain/types";
 import { deleteMemory, duplicateMemory, updateMemory } from "@/services/memories";
 import { saveCapturedMemory } from "@/services/capture/saveCapturedMemory";
+import { tauriClient } from "@/services/api/tauri-client";
 import {
   evaluateSearchVisibilityForMemory,
   markCaptureSuccess,
@@ -35,6 +36,7 @@ interface MemoryStoreState {
   update: (id: string, input: MemoryInput) => Promise<{ ok: boolean; error?: string }>;
   remove: (id: string) => Promise<{ ok: boolean; error?: string }>;
   duplicate: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  markOpened: (id: string) => Promise<void>;
   upsertMemory: (memory: Memory) => void;
   replaceMemory: (memory: Memory) => void;
   clearOperationMessage: () => void;
@@ -127,6 +129,20 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => ({
       return { ok: true };
     }
     return { ok: false, error: result.error ?? "Failed to duplicate." };
+  },
+
+  async markOpened(id) {
+    try {
+      const memory = await tauriClient.markMemoryOpened(id);
+      if (!memory) return;
+      set(state => ({
+        memories: sortMemoriesByUpdatedAt(
+          state.memories.map(m => m.id === id ? memory : m),
+        ),
+      }));
+    } catch (error) {
+      console.warn("[recall] Unable to mark memory opened", error);
+    }
   },
 
   upsertMemory(memory) {

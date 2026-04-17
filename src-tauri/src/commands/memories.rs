@@ -67,3 +67,16 @@ pub async fn duplicate_memory(
     emit_and_schedule_memory(&app, &state, &memory).await?;
     Ok(memory)
 }
+
+#[tauri::command]
+pub async fn mark_memory_opened(
+    app: AppHandle,
+    id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<Memory>> {
+    let memory = state.memory_service.mark_opened(&id).await?;
+    if let Some(ref memory) = memory {
+        app.emit("recall://memory-saved", memory)?;
+    }
+    Ok(memory)
+}
