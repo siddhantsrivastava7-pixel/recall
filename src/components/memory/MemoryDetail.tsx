@@ -112,18 +112,18 @@ export function MemoryDetail({
     () => normalizeReadingText(currentMemory.resolvedDescription),
     [currentMemory.resolvedDescription],
   );
+  const normalizedPreviewText = useMemo(
+    () => normalizeReadingText(currentMemory.previewText),
+    [currentMemory.previewText],
+  );
   const detailReadingContent = useMemo(() => {
-    if (
-      currentMemory.sourceType === "bookmark" &&
-      normalizedResolvedDescription &&
-      isRawUrlContent
-    ) {
-      return normalizedResolvedDescription;
+    if (isRawUrlContent) {
+      return normalizedResolvedDescription || normalizedPreviewText || normalizedContent;
     }
     return normalizedContent;
   }, [
-    currentMemory.sourceType,
     normalizedResolvedDescription,
+    normalizedPreviewText,
     isRawUrlContent,
     normalizedContent,
   ]);
@@ -656,7 +656,7 @@ export function MemoryDetail({
                   >
                     {detailReadingContent}
                   </div>
-                  {currentMemory.sourceType === "bookmark" && currentMemory.url && (
+                  {currentMemory.url && (
                     <a
                       href={currentMemory.url}
                       target="_blank"
