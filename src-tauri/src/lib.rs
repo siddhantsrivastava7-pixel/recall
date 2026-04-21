@@ -11,9 +11,10 @@ use commands::{
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
-        create_memory, delete_memory, duplicate_memory, get_memory, list_memories,
-        dismiss_memory_resurface, mark_memory_opened, set_memory_resurface, update_memory,
+        create_memory, delete_memory, dismiss_memory_resurface, duplicate_memory, get_memory,
+        list_memories, mark_memory_opened, set_memory_resurface, update_memory,
     },
+    pairing::{get_pairing_info, reset_pairing},
     platform::{detect_app_context, read_clipboard_text, write_clipboard_text},
     projects::{create_project, delete_project, list_projects, update_project},
     settings::{
@@ -28,8 +29,7 @@ use commands::{
 use db::seed::ensure_seed_data;
 use platform::factory::create_platform_services;
 use services::{
-    clipboard_watcher_service::start_clipboard_watcher,
-    shortcut_service::normalize_accelerator,
+    clipboard_watcher_service::start_clipboard_watcher, shortcut_service::normalize_accelerator,
 };
 use state::app_state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -269,6 +269,7 @@ pub fn run() {
                 }
                 start_bookmark_sync_loop(handle.clone());
                 start_clipboard_watcher(handle.clone());
+                managed.receiver_service.start(handle.clone());
 
                 if let Ok(memories) = runtime.block_on(managed.memory_service.list()) {
                     runtime.block_on(
@@ -320,6 +321,8 @@ pub fn run() {
             get_license_state,
             activate_license,
             deactivate_license,
+            get_pairing_info,
+            reset_pairing,
             open_main_window,
             open_search_overlay,
             open_quick_save_window,

@@ -71,6 +71,27 @@ export interface ShortcutBinding {
   description: string;
 }
 
+export interface PairingInfo {
+  deviceId: string;
+  pairingSecret: string;
+  desktopName: string;
+  endpoint: string | null;
+  port: number | null;
+  createdAt: string;
+  receiverRunning: boolean;
+  pairingStatus: "ready" | "not_running" | string;
+  qrPayload: string;
+}
+
+export interface PairingQrPayload {
+  protocol: "recall-local-pairing";
+  version: 1;
+  deviceId: string;
+  desktopName: string;
+  endpoint: string | null;
+  secret: string;
+}
+
 export type ShortcutAction =
   | "open-search"
   | "open-quick-save"

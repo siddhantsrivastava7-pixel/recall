@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck } from "lucide-react";
+import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
+import { usePairingStore } from "@/features/pairing/pairingStore";
 import { tauriClient } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
 import { getBookmarkBrowserOptions } from "@/domain/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
 import type { ShortcutBinding } from "@/domain/types";
 
-type Tab = "general" | "shortcuts" | "bookmarks" | "updates" | "license";
+type Tab = "general" | "shortcuts" | "bookmarks" | "pairing" | "updates" | "license";
 
 export function SettingsView() {
   const [tab, setTab] = useState<Tab>("general");
@@ -19,6 +20,7 @@ export function SettingsView() {
     { id: "general",   label: "General",   icon: <Zap      size={14} /> },
     { id: "shortcuts", label: "Shortcuts", icon: <Keyboard size={14} /> },
     { id: "bookmarks", label: "Bookmarks", icon: <BookOpen size={14} /> },
+    { id: "pairing",   label: "Pairing",   icon: <Smartphone size={14} /> },
     { id: "updates",   label: "Updates",   icon: <PackageCheck size={14} /> },
     { id: "license",   label: "License",   icon: <Key      size={14} /> },
   ];
@@ -55,6 +57,7 @@ export function SettingsView() {
         {tab === "general"   && <GeneralTab />}
         {tab === "shortcuts" && <ShortcutsTab />}
         {tab === "bookmarks" && <BookmarksTab />}
+        {tab === "pairing"   && <PairingTab />}
         {tab === "updates"   && <UpdatesTab />}
         {tab === "license"   && <LicenseTab />}
       </div>
@@ -293,6 +296,87 @@ function BookmarksTab() {
             <RefreshCw size={11} /> Last synced {formatLongTimestamp(settings.bookmarkLastSyncedAt)}
           </div>
         )}
+      </div>
+    </Section>
+  );
+}
+
+/* Pairing */
+function PairingTab() {
+  const { info, loading, error, hydrate, reset } = usePairingStore();
+
+  useEffect(() => {
+    void hydrate();
+  }, [hydrate]);
+
+  return (
+    <Section title="Mobile Pairing">
+      <div
+        style={{
+          padding: "18px 22px",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border-default)",
+          borderRadius: 16,
+          marginBottom: 18,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 18, alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>
+              {info?.receiverRunning ? "Ready to receive from phone" : "Receiver starting"}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
+              Pairing is local-only. Your phone sends memories directly to this desktop over the same Wi-Fi.
+            </div>
+            <div style={{ marginTop: 12, fontSize: 12, color: "rgba(255,255,255,0.38)", lineHeight: 1.8 }}>
+              <div>Desktop: {info?.desktopName ?? "Loading..."}</div>
+              <div>Endpoint: {info?.endpoint ?? "Waiting for local network..."}</div>
+              <div>Device ID: {info?.deviceId ?? "Loading..."}</div>
+            </div>
+          </div>
+
+          <button className="btn-ghost" onClick={() => void reset()} disabled={loading}>
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+            Reset pairing
+          </button>
+        </div>
+
+        <div
+          style={{
+            marginTop: 18,
+            padding: 14,
+            borderRadius: 14,
+            background: "rgba(255,255,255,0.035)",
+            border: "1px solid rgba(255,255,255,0.06)",
+          }}
+        >
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.36)", marginBottom: 8 }}>
+            QR payload for mobile
+          </div>
+          <code
+            style={{
+              display: "block",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: 12,
+              lineHeight: 1.6,
+              color: "rgba(255,255,255,0.68)",
+            }}
+          >
+            {info?.qrPayload ?? "Generating pairing payload..."}
+          </code>
+        </div>
+
+        {error && (
+          <div style={{ marginTop: 12, fontSize: 13, color: "var(--danger)" }}>
+            {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12, lineHeight: 1.7, color: "rgba(255,255,255,0.34)" }}>
+        The phone must call <code>GET /api/ping</code> or <code>POST /api/push-memory</code> with
+        <code> Authorization: Bearer &lt;secret&gt;</code>. Reset pairing if a QR code was shared by mistake.
       </div>
     </Section>
   );

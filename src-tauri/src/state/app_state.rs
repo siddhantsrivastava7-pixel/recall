@@ -17,7 +17,9 @@ use crate::{
         license_service::{LicenseService, LocalLicenseVerifier},
         link_enrichment_service::LinkEnrichmentService,
         memory_service::MemoryService,
+        pairing_service::PairingService,
         project_service::ProjectService,
+        receiver_service::DesktopReceiverService,
         settings_service::SettingsService,
         shortcut_service::ShortcutService,
     },
@@ -37,6 +39,8 @@ pub struct AppState {
     pub license_service: Arc<LicenseService>,
     pub bookmark_service: Arc<BookmarkIngestionService>,
     pub link_enrichment_service: Arc<LinkEnrichmentService>,
+    pub pairing_service: Arc<PairingService>,
+    pub receiver_service: Arc<DesktopReceiverService>,
     pub platform: PlatformServices,
     /// Set if initialization failed — bootstrap_app returns this as an error
     pub init_error: Option<String>,
@@ -71,6 +75,13 @@ impl AppState {
             LinkEnrichmentService::new(memory_repository.clone())
                 .expect("link enrichment service should initialize"),
         );
+        let pairing_service = Arc::new(PairingService::new(pool.clone()));
+        let receiver_service = Arc::new(DesktopReceiverService::new(
+            pairing_service.clone(),
+            memory_service.clone(),
+            memory_repository.clone(),
+            link_enrichment_service.clone(),
+        ));
         let bookmark_service = Arc::new(BookmarkIngestionService::new(
             memory_repository.clone(),
             capture_service.clone(),
@@ -94,6 +105,8 @@ impl AppState {
             license_service,
             bookmark_service,
             link_enrichment_service,
+            pairing_service,
+            receiver_service,
             platform,
             init_error: None,
             startup_bookmark_sync_completed: AtomicBool::new(false),

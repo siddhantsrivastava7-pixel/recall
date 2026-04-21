@@ -171,6 +171,31 @@ pub struct LinkEnrichmentUpdate {
     pub last_enriched_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingInfo {
+    pub device_id: String,
+    pub pairing_secret: String,
+    pub desktop_name: String,
+    pub endpoint: Option<String>,
+    pub port: Option<u16>,
+    pub created_at: String,
+    pub receiver_running: bool,
+    pub pairing_status: String,
+    pub qr_payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingQrPayload {
+    pub protocol: String,
+    pub version: u8,
+    pub device_id: String,
+    pub desktop_name: String,
+    pub endpoint: Option<String>,
+    pub secret: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
