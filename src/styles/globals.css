@@ -983,20 +983,11 @@ html[data-recall-window="quick-save"] #root {
   border: none;
   padding: 0;
 }
-.toggle::after {
-  content: "";
-  position: absolute;
-  left: 2px;
-  top: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: transform 200ms var(--ease);
-}
+/* Thumb is rendered as an explicit `<div class="toggle-thumb">` child by
+   the production Toggle component; positions live in the legacy compat
+   block below so we don't get two thumbs (one from ::after, one from
+   the child div) drawn at offset positions. */
 .toggle.on { background: var(--accent); }
-.toggle.on::after { transform: translateX(16px); }
 .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -1450,12 +1441,14 @@ html[data-recall-window="quick-save"] #root {
 .pill-btn.active { color: var(--accent); background: var(--accent-soft); }
 .pill-sep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 2px; }
 
-/* Legacy toggle thumb — produced by old <Toggle> component splitting the
-   thumb into its own element. New toggle uses a ::after pseudo. */
+/* Toggle thumb — child element rendered by the production <Toggle>
+   component. Positioned to match the .toggle (38x22) rule above:
+   18px thumb + 2px padding on the left/top, slides to left:18 when on
+   (38 - 18 - 2 = 18 → leaves matching 2px on the right). */
 .toggle-thumb {
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 2px;
+  left: 2px;
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -1463,7 +1456,7 @@ html[data-recall-window="quick-save"] #root {
   box-shadow: 0 1px 3px var(--sh-card);
   transition: left 200ms ease;
 }
-.toggle.on .toggle-thumb { left: 23px; }
+.toggle.on .toggle-thumb { left: 18px; }
 
 /* Legacy tag/eyebrow/accent-line/glass — light-touch remap */
 .eyebrow {
