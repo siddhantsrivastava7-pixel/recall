@@ -38,8 +38,14 @@ export function QuickSaveWindow() {
       window.setTimeout(() => textareaRef.current?.focus(), 60);
     }
 
+    // Force the underlying NSWindow (macOS) / HWND (Windows) background to
+    // fully transparent. macOS WKWebView keeps its NSWindow's default opaque
+    // background otherwise, which paints as a white/gray rectangle around
+    // the rounded panel in light mode.
     document.body.style.background = "transparent";
     document.documentElement.style.background = "transparent";
+    document.getElementById("root")?.style.setProperty("background", "transparent", "important");
+    void getCurrentWindow().setBackgroundColor([0, 0, 0, 0]);
 
     void refreshDraftFromClipboard();
 

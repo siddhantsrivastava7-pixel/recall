@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { FileText, Globe, Search, X } from "lucide-react";
 
 import {
@@ -42,8 +43,14 @@ export function SearchWindow() {
     : recentMemories.map((memory) => ({ memory, score: 1, highlights: [] }));
 
   useEffect(() => {
+    // Force the underlying NSWindow (macOS) / HWND (Windows) background to
+    // fully transparent. macOS WKWebView keeps its NSWindow's default opaque
+    // background otherwise, which paints as a white/gray rectangle around
+    // the rounded panel in light mode.
     document.body.style.background = "transparent";
     document.documentElement.style.background = "transparent";
+    document.getElementById("root")?.style.setProperty("background", "transparent", "important");
+    void getCurrentWindow().setBackgroundColor([0, 0, 0, 0]);
     setTimeout(() => inputRef.current?.focus(), 60);
   }, []);
 
