@@ -1,0 +1,231 @@
+name: Release updater
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish. Defaults to package.json."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recall-release-updater-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    name: Build Windows updater artifact
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Windows MSI
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri:build -- --bundles msi
+
+      - name: Upload Windows updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-windows-updater
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.sig
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS arm64 updater artifact
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build macOS app updater artifact
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri:build -- --bundles app
+
+      - name: Upload macOS updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-macos-aarch64-updater
+          path: |
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error
+
+  publish:
+    name: Publish release and updater manifest
+    runs-on: ubuntu-latest
+    needs:
+      - build-windows
+      - build-macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Publish GitHub release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$REQUESTED_VERSION"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+
+          TAG="v${VERSION}"
+          NOTES="Release ${TAG}"
+
+          WINDOWS_MSI="$(find release-artifacts -type f -name '*.msi' | sort | head -n 1)"
+          WINDOWS_SIG="$(find release-artifacts -type f -name '*.msi.sig' -o -name '*.sig' | sort | grep -i 'msi' | head -n 1)"
+          MAC_TAR="$(find release-artifacts -type f -name '*.app.tar.gz' | sort | head -n 1)"
+          MAC_SIG="$(find release-artifacts -type f -name '*.app.tar.gz.sig' | sort | head -n 1)"
+
+          if [ -z "$WINDOWS_MSI" ] || [ -z "$WINDOWS_SIG" ]; then
+            echo "Windows MSI or signature artifact not found." >&2
+            find release-artifacts -type f >&2
+            exit 1
+          fi
+
+          if [ -z "$MAC_TAR" ] || [ -z "$MAC_SIG" ]; then
+            echo "macOS tar.gz or signature artifact not found." >&2
+            find release-artifacts -type f >&2
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$WINDOWS_MSI" "$WINDOWS_SIG" "$MAC_TAR" "$MAC_SIG" --clobber
+            gh release edit "$TAG" --title "Recall ${TAG}" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$WINDOWS_MSI" "$WINDOWS_SIG" "$MAC_TAR" "$MAC_SIG" \
+              --title "Recall ${TAG}" \
+              --notes "$NOTES" \
+              --target "${GITHUB_SHA}"
+          fi
+
+          WINDOWS_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$WINDOWS_MSI")"
+          MAC_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$MAC_TAR")"
+
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "windows_url=${WINDOWS_URL}"
+            echo "mac_url=${MAC_URL}"
+            echo "windows_sig_path=${WINDOWS_SIG}"
+            echo "mac_sig_path=${MAC_SIG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write updater manifest
+        env:
+          VERSION: ${{ steps.publish.outputs.version }}
+          WINDOWS_URL: ${{ steps.publish.outputs.windows_url }}
+          MAC_URL: ${{ steps.publish.outputs.mac_url }}
+          WINDOWS_SIG_PATH: ${{ steps.publish.outputs.windows_sig_path }}
+          MAC_SIG_PATH: ${{ steps.publish.outputs.mac_sig_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p updates
+
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def read_signature(path: str) -> str:
+              return Path(path).read_text(encoding="utf-8").strip()
+
+          manifest = {
+              "version": os.environ["VERSION"],
+              "notes": f"Release v{os.environ['VERSION']}",
+              "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "windows-x86_64": {
+                      "signature": read_signature(os.environ["WINDOWS_SIG_PATH"]),
+                      "url": os.environ["WINDOWS_URL"],
+                  },
+                  "darwin-aarch64": {
+                      "signature": read_signature(os.environ["MAC_SIG_PATH"]),
+                      "url": os.environ["MAC_URL"],
+                  },
+              },
+          }
+
+          Path("updates/latest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Commit updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add updates/latest.json
+          if git diff --cached --quiet; then
+            echo "Updater manifest already current."
+          else
+            git commit -m "update updater manifest for v${{ steps.publish.outputs.version }}"
+            git push origin HEAD:main
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Recall updater release"
+            echo ""
+            echo "- Version: ${{ steps.publish.outputs.version }}"
+            echo "- Release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.publish.outputs.tag }}"
+            echo "- Manifest: https://raw.githubusercontent.com/${{ github.repository }}/main/updates/latest.json"
+            echo "- Windows: ${{ steps.publish.outputs.windows_url }}"
+            echo "- macOS arm64: ${{ steps.publish.outputs.mac_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"

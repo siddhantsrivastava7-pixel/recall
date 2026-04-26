@@ -1,0 +1,46 @@
+{
+  "name": "recall",
+  "private": true,
+  "version": "0.1.13",
+  "type": "module",
+  "scripts": {
+    "ai": "node .claude/codex-wrapper.js",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "evaluate:capture": "vitest run src/services/capture/CaptureTrustHarness.test.ts --reporter=verbose",
+    "evaluate:search": "vitest run src/services/search/SearchEvaluationHarness.test.ts --reporter=verbose",
+    "test:capture": "vitest run src/services/capture/CaptureInputBuilder.test.ts src/services/capture/captureSync.test.ts src/services/capture/captureTrust.test.ts",
+    "test:search": "vitest run src/services/search/KeywordSearchProvider.test.ts src/services/search/SearchEvaluationHarness.test.ts src/services/search/searchSuggestions.test.ts src/services/context/ContextEngine.test.ts",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "release:github": "powershell -ExecutionPolicy Bypass -File scripts/release-github.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.3.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.0",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.3.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.4"
+  }
+}

@@ -1,0 +1,46 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS bundle
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate platform icons
+        run: npm run tauri -- icon src-tauri/icons/icon.svg
+
+      - name: Build macOS app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri:build -- --bundles app
+
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: recall-macos-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/macos/**/*.app
+            src-tauri/target/release/bundle/dmg/**/*.dmg
+            src-tauri/target/release/bundle/macos/**/*.tar.gz
+            src-tauri/target/release/bundle/macos/**/*.sig
+            src-tauri/target/release/bundle/dmg/**/*.sig
+          if-no-files-found: error

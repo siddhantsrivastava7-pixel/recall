@@ -1,0 +1,230 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { Memory, Project } from "@/domain/types";
+import {
+  buildSessionContext,
+  getProjectRelevantMemories,
+  getRecallFeed,
+  getRelatedMemories,
+  scoreRelatedMemory,
+} from "@/services/context/ContextEngine";
+
+const memory = ({
+  id,
+  content,
+  ...overrides
+}: Partial<Memory> & Pick<Memory, "id" | "content">): Memory => ({
+  id,
+  sourceType: "manual",
+  title: null,
+  content,
+  note: null,
+  projectId: null,
+  projectName: null,
+  url: null,
+  domain: null,
+  resolvedDomain: null,
+  canonicalUrl: null,
+  resolvedTitle: null,
+  resolvedDescription: null,
+  resolvedImage: null,
+  resolvedSiteName: null,
+  previewText: null,
+  memoryType: null,
+  topicLabels: null,
+  primaryTopic: null,
+  qualityScore: 40,
+  bookmarkQualityScore: 0,
+  isDuplicateOf: null,
+  bookmarkFolderPath: null,
+  enrichmentStatus: "done",
+  enrichmentError: null,
+  enrichedAt: null,
+  lastEnrichedAt: null,
+  externalId: null,
+  folderPath: null,
+  sourceApp: null,
+  sourceWindow: null,
+  lastOpenedAt: null,
+  openCount: 0,
+  createdAt: "2026-04-01T09:00:00.000Z",
+  updatedAt: "2026-04-01T09:00:00.000Z",
+  ...overrides,
+});
+
+const project = (id: string, name: string): Project => ({
+  id,
+  name,
+  description: null,
+  createdAt: "2026-04-01T09:00:00.000Z",
+  updatedAt: "2026-04-01T09:00:00.000Z",
+});
+
+describe("ContextEngine", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-10T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uses session topics to find related memories", () => {
+    const memories = [
+      memory({
+        id: "pricing",
+        title: "Pricing narrative",
+        content: "Board pricing notes",
+        topicLabels: ["Pricing", "Board"],
+        qualityScore: 80,
+      }),
+      memory({
+        id: "design",
+        title: "Animation timing",
+        content: "Motion notes",
+        topicLabels: ["Motion"],
+        qualityScore: 90,
+      }),
+    ];
+    const context = buildSessionContext(memories, {
+      recentQueries: ["pricing board"],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "all",
+    });
+    const feed = getRecallFeed(memories, [], context);
+
+    expect(feed.youMightAlsoNeed[0]?.memory.id).toBe("pricing");
+  });
+
+  it("finds related memories from topic and domain overlap", () => {
+    const current = memory({
+      id: "github-docs",
+      title: "GitHub Actions docs",
+      content: "https://github.com/features/actions",
+      domain: "github.com",
+      topicLabels: ["CI", "GitHub"],
+      qualityScore: 75,
+    });
+    const related = memory({
+      id: "ci-notes",
+      title: "CI release checklist",
+      content: "Pipeline notes",
+      topicLabels: ["CI"],
+      qualityScore: 70,
+    });
+    const context = buildSessionContext([current, related], {
+      recentQueries: [],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "all",
+    });
+
+    expect(getRelatedMemories(current, [current, related], context)[0]?.memory.id).toBe("ci-notes");
+  });
+
+  it("scores related memories with the deterministic weighted formula", () => {
+    const current = memory({
+      id: "stripe-pricing",
+      title: "Stripe pricing guide",
+      content: "https://stripe.com/pricing",
+      domain: "stripe.com",
+      topicLabels: ["Pricing", "SaaS"],
+      qualityScore: 80,
+    });
+    const related = memory({
+      id: "stripe-billing",
+      title: "Stripe billing pricing notes",
+      content: "https://stripe.com/billing",
+      domain: "stripe.com",
+      topicLabels: ["Pricing"],
+      qualityScore: 80,
+      createdAt: "2026-04-10T12:00:00.000Z",
+      updatedAt: "2026-04-10T12:00:00.000Z",
+    });
+
+    const scored = scoreRelatedMemory(current, related);
+
+    expect(scored.score).toBeGreaterThan(45);
+    expect(scored.reason).toBe("Shared topic");
+  });
+
+  it("excludes duplicate urls from related memories", () => {
+    const current = memory({
+      id: "original",
+      title: "Recall roadmap",
+      content: "https://example.com/roadmap",
+      url: "https://example.com/roadmap",
+      canonicalUrl: "https://example.com/roadmap",
+      topicLabels: ["Roadmap"],
+      qualityScore: 90,
+    });
+    const duplicate = memory({
+      id: "duplicate",
+      title: "Recall roadmap copy",
+      content: "https://example.com/roadmap/",
+      url: "https://example.com/roadmap/",
+      canonicalUrl: "https://example.com/roadmap",
+      topicLabels: ["Roadmap"],
+      qualityScore: 90,
+    });
+    const context = buildSessionContext([current, duplicate], {
+      recentQueries: [],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "all",
+    });
+
+    expect(getRelatedMemories(current, [current, duplicate], context)).toHaveLength(0);
+  });
+
+  it("does not treat shared inbox or weak .com metadata as a relation", () => {
+    const current = memory({
+      id: "x-post",
+      title: "X post by @founder",
+      content: "https://x.com/founder/status/123456789",
+      projectId: "inbox",
+      projectName: "Inbox",
+      domain: "x.com",
+      topicLabels: ["Founder"],
+      qualityScore: 42,
+    });
+    const unrelated = memory({
+      id: "hotel",
+      title: "The Waverly Hotel",
+      content: "https://makemytrip.com/hotels/example",
+      projectId: "inbox",
+      projectName: "Inbox",
+      domain: "makemytrip.com",
+      topicLabels: ["Hotel"],
+      qualityScore: 90,
+    });
+    const context = buildSessionContext([current, unrelated], {
+      recentQueries: [],
+      recentlyOpenedMemoryIds: [],
+      recentCaptureIds: [],
+      activeProjectId: "inbox",
+    });
+
+    expect(getRelatedMemories(current, [current, unrelated], context)).toHaveLength(0);
+  });
+
+  it("suggests memories relevant to an active project", () => {
+    const projects = [project("project-pricing", "Pricing")];
+    const memories = [
+      memory({
+        id: "pricing-bookmark",
+        sourceType: "bookmark",
+        title: "Pricing research",
+        content: "https://example.com/pricing",
+        topicLabels: ["Pricing"],
+        qualityScore: 78,
+      }),
+    ];
+
+    expect(
+      getProjectRelevantMemories(memories, projects, "project-pricing")[0]?.memory.id,
+    ).toBe("pricing-bookmark");
+  });
+});
