@@ -12,4 +12,5 @@ pub mod pairing_service;
 pub mod project_service;
 pub mod receiver_service;
 pub mod settings_service;
+pub mod spoken_transcript_service;
 pub mod shortcut_service;

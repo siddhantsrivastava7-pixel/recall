@@ -22,6 +22,7 @@ use crate::{
         receiver_service::DesktopReceiverService,
         settings_service::SettingsService,
         shortcut_service::ShortcutService,
+        spoken_transcript_service::SpokenTranscriptService,
     },
 };
 
@@ -39,6 +40,7 @@ pub struct AppState {
     pub license_service: Arc<LicenseService>,
     pub bookmark_service: Arc<BookmarkIngestionService>,
     pub link_enrichment_service: Arc<LinkEnrichmentService>,
+    pub spoken_transcript_service: Arc<SpokenTranscriptService>,
     pub pairing_service: Arc<PairingService>,
     pub receiver_service: Arc<DesktopReceiverService>,
     pub platform: PlatformServices,
@@ -75,6 +77,8 @@ impl AppState {
             LinkEnrichmentService::new(memory_repository.clone())
                 .expect("link enrichment service should initialize"),
         );
+        let spoken_transcript_service =
+            Arc::new(SpokenTranscriptService::new(memory_repository.clone()));
         let pairing_service = Arc::new(PairingService::new(pool.clone()));
         let receiver_service = Arc::new(DesktopReceiverService::new(
             pairing_service.clone(),
@@ -105,6 +109,7 @@ impl AppState {
             license_service,
             bookmark_service,
             link_enrichment_service,
+            spoken_transcript_service,
             pairing_service,
             receiver_service,
             platform,

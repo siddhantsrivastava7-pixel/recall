@@ -7,6 +7,9 @@ use tokio::time::{sleep, Duration};
 use crate::{
     models::{MemoryInput, MemorySourceType},
     services::link_utils::detect_primary_url,
+    services::spoken_transcript_service::{
+        is_spoken_context, is_spoken_running, looks_like_spoken_text,
+    },
     state::app_state::AppState,
 };
 
@@ -103,6 +106,32 @@ async fn save_clipboard_capture(
             source_app: None,
             source_window: None,
         });
+
+    // Spoken-transcript routing: if a Spoken process is running (or Spoken is
+    // somehow the frontmost surface) AND the content reads as spoken-language
+    // text, fold it into today's daily transcript memory rather than creating
+    // a separate memory per line. URLs / code / tabular content fall through
+    // to the normal capture path so link enrichment + bookmark intelligence
+    // still run.
+    let route_to_spoken =
+        (is_spoken_running() || is_spoken_context(&context)) && looks_like_spoken_text(&content);
+    if route_to_spoken {
+        let transcript = state
+            .spoken_transcript_service
+            .capture_clipboard_snippet(content, &context)
+            .await?;
+
+        app.emit("recall://memory-saved", &transcript)?;
+
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "[recall][clipboard-watch] appended spoken transcript memory_id={}",
+                transcript.id
+            );
+        }
+
+        return Ok(transcript.id);
+    }
 
     let memory = state
         .memory_service

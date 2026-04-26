@@ -33,3 +33,19 @@ fastlane/test_output
 
 # Claude
 .claude/
+
+# Tauri / Node — restored after iOS merge stripped them
+node_modules/
+dist/
+src-tauri/target/
+
+.env
+.env.*
+*.log
+
+*.key
+*.key.pub
+
+Thumbs.db
+
+updates/*.tmp
