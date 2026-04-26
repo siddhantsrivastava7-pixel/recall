@@ -11,6 +11,9 @@ import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@/styles/globals.css";
 import { WindowRouter } from "@/windows/WindowRouter";
+import { bootstrapTheme } from "@/hooks/useSystemTheme";
+
+bootstrapTheme();
 
 const currentWindowLabel = getCurrentWindow().label;
 
