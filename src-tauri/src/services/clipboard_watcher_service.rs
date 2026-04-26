@@ -6,7 +6,6 @@ use tokio::time::{sleep, Duration};
 
 use crate::{
     models::{MemoryInput, MemorySourceType},
-    services::link_utils::detect_primary_url,
     services::spoken_transcript_service::{
         detect_transcription_app, looks_like_transcript_text,
     },
@@ -14,7 +13,6 @@ use crate::{
 };
 
 const CLIPBOARD_POLL_INTERVAL_MS: u64 = 900;
-const MIN_MEANINGFUL_TEXT_CHARS: usize = 20;
 const RECENT_CAPTURE_SIGNATURE_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,14 +174,13 @@ fn remember_signature(recent: &mut VecDeque<String>, signature: String) {
     }
 }
 
+/// Accepts any non-empty trimmed content. Earlier versions enforced a 20-char
+/// floor to filter out clipboard noise, but that swallowed deliberate short
+/// captures (a phone number, a name, a transcript snippet, a quick fact). The
+/// user explicitly initiated the copy, so trust them; signature dedupe + the
+/// recent-capture bloom guard already prevent the worst flood scenarios.
 pub fn is_meaningful_clipboard_content(content: &str) -> bool {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    detect_primary_url(trimmed, None).is_some()
-        || trimmed.chars().count() > MIN_MEANINGFUL_TEXT_CHARS
+    !content.trim().is_empty()
 }
 
 pub fn clipboard_signature(content: &str) -> Option<String> {
@@ -217,9 +214,17 @@ mod tests {
     }
 
     #[test]
-    fn meaningful_clipboard_content_rejects_noise() {
+    fn meaningful_clipboard_content_accepts_short_intentional_captures() {
+        // Short text is intentionally accepted — the user copied it on
+        // purpose. Noise filtering is signature-dedupe's job, not length.
+        assert!(is_meaningful_clipboard_content("short text"));
+        assert!(is_meaningful_clipboard_content("ok"));
+        assert!(is_meaningful_clipboard_content("Apr 26"));
+    }
+
+    #[test]
+    fn meaningful_clipboard_content_rejects_only_whitespace() {
         assert!(!is_meaningful_clipboard_content(""));
-        assert!(!is_meaningful_clipboard_content("short text"));
         assert!(!is_meaningful_clipboard_content("   \n\t   "));
     }
 

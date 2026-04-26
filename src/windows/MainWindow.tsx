@@ -21,7 +21,7 @@ import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUpdateStore } from "@/stores/updateStore";
-import { Dashboard } from "@/components/dashboard/Dashboard";
+import { HomeBriefing } from "@/components/dashboard/HomeBriefing";
 import { MemoriesView } from "@/components/memory/MemoriesView";
 import { ProjectsView } from "@/components/memory/ProjectsView";
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -82,7 +82,7 @@ export function MainWindow() {
         <Sidebar view={view} setView={setView} />
         <main className="main">
           <div className="main-scroll">
-            {view === "dashboard" && <Dashboard setView={setView} />}
+            {view === "dashboard" && <HomeBriefing setView={setView} />}
             {view === "memories" && <MemoriesView />}
             {view === "projects" && <ProjectsView setView={setView} />}
             {view === "settings" && <SettingsView />}
