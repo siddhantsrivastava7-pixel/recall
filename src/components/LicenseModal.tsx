@@ -159,7 +159,7 @@ export function LicenseModal() {
         </div>
 
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.34)" }}>
+          <span style={{ fontSize: 12, color: "var(--t-3)" }}>
             Don&apos;t have a key yet?
           </span>
           <button
@@ -208,7 +208,7 @@ export function LicenseModal() {
           </div>
         )}
 
-        <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "rgba(255,255,255,0.34)", lineHeight: 1.6 }}>
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, color: "var(--t-3)", lineHeight: 1.6 }}>
           Trial validation happens once online. After activation, your license state is stored locally and Recall works offline until expiry.
         </div>
       </section>

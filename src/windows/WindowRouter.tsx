@@ -112,7 +112,7 @@ function BootSplash() {
       >
         <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#4F7CFF" }} />
       </div>
-      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.28)", letterSpacing: "0.08em" }}>
+      <span style={{ fontSize: 12, color: "var(--t-4)", letterSpacing: "0.08em" }}>
         Starting Recall…
       </span>
     </div>
@@ -140,7 +140,7 @@ function ErrorScreen({ message }: { message: string }) {
       <span
         style={{
           fontSize: 12,
-          color: "rgba(255,255,255,0.4)",
+          color: "var(--t-3)",
           textAlign: "center",
           maxWidth: 520,
           wordBreak: "break-word",

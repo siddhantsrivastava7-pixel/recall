@@ -222,7 +222,7 @@ export function QuickSaveWindow() {
                 fontWeight: 700,
                 letterSpacing: "0.1em",
                 textTransform: "uppercase",
-                color: "rgba(255,255,255,0.5)",
+                color: "var(--t-3)",
               }}
             >
               Quick Capture
@@ -240,7 +240,7 @@ export function QuickSaveWindow() {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "rgba(255,255,255,0.3)",
+              color: "var(--t-3)",
               cursor: "pointer",
             }}
           >
@@ -348,7 +348,7 @@ export function QuickSaveWindow() {
               alignItems: "center",
               gap: 5,
               fontSize: 12,
-              color: "rgba(255,255,255,0.3)",
+              color: "var(--t-3)",
               background: "none",
               border: "none",
               cursor: "pointer",
@@ -373,7 +373,7 @@ export function QuickSaveWindow() {
                 : content.trim()
                   ? "linear-gradient(135deg, #4F7CFF 0%, #6B96FF 100%)"
                   : "rgba(79,124,255,0.15)",
-              color: content.trim() ? "#fff" : "rgba(255,255,255,0.3)",
+              color: content.trim() ? "#fff" : "var(--t-3)",
               border: "1px solid rgba(79,124,255,0.35)",
               borderRadius: 10,
               fontSize: 13,
@@ -390,9 +390,9 @@ export function QuickSaveWindow() {
               <span
                 className="kbd"
                 style={{
-                  background: "rgba(255,255,255,0.15)",
+                  background: "var(--t-4)",
                   borderColor: "transparent",
-                  color: "rgba(255,255,255,0.7)",
+                  color: "var(--t-2)",
                 }}
               >
                 Ctrl+Enter
@@ -428,7 +428,7 @@ function MetaRow({
         style={{
           fontSize: 11,
           fontWeight: 600,
-          color: "rgba(255,255,255,0.28)",
+          color: "var(--t-4)",
           textTransform: "uppercase",
           letterSpacing: "0.08em",
           width: 52,

@@ -191,7 +191,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
             <span
               className="tag"
               style={{
-                color: "rgba(255,255,255,0.42)",
+                color: "var(--t-3)",
               }}
             >
               {domain}
@@ -297,7 +297,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
           <div
             style={{
               marginBottom: 4,
-              color: "rgba(255,255,255,0.30)",
+              color: "var(--t-3)",
               fontSize: 10,
               fontWeight: 650,
               letterSpacing: "0.12em",
@@ -339,7 +339,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
               style={{
                 fontSize: 10,
                 padding: "2px 7px",
-                color: "rgba(255,255,255,0.34)",
+                color: "var(--t-3)",
               }}
             >
               {topic}
@@ -373,7 +373,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
                   background: "transparent",
                   border: "none",
                   outline: "none",
-                  color: "rgba(255,255,255,0.72)",
+                  color: "var(--t-2)",
                   fontFamily: "inherit",
                   fontSize: 13,
                   lineHeight: 1.55,
@@ -409,7 +409,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
                 background: "none",
                 border: "none",
                 padding: 0,
-                color: noteText ? "rgba(255,255,255,0.46)" : "rgba(255,255,255,0.26)",
+                color: noteText ? "var(--t-3)" : "var(--t-4)",
                 fontSize: 12,
                 lineHeight: 1.55,
                 fontFamily: "inherit",
@@ -430,7 +430,7 @@ export function MemoryCard({ memory, resurfaced, onSelect }: Props) {
           gap: 8,
           marginTop: "auto",
           fontSize: 12,
-          color: "rgba(255,255,255,0.32)",
+          color: "var(--t-3)",
           flexWrap: "wrap",
         }}
       >
@@ -487,7 +487,7 @@ const BringBackMenu = forwardRef<HTMLDivElement, {
       >
         <span
           style={{
-            color: "rgba(255,255,255,0.34)",
+            color: "var(--t-3)",
             fontSize: 11,
             fontWeight: 600,
             letterSpacing: "0.08em",
@@ -508,7 +508,7 @@ const BringBackMenu = forwardRef<HTMLDivElement, {
             borderRadius: 8,
             border: "1px solid rgba(255,255,255,0.05)",
             background: "rgba(255,255,255,0.04)",
-            color: "rgba(255,255,255,0.42)",
+            color: "var(--t-3)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -532,7 +532,7 @@ const BringBackMenu = forwardRef<HTMLDivElement, {
           background: "rgba(255,255,255,0.04)",
           border: "1px solid rgba(255,255,255,0.06)",
           borderRadius: 10,
-          color: "rgba(255,255,255,0.66)",
+          color: "var(--t-2)",
           padding: "7px 8px",
           fontSize: 12,
           fontFamily: "inherit",
@@ -562,7 +562,7 @@ function MenuButton({
         border: "none",
         borderRadius: 10,
         background: "transparent",
-        color: muted ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.68)",
+        color: muted ? "var(--t-3)" : "var(--t-2)",
         fontSize: 12,
         textAlign: "left",
         cursor: "pointer",
@@ -615,7 +615,7 @@ function CardAction({
           ? "var(--blue)"
           : danger
             ? "rgba(248,113,113,0.75)"
-            : "rgba(255,255,255,0.38)",
+            : "var(--t-3)",
         cursor: "pointer",
         transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
       }}
@@ -645,7 +645,7 @@ function CardAction({
           ? "var(--blue)"
           : danger
             ? "rgba(248,113,113,0.75)"
-            : "rgba(255,255,255,0.38)";
+            : "var(--t-3)";
       }}
     >
       {icon}
@@ -669,7 +669,7 @@ function MetadataPart({
             width: 3,
             height: 3,
             borderRadius: "50%",
-            background: "rgba(255,255,255,0.15)",
+            background: "var(--t-4)",
           }}
         />
       )}

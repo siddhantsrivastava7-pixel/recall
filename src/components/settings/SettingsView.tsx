@@ -46,7 +46,7 @@ export function SettingsView() {
               transition: "all 100ms",
             }}
           >
-            <span style={{ color: tab === t.id ? "var(--blue)" : "rgba(255,255,255,0.28)" }}>{t.icon}</span>
+            <span style={{ color: tab === t.id ? "var(--blue)" : "var(--t-4)" }}>{t.icon}</span>
             {t.label}
           </button>
         ))}
@@ -192,7 +192,7 @@ function ShortcutsTab() {
                   color:
                     editingAction === shortcut.action
                       ? "var(--blue)"
-                      : "rgba(255,255,255,0.74)",
+                      : "var(--t-2)",
                   borderColor:
                     editingAction === shortcut.action
                       ? "var(--blue-border)"
@@ -292,7 +292,7 @@ function BookmarksTab() {
           {syncMsg && <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{syncMsg}</span>}
         </div>
         {settings.bookmarkLastSyncedAt && (
-          <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.28)", display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ marginTop: 10, fontSize: 12, color: "var(--t-4)", display: "flex", alignItems: "center", gap: 6 }}>
             <RefreshCw size={11} /> Last synced {formatLongTimestamp(settings.bookmarkLastSyncedAt)}
           </div>
         )}
@@ -328,7 +328,7 @@ function PairingTab() {
             <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
               Pairing is local-only. Your phone sends memories directly to this desktop over the same Wi-Fi.
             </div>
-            <div style={{ marginTop: 12, fontSize: 12, color: "rgba(255,255,255,0.38)", lineHeight: 1.8 }}>
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--t-3)", lineHeight: 1.8 }}>
               <div>Desktop: {info?.desktopName ?? "Loading..."}</div>
               <div>Endpoint: {info?.endpoint ?? "Waiting for local network..."}</div>
               <div>Device ID: {info?.deviceId ?? "Loading..."}</div>
@@ -350,7 +350,7 @@ function PairingTab() {
             border: "1px solid rgba(255,255,255,0.06)",
           }}
         >
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.36)", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: "var(--t-3)", marginBottom: 8 }}>
             QR payload for mobile
           </div>
           <code
@@ -360,7 +360,7 @@ function PairingTab() {
               wordBreak: "break-word",
               fontSize: 12,
               lineHeight: 1.6,
-              color: "rgba(255,255,255,0.68)",
+              color: "var(--t-2)",
             }}
           >
             {info?.qrPayload ?? "Generating pairing payload..."}
@@ -374,7 +374,7 @@ function PairingTab() {
         )}
       </div>
 
-      <div style={{ fontSize: 12, lineHeight: 1.7, color: "rgba(255,255,255,0.34)" }}>
+      <div style={{ fontSize: 12, lineHeight: 1.7, color: "var(--t-3)" }}>
         The phone must call <code>GET /api/ping</code> or <code>POST /api/push-memory</code> with
         <code> Authorization: Bearer &lt;secret&gt;</code>. Reset pairing if a QR code was shared by mistake.
       </div>
@@ -447,7 +447,7 @@ function UpdatesTab() {
               {lastCheckedAt ? ` · Last checked ${formatLongTimestamp(lastCheckedAt)}` : " · Never checked"}
             </div>
             {pubDate && updateAvailable && (
-              <div style={{ marginTop: 4, fontSize: 12, color: "rgba(255,255,255,0.34)" }}>
+              <div style={{ marginTop: 4, fontSize: 12, color: "var(--t-3)" }}>
                 Published {formatLongTimestamp(pubDate)}
               </div>
             )}
@@ -495,7 +495,7 @@ function UpdatesTab() {
                     }}
                   />
                 </div>
-                <div style={{ marginTop: 7, fontSize: 12, color: "rgba(255,255,255,0.38)" }}>
+                <div style={{ marginTop: 7, fontSize: 12, color: "var(--t-3)" }}>
                   {installing ? "Installing..." : `${downloadProgress}% downloaded`}
                 </div>
               </div>
@@ -527,7 +527,7 @@ function UpdatesTab() {
         onChange={v => void updateSettings({ ...settings, updateAutoCheckEnabled: v })}
       />
 
-      <div style={{ marginTop: 16, fontSize: 12, lineHeight: 1.6, color: "rgba(255,255,255,0.34)" }}>
+      <div style={{ marginTop: 16, fontSize: 12, lineHeight: 1.6, color: "var(--t-3)" }}>
         Recall uses Tauri's signed updater with a static manifest. Update downloads are verified before installation.
       </div>
     </Section>
@@ -567,7 +567,7 @@ function LicenseTab() {
       }}>
         {license?.isActivated
           ? <CheckCircle size={22} color="var(--blue)" />
-          : <XCircle     size={22} color="rgba(255,255,255,0.22)" />
+          : <XCircle     size={22} color="var(--t-4)" />
         }
         <div>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>

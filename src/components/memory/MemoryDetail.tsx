@@ -386,7 +386,7 @@ export function MemoryDetail({
           <div
             style={{
               fontSize: 12,
-              color: "rgba(255,255,255,0.26)",
+              color: "var(--t-4)",
               letterSpacing: "0.06em",
               textTransform: "uppercase",
             }}
@@ -525,7 +525,7 @@ export function MemoryDetail({
                 gap: 8,
                 flexWrap: "wrap",
                 fontSize: 13,
-                color: "rgba(255,255,255,0.34)",
+                color: "var(--t-3)",
                 lineHeight: 1.6,
               }}
             >
@@ -541,7 +541,7 @@ export function MemoryDetail({
                     void openSourceUrl(event);
                   }}
                   style={{
-                    color: "rgba(255,255,255,0.44)",
+                    color: "var(--t-3)",
                     textDecoration: "none",
                   }}
                   title={currentMemory.url}
@@ -615,7 +615,7 @@ export function MemoryDetail({
                       background: "rgba(255,255,255,0.04)",
                       border: "1px solid rgba(255,255,255,0.08)",
                       borderRadius: 10,
-                      color: "rgba(255,255,255,0.62)",
+                      color: "var(--t-2)",
                       fontSize: 12,
                       fontFamily: "inherit",
                       outline: "none",
@@ -643,7 +643,7 @@ export function MemoryDetail({
                   borderRadius: 999,
                   background: isDueForResurface ? "var(--blue-dim)" : "rgba(255,255,255,0.04)",
                   border: `1px solid ${isDueForResurface ? "var(--blue-border)" : "rgba(255,255,255,0.06)"}`,
-                  color: isDueForResurface ? "var(--blue)" : "rgba(255,255,255,0.42)",
+                  color: isDueForResurface ? "var(--blue)" : "var(--t-3)",
                   fontSize: 12,
                 }}
               >
@@ -695,7 +695,7 @@ export function MemoryDetail({
                     <div
                       style={{
                         marginBottom: 12,
-                        color: "rgba(255,255,255,0.32)",
+                        color: "var(--t-3)",
                         fontSize: 11,
                         fontWeight: 650,
                         letterSpacing: "0.12em",
@@ -710,7 +710,7 @@ export function MemoryDetail({
                       whiteSpace: "pre-wrap",
                       fontSize: 15,
                       lineHeight: 1.9,
-                      color: "rgba(255,255,255,0.86)",
+                      color: "var(--t-1)",
                     }}
                   >
                     {detailReadingContent}
@@ -735,7 +735,7 @@ export function MemoryDetail({
                           void openSourceUrl(event);
                         }}
                         style={{
-                          color: "rgba(255,255,255,0.44)",
+                          color: "var(--t-3)",
                           textDecoration: "none",
                           wordBreak: "break-all",
                         }}
@@ -755,7 +755,7 @@ export function MemoryDetail({
                           borderRadius: 8,
                           border: "1px solid rgba(255,255,255,0.06)",
                           background: "rgba(255,255,255,0.04)",
-                          color: "rgba(255,255,255,0.46)",
+                          color: "var(--t-3)",
                           display: "inline-flex",
                           alignItems: "center",
                           justifyContent: "center",
@@ -776,7 +776,7 @@ export function MemoryDetail({
               <div
                 style={{
                   fontSize: 11,
-                  color: "rgba(255,255,255,0.26)",
+                  color: "var(--t-4)",
                   letterSpacing: "0.12em",
                   textTransform: "uppercase",
                   marginBottom: 10,
@@ -819,7 +819,7 @@ export function MemoryDetail({
                         whiteSpace: "pre-wrap",
                         fontSize: 14,
                         lineHeight: 1.75,
-                        color: "rgba(255,255,255,0.68)",
+                        color: "var(--t-2)",
                       }}
                     >
                       {normalizedNote}
@@ -838,7 +838,7 @@ export function MemoryDetail({
                 background: "none",
                 border: "none",
                 padding: 0,
-                color: "rgba(255,255,255,0.34)",
+                color: "var(--t-3)",
                 fontSize: 13,
                 fontFamily: "inherit",
                 cursor: "pointer",
@@ -853,7 +853,7 @@ export function MemoryDetail({
               <div
                 style={{
                   fontSize: 11,
-                  color: "rgba(255,255,255,0.26)",
+                  color: "var(--t-4)",
                   letterSpacing: "0.12em",
                   textTransform: "uppercase",
                   marginBottom: 12,
@@ -898,7 +898,7 @@ function BringBackPill({
       style={{
         border: "1px solid rgba(255,255,255,0.07)",
         background: "rgba(255,255,255,0.04)",
-        color: muted ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.62)",
+        color: muted ? "var(--t-3)" : "var(--t-2)",
         borderRadius: 999,
         padding: "8px 11px",
         fontSize: 12,
@@ -953,7 +953,7 @@ function RelatedMemoryButton({
       <div
         style={{
           fontSize: 12,
-          color: "rgba(255,255,255,0.42)",
+          color: "var(--t-3)",
           lineHeight: 1.55,
           display: "-webkit-box",
           WebkitBoxOrient: "vertical",
@@ -970,7 +970,7 @@ function RelatedMemoryButton({
           alignItems: "center",
           gap: 6,
           fontSize: 11,
-          color: "rgba(255,255,255,0.28)",
+          color: "var(--t-4)",
         }}
       >
         <span>{domain}</span>
@@ -1009,7 +1009,7 @@ function HeaderAction({
           ? "var(--blue)"
           : danger
             ? "rgba(248,113,113,0.78)"
-            : "rgba(255,255,255,0.58)",
+            : "var(--t-2)",
         fontSize: 13,
         fontFamily: "inherit",
         cursor: "pointer",
@@ -1043,7 +1043,7 @@ function HeaderAction({
           ? "var(--blue)"
           : danger
             ? "rgba(248,113,113,0.78)"
-            : "rgba(255,255,255,0.58)";
+            : "var(--t-2)";
       }}
     >
       {children}
@@ -1060,7 +1060,7 @@ function MetadataText({
   title?: string;
 }) {
   return (
-    <span title={title} style={{ color: "rgba(255,255,255,0.34)" }}>
+    <span title={title} style={{ color: "var(--t-3)" }}>
       {value}
     </span>
   );
@@ -1110,7 +1110,7 @@ function editableNoteStyle(editing: boolean): CSSProperties {
     padding: "16px 18px",
     outline: "none",
     resize: "vertical",
-    color: "rgba(255,255,255,0.74)",
+    color: "var(--t-2)",
     fontSize: 14,
     fontFamily: "inherit",
     lineHeight: 1.75,

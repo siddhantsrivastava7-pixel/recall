@@ -187,7 +187,7 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
               event.currentTarget.style.borderColor = "var(--border-default)";
             }}
           >
-            <Search size={16} color="rgba(255,255,255,0.28)" strokeWidth={1.8} />
+            <Search size={16} color="var(--t-4)" strokeWidth={1.8} />
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
@@ -592,13 +592,13 @@ function ProjectSnapshotCard({
             >
               {name}
             </div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.34)" }}>
+            <div style={{ fontSize: 12, color: "var(--t-3)" }}>
               {count} memor{count === 1 ? "y" : "ies"}
             </div>
           </div>
         </div>
 
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.32)", flexShrink: 0 }}>
+        <div style={{ fontSize: 12, color: "var(--t-3)", flexShrink: 0 }}>
           {lastActivity}
         </div>
       </div>
@@ -646,11 +646,11 @@ function Empty({ message, hint }: { message: string; hint?: string }) {
         borderRadius: 20,
       }}
     >
-      <div style={{ fontSize: 14, color: "rgba(255,255,255,0.34)", marginBottom: 6 }}>
+      <div style={{ fontSize: 14, color: "var(--t-3)", marginBottom: 6 }}>
         {message}
       </div>
       {hint && (
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.20)", lineHeight: 1.55 }}>
+        <div style={{ fontSize: 12, color: "var(--t-4)", lineHeight: 1.55 }}>
           {hint}
         </div>
       )}
@@ -701,7 +701,7 @@ function InsightPanel({
       {hasChildren ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{children}</div>
       ) : (
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.24)", lineHeight: 1.6 }}>
+        <div style={{ fontSize: 12, color: "var(--t-4)", lineHeight: 1.6 }}>
           {emptyMessage}
         </div>
       )}
@@ -761,7 +761,7 @@ function BookmarkInsightRow({
       >
         {getMemoryDisplayPreview(memory, 90)}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.26)" }}>{meta}</div>
+      <div style={{ fontSize: 11, color: "var(--t-4)" }}>{meta}</div>
     </button>
   );
 }
@@ -803,7 +803,7 @@ function DomainInsightRow({
         }}
       >
         <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{domain}</div>
-        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.26)" }}>
+        <div style={{ fontSize: 11, color: "var(--t-4)" }}>
           {count} saved
         </div>
       </div>
@@ -821,7 +821,7 @@ function DomainInsightRow({
       >
         {getMemoryDisplayTitle(latestMemory)}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.26)" }}>
+      <div style={{ fontSize: 11, color: "var(--t-4)" }}>
         Avg quality {Math.round(quality)}
       </div>
     </button>

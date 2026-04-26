@@ -57,9 +57,9 @@ export function ProjectsView({ setView }: { setView: (v: MainView) => void }) {
 
       {/* Grid */}
       {projects.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "72px 32px", border: "1px dashed rgba(255,255,255,0.07)", borderRadius: 20 }}>
-          <FolderOpen size={28} color="rgba(255,255,255,0.14)" style={{ marginBottom: 14 }} />
-          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.28)" }}>No projects yet</div>
+        <div style={{ textAlign: "center", padding: "72px 32px", border: "1px dashed var(--line)", borderRadius: 20 }}>
+          <FolderOpen size={28} color="var(--t-4)" style={{ marginBottom: 14 }} />
+          <div style={{ fontSize: 14, color: "var(--t-4)" }}>No projects yet</div>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(270px, 1fr))", gap: 16 }}>
@@ -136,7 +136,7 @@ function ProjectCard({
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", marginBottom: 5 }}>{project.name}</div>
           {project.description && <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 14 }}>{project.description}</div>}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: project.description ? 0 : 14 }}>
-            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.28)" }}>
+            <span style={{ fontSize: 11, color: "var(--t-4)" }}>
               {count} memor{count !== 1 ? "ies" : "y"} · {formatRelativeTimestamp(project.updatedAt)}
             </span>
             <div style={{ display: "flex", gap: 3 }}>
@@ -157,17 +157,17 @@ function IconBtn({ onClick, danger, children }: { onClick: React.MouseEventHandl
       style={{
         width: 26, height: 26, borderRadius: 6,
         display: "flex", alignItems: "center", justifyContent: "center",
-        color: danger ? "rgba(248,113,113,0.5)" : "rgba(255,255,255,0.28)",
+        color: danger ? "rgba(248,113,113,0.5)" : "var(--t-4)",
         background: "none", border: "none", cursor: "pointer",
         transition: "all 100ms",
       }}
       onMouseEnter={e => {
         (e.currentTarget as HTMLElement).style.background = danger ? "rgba(248,113,113,0.1)" : "rgba(255,255,255,0.06)";
-        (e.currentTarget as HTMLElement).style.color = danger ? "var(--danger)" : "rgba(255,255,255,0.75)";
+        (e.currentTarget as HTMLElement).style.color = danger ? "var(--danger)" : "var(--t-2)";
       }}
       onMouseLeave={e => {
         (e.currentTarget as HTMLElement).style.background = "none";
-        (e.currentTarget as HTMLElement).style.color = danger ? "rgba(248,113,113,0.5)" : "rgba(255,255,255,0.28)";
+        (e.currentTarget as HTMLElement).style.color = danger ? "rgba(248,113,113,0.5)" : "var(--t-4)";
       }}
     >
       {children}

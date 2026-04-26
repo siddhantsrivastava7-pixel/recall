@@ -130,7 +130,7 @@ export function SearchWindow() {
             borderBottom: "1px solid rgba(255,255,255,0.08)",
           }}
         >
-          <Search size={17} color="rgba(255,255,255,0.38)" strokeWidth={1.8} />
+          <Search size={17} color="var(--t-3)" strokeWidth={1.8} />
           <input
             className="search-overlay-input"
             ref={inputRef}
@@ -151,7 +151,7 @@ export function SearchWindow() {
             <button
               onClick={() => setQuery("")}
               style={{
-                color: "rgba(255,255,255,0.28)",
+                color: "var(--t-4)",
                 cursor: "pointer",
                 display: "flex",
                 background: "none",
@@ -170,7 +170,7 @@ export function SearchWindow() {
               style={{
                 padding: "36px 20px",
                 textAlign: "center",
-                color: "rgba(255,255,255,0.28)",
+                color: "var(--t-4)",
                 fontSize: 14,
               }}
             >
@@ -183,7 +183,7 @@ export function SearchWindow() {
                   padding: "9px 20px 5px",
                   fontSize: 11,
                   fontWeight: 600,
-                  color: "rgba(255,255,255,0.28)",
+                  color: "var(--t-4)",
                   textTransform: "uppercase",
                   letterSpacing: "0.1em",
                 }}
@@ -202,7 +202,7 @@ export function SearchWindow() {
                   <div
                     style={{
                       fontSize: 11,
-                      color: "rgba(255,255,255,0.30)",
+                      color: "var(--t-3)",
                       letterSpacing: "0.06em",
                       textTransform: "uppercase",
                     }}
@@ -264,7 +264,7 @@ export function SearchWindow() {
             style={{
               marginLeft: "auto",
               fontSize: 11,
-              color: "rgba(255,255,255,0.2)",
+              color: "var(--t-4)",
             }}
           >
             {memories.length} saved
@@ -324,7 +324,7 @@ function ResultRow({
           alignItems: "center",
           justifyContent: "center",
           background: focused ? "rgba(79,124,255,0.18)" : "rgba(255,255,255,0.07)",
-          color: focused ? "#4F7CFF" : "rgba(255,255,255,0.5)",
+          color: focused ? "#4F7CFF" : "var(--t-3)",
         }}
       >
         {memory.sourceType === "bookmark" ? (
@@ -352,7 +352,7 @@ function ResultRow({
         <div
           style={{
             fontSize: 12,
-            color: "rgba(255,255,255,0.46)",
+            color: "var(--t-3)",
             marginTop: 4,
             lineHeight: 1.5,
             display: "-webkit-box",
@@ -381,7 +381,7 @@ function ResultRow({
         <div
           style={{
             fontSize: 11,
-            color: "rgba(255,255,255,0.30)",
+            color: "var(--t-3)",
             marginTop: topics.length > 0 ? 6 : 7,
             display: "flex",
             alignItems: "center",
@@ -399,7 +399,7 @@ function ResultRow({
         </div>
       </div>
 
-      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.22)", flexShrink: 0 }}>↵</div>
+      <div style={{ fontSize: 12, color: "var(--t-4)", flexShrink: 0 }}>↵</div>
     </div>
   );
 }
@@ -412,7 +412,7 @@ function TopicChip({ value, query }: { value: string; query: string }) {
       style={{
         border: matched ? "1px solid rgba(79,124,255,0.22)" : "1px solid rgba(255,255,255,0.06)",
         background: matched ? "rgba(79,124,255,0.10)" : "rgba(255,255,255,0.04)",
-        color: matched ? "rgba(229,231,235,0.82)" : "rgba(255,255,255,0.34)",
+        color: matched ? "var(--t-1)" : "var(--t-3)",
         borderRadius: 999,
         padding: "2px 7px",
         fontSize: 10,
@@ -484,7 +484,7 @@ function Hint({ keys, label }: { keys: string[]; label: string }) {
           </span>
         ))}
       </div>
-      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.28)" }}>{label}</span>
+      <span style={{ fontSize: 12, color: "var(--t-4)" }}>{label}</span>
     </div>
   );
 }

@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Download,
   FolderOpen,
@@ -113,6 +114,19 @@ function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => 
   const memoryCount = memories.length;
   const projectCount = projects.length;
   const pinned = projects.slice(0, 3);
+  const [appVersion, setAppVersion] = useState<string>("");
+
+  useEffect(() => {
+    let active = true;
+    void getVersion()
+      .then((v) => {
+        if (active) setAppVersion(v);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const projectCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -135,7 +149,7 @@ function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => 
           className="no-drag"
           style={{ marginLeft: "auto", fontSize: 10, color: "var(--t-4)", fontWeight: 500 }}
         >
-          v0.1.14
+          {appVersion ? `v${appVersion}` : ""}
         </span>
       </div>
 
