@@ -259,14 +259,15 @@ function NavRow({
 
 function SideFoot({ memoryCount }: { memoryCount: number }) {
   return (
-    <div className="side-foot">
-      <div className="avatar">SK</div>
+    <div className="side-foot" title="Recall is fully offline. No accounts. No sync. Memories stay on this device.">
+      <span className="dot-live" />
       <div className="user-meta">
-        <div className="user-name">You</div>
-        <div className="user-status">
-          <span className="dot-live" />
-          {memoryCount > 0 ? `${memoryCount.toLocaleString()} indexed locally` : "Indexed locally"}
+        <div className="user-name">
+          {memoryCount > 0
+            ? `${memoryCount.toLocaleString()} memories`
+            : "Local memory layer"}
         </div>
+        <div className="user-status">Stored on this device</div>
       </div>
     </div>
   );
