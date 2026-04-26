@@ -123,6 +123,10 @@ impl WindowAdapter for MacWindowAdapter {
 
     async fn open_search_overlay(&self, app: &AppHandle) -> AppResult<()> {
         if let Some(window) = app.get_webview_window("search-overlay") {
+            // macOS NSWindow draws a rectangular drop shadow by default —
+            // visible as a "box" around the overlay's rounded panel. Disable
+            // it here so the panel's own CSS box-shadow defines the silhouette.
+            let _ = window.set_shadow(false);
             window.show()?;
             window.set_focus()?;
             window.center()?;
@@ -133,6 +137,7 @@ impl WindowAdapter for MacWindowAdapter {
 
     async fn open_quick_save(&self, app: &AppHandle) -> AppResult<()> {
         if let Some(window) = app.get_webview_window("quick-save") {
+            let _ = window.set_shadow(false);
             window.show()?;
             window.set_focus()?;
             window.center()?;
