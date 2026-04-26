@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Save, ChevronDown, ChevronUp, X } from "lucide-react";
+import { ChevronDown, Plus, Save, X } from "lucide-react";
 
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -38,10 +38,9 @@ export function QuickSaveWindow() {
       window.setTimeout(() => textareaRef.current?.focus(), 60);
     }
 
-    // Force the underlying NSWindow (macOS) / HWND (Windows) background to
-    // fully transparent. macOS WKWebView keeps its NSWindow's default opaque
-    // background otherwise, which paints as a white/gray rectangle around
-    // the rounded panel in light mode.
+    // Force the underlying NSWindow / HWND background fully transparent. The
+    // macOSPrivateApi feature in v0.1.19 lets Tauri actually honor this on
+    // macOS; this stays as a defense-in-depth signal to the webview itself.
     document.body.style.background = "transparent";
     document.documentElement.style.background = "transparent";
     document.getElementById("root")?.style.setProperty("background", "transparent", "important");
@@ -103,7 +102,6 @@ export function QuickSaveWindow() {
     ) {
       return;
     }
-
     startWindowDrag();
   }
 
@@ -147,313 +145,206 @@ export function QuickSaveWindow() {
     window.setTimeout(() => close(), 700);
   }
 
+  const helper = content.trim()
+    ? "Clipboard ready. Save now or add a little context."
+    : "Paste or type anything worth keeping.";
+  const canSave = content.trim().length > 0 && !saving && !saved;
+
   return (
-    <div
-      style={{
-        width: "100vw",
-        height: "100vh",
-        background: "transparent",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-      onClick={close}
-    >
+    <div className="overlay-host" onClick={close}>
       <div
         onMouseDown={handleShellMouseDown}
         onClick={(event) => event.stopPropagation()}
+        className="search-panel"
         style={{
-          width: 500,
-          borderRadius: 20,
-          overflow: "hidden",
-          background: "linear-gradient(145deg, #0D1628 0%, #0B1535 40%, #0E1A3A 100%)",
-          border: "1px solid rgba(79,124,255,0.25)",
-          boxShadow:
-            "0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(79,124,255,0.1), inset 0 1px 0 rgba(255,255,255,0.06)",
-          backdropFilter: "blur(24px)",
-          WebkitBackdropFilter: "blur(24px)",
-          maxHeight: "90vh",
+          width: "100%",
+          height: "100%",
+          maxWidth: "none",
           display: "flex",
           flexDirection: "column",
+          borderRadius: 14,
         }}
       >
+        {/* Header — drag region + close button */}
         <div
-          style={{
-            height: 2,
-            background:
-              "linear-gradient(90deg, transparent, rgba(79,124,255,0.6) 30%, rgba(120,160,255,0.8) 50%, rgba(79,124,255,0.6) 70%, transparent)",
-          }}
-        />
-
-        <div
+          data-tauri-drag-region
+          onMouseDown={startWindowDrag}
           style={{
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             justifyContent: "space-between",
-            padding: "14px 18px 12px",
-            borderBottom: "1px solid rgba(79,124,255,0.12)",
+            gap: 12,
+            padding: "16px 18px",
+            borderBottom: "0.5px solid var(--line)",
+            cursor: "grab",
+            userSelect: "none",
+            WebkitUserSelect: "none",
           }}
         >
-          <div
-            data-tauri-drag-region
-            onMouseDown={startWindowDrag}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              flex: 1,
-              minWidth: 0,
-              cursor: "grab",
-              userSelect: "none",
-              WebkitUserSelect: "none",
-            }}
-          >
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div
               style={{
-                width: 24,
-                height: 24,
-                borderRadius: 6,
-                background: "rgba(79,124,255,0.2)",
-                border: "1px solid rgba(79,124,255,0.35)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Save size={12} strokeWidth={2} color="#4F7CFF" />
-            </div>
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
+                fontSize: 10,
+                fontWeight: 600,
                 letterSpacing: "0.1em",
                 textTransform: "uppercase",
-                color: "var(--t-3)",
+                color: "var(--t-4)",
+                marginBottom: 4,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
               }}
             >
-              Quick Capture
-            </span>
+              <Plus size={11} strokeWidth={1.8} /> Quick Capture
+            </div>
+            <div style={{ fontSize: 13, color: "var(--t-2)" }}>{helper}</div>
           </div>
           <button
+            data-no-drag="true"
+            type="button"
             onClick={close}
             onMouseDown={(event) => event.stopPropagation()}
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: 6,
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--t-3)",
-              cursor: "pointer",
-            }}
+            className="detail-close"
+            aria-label="Close quick capture"
           >
-            <X size={13} />
+            <X size={13} strokeWidth={1.8} />
           </button>
         </div>
 
-        <div style={{ overflowY: "auto", flex: 1 }}>
-          <div style={{ padding: "16px 18px 0" }}>
-            <textarea
-              data-no-drag="true"
-              ref={textareaRef}
-              value={content}
-              onChange={(event) => setContent(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
-                  event.preventDefault();
-                  void handleSave();
-                }
-              }}
-              placeholder="Capture a thought..."
-              rows={expanded ? 3 : 4}
-              style={{
-                width: "100%",
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                color: "var(--text-primary)",
-                fontSize: 15,
-                fontFamily: "inherit",
-                resize: "none",
-                lineHeight: 1.65,
-                caretColor: "#4F7CFF",
-              }}
-            />
+        {/* Body — content textarea + optional details */}
+        <div className="no-drag" style={{ flex: 1, overflow: "auto", padding: 14 }}>
+          <textarea
+            data-no-drag="true"
+            ref={textareaRef}
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.metaKey &&
+                !event.ctrlKey
+              ) {
+                event.preventDefault();
+                void handleSave();
+              }
+            }}
+            placeholder="Capture a thought…"
+            className="textarea"
+            style={{ minHeight: 160, fontSize: 14, lineHeight: 1.55 }}
+          />
+
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => setExpanded((value) => !value)}
+            >
+              <ChevronDown
+                size={12}
+                strokeWidth={1.8}
+                style={{
+                  transform: expanded ? "rotate(180deg)" : undefined,
+                  transition: "transform 200ms var(--ease)",
+                }}
+              />
+              {expanded ? "Hide details" : "Add details"}
+              <span className="kbd">Tab</span>
+            </button>
           </div>
 
-          {expanded && (
+          {expanded ? (
             <div
               style={{
-                margin: "8px 18px 0",
-                borderTop: "1px solid rgba(79,124,255,0.1)",
-                paddingTop: 10,
-                display: "flex",
-                flexDirection: "column",
+                marginTop: 12,
+                padding: 14,
+                borderRadius: 12,
+                background: "var(--tint-1)",
+                boxShadow: "inset 0 0 0 0.5px var(--line)",
+                display: "grid",
+                gap: 10,
               }}
             >
-              <MetaRow label="Title">
-                <input
-                  data-no-drag="true"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder="Add a title..."
-                  style={metaInputStyle}
-                />
-              </MetaRow>
-              <MetaRow label="Project">
-                <select
-                  data-no-drag="true"
-                  value={projectId}
-                  onChange={(event) => setProjectId(event.target.value)}
-                  style={{ ...metaInputStyle, cursor: "pointer" }}
-                >
-                  <option value="" style={{ background: "#0D1628" }}>
-                    No project
+              <input
+                data-no-drag="true"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Title"
+                className="input"
+              />
+              <select
+                data-no-drag="true"
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+                className="select"
+              >
+                <option value="">No project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
                   </option>
-                  {projects.map((project) => (
-                    <option
-                      key={project.id}
-                      value={project.id}
-                      style={{ background: "#0D1628" }}
-                    >
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </MetaRow>
-              <MetaRow label="Note" last>
-                <input
-                  data-no-drag="true"
-                  value={note}
-                  onChange={(event) => setNote(event.target.value)}
-                  placeholder="Add notes..."
-                  style={metaInputStyle}
-                />
-              </MetaRow>
+                ))}
+              </select>
+              <textarea
+                data-no-drag="true"
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                placeholder="Why is this worth keeping?"
+                className="textarea"
+                style={{ minHeight: 70 }}
+              />
             </div>
-          )}
+          ) : null}
         </div>
 
+        {/* Footer — status hint + save button */}
         <div
+          className="no-drag"
           style={{
-            padding: "12px 18px 16px",
+            padding: "10px 18px",
+            borderTop: "0.5px solid var(--line)",
             display: "flex",
             alignItems: "center",
-            justifyContent: "space-between",
-            borderTop: "1px solid rgba(79,124,255,0.08)",
+            gap: 12,
             flexShrink: 0,
+            fontSize: 11,
+            color: "var(--t-3)",
           }}
         >
+          <span style={{ flex: 1, minWidth: 0 }}>
+            Saved locally on this device only.
+          </span>
           <button
-            onClick={() => setExpanded((value) => !value)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 12,
-              color: "var(--t-3)",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
+            data-no-drag="true"
+            type="button"
+            className="btn btn-quiet"
+            onClick={close}
           >
-            {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            {expanded ? "Collapse" : "Add details"}
-            <span className="kbd">Tab</span>
+            Cancel
           </button>
-
           <button
+            data-no-drag="true"
+            type="button"
+            className="btn btn-primary"
             onClick={handleSave}
-            disabled={!content.trim() || saving}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "9px 22px",
-              background: saved
-                ? "rgba(79,124,255,0.3)"
-                : content.trim()
-                  ? "linear-gradient(135deg, #4F7CFF 0%, #6B96FF 100%)"
-                  : "rgba(79,124,255,0.15)",
-              color: content.trim() ? "#fff" : "var(--t-3)",
-              border: "1px solid rgba(79,124,255,0.35)",
-              borderRadius: 10,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: content.trim() && !saving ? "pointer" : "default",
-              fontFamily: "inherit",
-              transition: "all 150ms ease",
-              boxShadow: content.trim() ? "0 4px 16px rgba(79,124,255,0.3)" : "none",
-            }}
+            disabled={!canSave}
           >
-            <Save size={13} strokeWidth={2} />
-            {saved ? "Saved!" : saving ? "Saving..." : "Save"}
-            {!saved && (
+            <Save size={12} strokeWidth={1.8} />
+            {saved ? "Saved" : saving ? "Saving…" : "Save"}
+            {!saved && !saving ? (
               <span
                 className="kbd"
                 style={{
-                  background: "var(--t-4)",
-                  borderColor: "transparent",
-                  color: "var(--t-2)",
+                  background: "rgba(255,255,255,0.18)",
+                  color: "rgba(255,255,255,0.92)",
                 }}
               >
-                Ctrl+Enter
+                {navigator.platform.includes("Mac") ? "⌘↵" : "Ctrl+↵"}
               </span>
-            )}
+            ) : null}
           </button>
         </div>
       </div>
     </div>
   );
 }
-
-function MetaRow({
-  label,
-  children,
-  last,
-}: {
-  label: string;
-  children: React.ReactNode;
-  last?: boolean;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "9px 0",
-        borderBottom: last ? "none" : "1px solid rgba(79,124,255,0.07)",
-      }}
-    >
-      <span
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--t-4)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          width: 52,
-          flexShrink: 0,
-        }}
-      >
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-}
-
-const metaInputStyle: React.CSSProperties = {
-  flex: 1,
-  background: "transparent",
-  border: "none",
-  outline: "none",
-  color: "var(--text-primary)",
-  fontSize: 14,
-  fontFamily: "inherit",
-};
