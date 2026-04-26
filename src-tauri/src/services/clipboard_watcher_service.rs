@@ -8,7 +8,7 @@ use crate::{
     models::{MemoryInput, MemorySourceType},
     services::link_utils::detect_primary_url,
     services::spoken_transcript_service::{
-        is_spoken_context, is_spoken_running, looks_like_spoken_text,
+        detect_transcription_app, looks_like_transcript_text,
     },
     state::app_state::AppState,
 };
@@ -107,18 +107,20 @@ async fn save_clipboard_capture(
             source_window: None,
         });
 
-    // Spoken-transcript routing: if a Spoken process is running (or Spoken is
-    // somehow the frontmost surface) AND the content reads as spoken-language
-    // text, fold it into today's daily transcript memory rather than creating
-    // a separate memory per line. URLs / code / tabular content fall through
-    // to the normal capture path so link enrichment + bookmark intelligence
-    // still run.
-    let route_to_spoken =
-        (is_spoken_running() || is_spoken_context(&context)) && looks_like_spoken_text(&content);
-    if route_to_spoken {
+    // Transcription-app routing: if any known transcription app (Spoken,
+    // Whisper, Wispr Flow, MacWhisper, Otter, Granola, …) is running OR is in
+    // the frontmost-app snapshot, AND the content reads as natural speech
+    // (no URLs / code / tabular data), fold it into today's daily transcript
+    // memory rather than creating a separate memory per line. URLs / code /
+    // structured content still fall through to the normal capture path so
+    // link enrichment + bookmark intelligence run on them.
+    let detected_transcription_app = detect_transcription_app(&context);
+    let route_to_transcript =
+        detected_transcription_app.is_some() && looks_like_transcript_text(&content);
+    if route_to_transcript {
         let transcript = state
             .spoken_transcript_service
-            .capture_clipboard_snippet(content, &context)
+            .capture_clipboard_snippet(content, &context, detected_transcription_app)
             .await?;
 
         app.emit("recall://memory-saved", &transcript)?;

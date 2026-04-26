@@ -11,9 +11,58 @@ use crate::{
     models::{AppContextSnapshot, Memory, MemoryInput, MemorySourceType},
 };
 
-const SPOKEN_SOURCE_APP: &str = "spoken";
-const SPOKEN_EXTERNAL_ID_PREFIX: &str = "spoken-daily:";
+/// External-id prefix kept as `spoken-daily:` for backward-compat with users
+/// who already have a daily transcript memory from earlier versions. The
+/// SOURCE_APP namespace is also kept so existing memories can be looked up.
+/// User-facing labels say "Daily transcript" / "Transcription" and per-entry
+/// metadata records the actual transcription app that produced each line.
+const TRANSCRIPT_SOURCE_APP: &str = "spoken";
+const TRANSCRIPT_EXTERNAL_ID_PREFIX: &str = "spoken-daily:";
 const TRANSCRIPT_SECTION_MARKER: &str = "\n\nTranscript\n\n";
+
+/// Curated list of common transcription / dictation apps. Each entry is a
+/// (process-substring, display-name) pair. The substring matches against the
+/// running process name (lowercased) AND against the OS-reported frontmost
+/// app/window. The first match wins, and its display-name is recorded in the
+/// per-entry context label so the daily-transcript summary can list which
+/// apps the user dictated through today.
+///
+/// Adding a new app: append a row. Substrings are matched case-insensitively
+/// and must be unique enough to not false-match unrelated apps.
+const TRANSCRIPTION_APPS: &[(&str, &str)] = &[
+    ("spoken", "Spoken"),
+    ("macwhisper", "MacWhisper"),
+    ("whisper memos", "Whisper Memos"),
+    ("whispermemos", "Whisper Memos"),
+    ("superwhisper", "SuperWhisper"),
+    ("whisperflow", "WhisperFlow"),
+    ("wisprflow", "Wispr Flow"),
+    ("wispr flow", "Wispr Flow"),
+    ("wispr", "Wispr"),
+    ("aiko", "Aiko"),
+    ("voiceink", "VoiceInk"),
+    ("audiopen", "AudioPen"),
+    ("voicenotes", "VoiceNotes"),
+    ("voice notes", "VoiceNotes"),
+    ("otter.ai", "Otter"),
+    ("otter ai", "Otter"),
+    ("otterhelper", "Otter"),
+    ("granola", "Granola"),
+    ("fathom", "Fathom"),
+    ("descript", "Descript"),
+    ("rev voice", "Rev Voice"),
+    ("rev recorder", "Rev Voice"),
+    ("krisp", "Krisp"),
+    ("talkr", "Talkr"),
+    ("speakai", "Speak"),
+    ("speak.app", "Speak"),
+    // macOS native dictation runs under coreaudio / SiriTTSD; the visible
+    // frontmost label varies. Matched on common process names.
+    ("dictationim", "macOS Dictation"),
+    ("voicebanker", "macOS Dictation"),
+    // Windows native speech recognition.
+    ("windowsspeech", "Windows Speech"),
+];
 
 const TOPIC_STOPWORDS: &[&str] = &[
     "about", "after", "also", "and", "any", "app", "because", "been", "before", "being",
@@ -38,27 +87,33 @@ impl SpokenTranscriptService {
         &self,
         content: String,
         context: &AppContextSnapshot,
+        detected_app: Option<&str>,
     ) -> AppResult<Memory> {
         let snippet = normalize_body_text(&content);
         if snippet.is_empty() {
             return Err(AppError::Invalid(
-                "Spoken transcript snippet cannot be empty.".into(),
+                "Transcript snippet cannot be empty.".into(),
             ));
         }
 
         let now_utc = Utc::now();
         let now_local = now_utc.with_timezone(&Local);
         let day_key = now_local.format("%Y-%m-%d").to_string();
-        let external_id = format!("{SPOKEN_EXTERNAL_ID_PREFIX}{day_key}");
-        let title = format!("Spoken transcript · {}", now_local.format("%b %d"));
-        let source_window = normalize_context_label(context.source_window.as_deref())
+        let external_id = format!("{TRANSCRIPT_EXTERNAL_ID_PREFIX}{day_key}");
+        let title = format!("Daily transcript · {}", now_local.format("%b %d"));
+        // Prefer the detected transcription app name; fall back to whatever
+        // the OS reported as frontmost (e.g. "Notes" — the destination), then
+        // a generic "Transcription".
+        let context_label = detected_app
+            .map(str::to_string)
+            .or_else(|| normalize_context_label(context.source_window.as_deref()))
             .or_else(|| normalize_context_label(context.source_app.as_deref()))
-            .unwrap_or_else(|| "Spoken".to_string());
-        let entry = build_entry_block(&now_local, &source_window, &snippet);
+            .unwrap_or_else(|| "Transcription".to_string());
+        let entry = build_entry_block(&now_local, &context_label, &snippet);
 
         if let Some(existing) = self
             .repository
-            .find_by_external_source(SPOKEN_SOURCE_APP, &external_id)
+            .find_by_external_source(TRANSCRIPT_SOURCE_APP, &external_id)
             .await?
         {
             let body = extract_transcript_body(&existing.content);
@@ -83,8 +138,8 @@ impl SpokenTranscriptService {
                         url: None,
                         external_id: Some(external_id),
                         folder_path: None,
-                        source_app: Some(SPOKEN_SOURCE_APP.to_string()),
-                        source_window: Some(source_window),
+                        source_app: Some(TRANSCRIPT_SOURCE_APP.to_string()),
+                        source_window: Some(context_label),
                         created_at: Some(existing.created_at),
                         updated_at: Some(now_utc.to_rfc3339()),
                     },
@@ -109,8 +164,8 @@ impl SpokenTranscriptService {
                 url: None,
                 external_id: Some(external_id),
                 folder_path: None,
-                source_app: Some(SPOKEN_SOURCE_APP.to_string()),
-                source_window: Some(source_window),
+                source_app: Some(TRANSCRIPT_SOURCE_APP.to_string()),
+                source_window: Some(context_label),
                 created_at: Some(now_utc.to_rfc3339()),
                 updated_at: Some(now_utc.to_rfc3339()),
             })
@@ -118,26 +173,39 @@ impl SpokenTranscriptService {
     }
 }
 
-pub fn is_spoken_context(context: &AppContextSnapshot) -> bool {
-    [context.source_app.as_deref(), context.source_window.as_deref()]
+/// Detects whether a known transcription/dictation app shows up in the
+/// frontmost-app snapshot. Returns the canonical display name if one matches.
+///
+/// Most transcription apps paste their output into the *destination* app
+/// (Notes, Chrome, Slack…), so the OS frontmost is rarely the transcription
+/// app itself — `detect_running_transcription_app` is the more reliable
+/// signal. This is kept as a secondary hint for apps that briefly pop a
+/// floating window during dictation.
+pub fn detect_transcription_context_app(context: &AppContextSnapshot) -> Option<&'static str> {
+    let candidates = [context.source_app.as_deref(), context.source_window.as_deref()]
         .into_iter()
         .flatten()
         .map(|value| value.to_ascii_lowercase())
-        .any(|value| value.contains("spoken"))
+        .collect::<Vec<_>>();
+
+    for (substring, display) in TRANSCRIPTION_APPS {
+        if candidates.iter().any(|haystack| haystack.contains(*substring)) {
+            return Some(*display);
+        }
+    }
+    None
 }
 
-/// Detects whether a Spoken process is currently running on this machine.
+/// Detects whether any of our curated transcription apps are currently
+/// running on this machine. Returns the canonical display name of the first
+/// match, or None if no transcription app is running.
 ///
-/// `is_spoken_context` only catches the case where Spoken happens to be the
-/// frontmost app at the moment the clipboard fires — but Spoken pastes its
-/// transcripts into the *destination* app (Notes, Chrome, Slack, …), so the
-/// foreground app is never Spoken in practice. Checking process presence is
-/// what actually fires reliably during a dictation session.
-///
-/// The result is cached for ~1.5s to avoid scanning the process table on every
-/// clipboard tick (the clipboard watcher polls roughly every 900ms).
-pub fn is_spoken_running() -> bool {
-    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+/// This is what actually fires reliably during a dictation session because
+/// transcription apps run in the background while the user is in their
+/// destination app. The result is cached for ~1.5s to avoid scanning the
+/// process table on every clipboard tick (clipboard polls every ~900ms).
+pub fn detect_running_transcription_app() -> Option<&'static str> {
+    static CACHE: Mutex<Option<(Instant, Option<&'static str>)>> = Mutex::new(None);
     const TTL: Duration = Duration::from_millis(1500);
 
     if let Ok(guard) = CACHE.lock() {
@@ -151,16 +219,31 @@ pub fn is_spoken_running() -> bool {
     let mut system = System::new();
     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
-    let running = system.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
-        name.contains("spoken")
-    });
+    let process_names: Vec<String> = system
+        .processes()
+        .values()
+        .map(|process| process.name().to_string_lossy().to_ascii_lowercase())
+        .collect();
 
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some((Instant::now(), running));
+    let mut detected: Option<&'static str> = None;
+    for (substring, display) in TRANSCRIPTION_APPS {
+        if process_names.iter().any(|name| name.contains(*substring)) {
+            detected = Some(*display);
+            break;
+        }
     }
 
-    running
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), detected));
+    }
+
+    detected
+}
+
+/// Convenience: any transcription app currently running OR in the frontmost
+/// snapshot? Returns the canonical display name to record on the daily entry.
+pub fn detect_transcription_app(context: &AppContextSnapshot) -> Option<&'static str> {
+    detect_running_transcription_app().or_else(|| detect_transcription_context_app(context))
 }
 
 /// Classifier: does this clipboard content look like spoken-language text we
@@ -168,7 +251,7 @@ pub fn is_spoken_running() -> bool {
 /// code-shaped content, tabular data, very long content — those should remain
 /// independent memories so the bookmark intelligence + link enrichment paths
 /// still get a chance at them.
-pub fn looks_like_spoken_text(content: &str) -> bool {
+pub fn looks_like_transcript_text(content: &str) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty() || trimmed.len() > 4000 {
         return false;
@@ -430,7 +513,10 @@ mod tests {
         models::AppContextSnapshot,
     };
 
-    use super::{build_daily_document, extract_transcript_body, is_spoken_context, SpokenTranscriptService};
+    use super::{
+        build_daily_document, detect_transcription_context_app, extract_transcript_body,
+        SpokenTranscriptService,
+    };
 
     async fn make_service() -> SpokenTranscriptService {
         let options = SqliteConnectOptions::from_str(":memory:").expect("in-memory options");
@@ -440,19 +526,45 @@ mod tests {
     }
 
     #[test]
-    fn spoken_context_detects_spoken_in_app_or_window() {
-        assert!(is_spoken_context(&AppContextSnapshot {
-            source_app: Some("Spoken".into()),
-            source_window: None,
-        }));
-        assert!(is_spoken_context(&AppContextSnapshot {
-            source_app: Some("Chrome".into()),
-            source_window: Some("Spoken Overlay".into()),
-        }));
-        assert!(!is_spoken_context(&AppContextSnapshot {
-            source_app: Some("Chrome".into()),
-            source_window: Some("ChatGPT".into()),
-        }));
+    fn detects_known_transcription_apps_in_context() {
+        // Spoken still detects.
+        assert_eq!(
+            detect_transcription_context_app(&AppContextSnapshot {
+                source_app: Some("Spoken".into()),
+                source_window: None,
+            }),
+            Some("Spoken"),
+        );
+        assert_eq!(
+            detect_transcription_context_app(&AppContextSnapshot {
+                source_app: Some("Chrome".into()),
+                source_window: Some("Spoken Overlay".into()),
+            }),
+            Some("Spoken"),
+        );
+        // Other transcription apps detect too.
+        assert_eq!(
+            detect_transcription_context_app(&AppContextSnapshot {
+                source_app: Some("MacWhisper".into()),
+                source_window: None,
+            }),
+            Some("MacWhisper"),
+        );
+        assert_eq!(
+            detect_transcription_context_app(&AppContextSnapshot {
+                source_app: Some("Wispr Flow".into()),
+                source_window: None,
+            }),
+            Some("Wispr Flow"),
+        );
+        // Unrelated apps return None.
+        assert_eq!(
+            detect_transcription_context_app(&AppContextSnapshot {
+                source_app: Some("Chrome".into()),
+                source_window: Some("ChatGPT".into()),
+            }),
+            None,
+        );
     }
 
     #[tokio::test]
@@ -464,11 +576,19 @@ mod tests {
         };
 
         let first = service
-            .capture_clipboard_snippet("We should tighten the pricing page copy.".into(), &context)
+            .capture_clipboard_snippet(
+                "We should tighten the pricing page copy.".into(),
+                &context,
+                Some("Spoken"),
+            )
             .await
             .expect("first transcript save");
         let second = service
-            .capture_clipboard_snippet("Let's also revisit onboarding tomorrow.".into(), &context)
+            .capture_clipboard_snippet(
+                "Let's also revisit onboarding tomorrow.".into(),
+                &context,
+                Some("Spoken"),
+            )
             .await
             .expect("second transcript save");
 
