@@ -31,6 +31,7 @@ const TRANSCRIPT_SECTION_MARKER: &str = "\n\nTranscript\n\n";
 /// and must be unique enough to not false-match unrelated apps.
 const TRANSCRIPTION_APPS: &[(&str, &str)] = &[
     ("spoken", "Spoken"),
+    ("spokn", "Spokn"),
     ("macwhisper", "MacWhisper"),
     ("whisper memos", "Whisper Memos"),
     ("whispermemos", "Whisper Memos"),
