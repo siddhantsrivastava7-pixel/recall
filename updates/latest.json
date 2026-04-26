@@ -1,11 +1,15 @@
 {
-    "version":  "0.1.14",
-    "notes":  "v0.1.14 — Spoken transcript routing: detects Spoken process + content classifier so dictation rolls into a daily transcript memory instead of one memory per line. URLs/code/structured content keep their own memory + link enrichment.",
-    "pub_date":  "2026-04-26T04:14:08Z",
-    "platforms":  {
-                      "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyei9jQjRWT0Jwb2R3aTBFZGJBcnNVbThhSmpSSWpQdlBCY3hJQitFakcvZGJTV1RVdy9GSnYyWE1mUzZtcUV3VU03VllYMTJVNFBCV1JLNGZIQ1JHTXc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MTc2ODM4CWZpbGU6UmVjYWxsXzAuMS4xNF94NjRfZW4tVVMubXNpCjNhSnhGUHpXcWcvMlFJODdWU3FNMllGYlFlS1VQNkw0SXUwVmhUQ3o1OEM1UFl3TVAzMzFna1VhaEZ4SDRlSGgvTk81dS9xdkNxY0tacUlGTEZET0JBPT0K",
-                                             "url":  "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.1.14/Recall_0.1.14_x64_en-US.msi"
-                                         }
-                  }
+  "version": "0.1.14",
+  "notes": "Release v0.1.14",
+  "pub_date": "2026-04-26T04:27:24Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyendrY2t3RDE0Q3pDWWxZM2hxZ1ZqMHdybTZMYmRCbWRtUmZNMmNLZDFPM1h4U1djWUE1UWdUa0QxQ3FNMG5kTTBsNmRMRGN0NEJhOHRsLzJ3Q2t2RlFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MTc3NjI3CWZpbGU6UmVjYWxsXzAuMS4xNF94NjRfZW4tVVMubXNpCmF2eDFYY1Z2aHF4Mzg1NUY2WXFEcVVIcDZUL0NTNGtBNjVraVVGNkJjOUZhZ3IxbzVUdW1Ea2tJdEEyUDVQZU9PQ1FZcnRpYkt3U1FSb2xWZkxxbERnPT0K",
+      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.1.14/Recall_0.1.14_x64_en-US.msi"
+    },
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyejRrY0lWTy9jejVBYktrdGNpWDRKSlJHNmZVQjljTklqdGw5N1JQN09EYVlmR0NzRTlwNUovaCszTmdHOEdia2ZMT1RmZDFXaGFsbFRwMjdiT2RDVWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MTc3NDIzCWZpbGU6UmVjYWxsLmFwcC50YXIuZ3oKV0JNL0xrUWJ0Y25ieGdTYXJ0SDBFVjNQZi9iVFIwSWZLVm0xdGZIT3YweEcyVUw0c0RQVWY5clhIY3pRd2NQQkltelFUMmsrMkUrZzRhRkxvd25QQ0E9PQo=",
+      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.1.14/Recall.app.tar.gz"
+    }
+  }
 }
