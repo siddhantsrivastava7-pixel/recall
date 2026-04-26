@@ -1,16 +1,23 @@
 /**
  * MainWindow - "main" label
  *
- * Full desktop shell:
- * 64px icon sidebar + content area.
+ * Full desktop shell — depth + grain + 220px source-list sidebar.
  * Routes between: Dashboard, Memories, Projects, Settings.
  */
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { LayoutGrid, FileText, FolderOpen, Search, Settings, Download, X } from "lucide-react";
-import { useAppStore } from "@/stores/appStore";
+import {
+  Download,
+  FolderOpen,
+  LayoutGrid,
+  Layers,
+  Search,
+  Settings,
+  X,
+} from "lucide-react";
 import { useMemoryStore } from "@/stores/memoryStore";
+import { useProjectStore } from "@/stores/projectStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { Dashboard } from "@/components/dashboard/Dashboard";
@@ -18,6 +25,8 @@ import { MemoriesView } from "@/components/memory/MemoriesView";
 import { ProjectsView } from "@/components/memory/ProjectsView";
 import { SettingsView } from "@/components/settings/SettingsView";
 import { InstantCaptureToast } from "@/components/capture/InstantCaptureToast";
+import { RecallMark } from "@/components/system/RecallMark";
+import { ThemeToggle } from "@/components/system/ThemeToggle";
 import { tauriClient } from "@/services/api/tauri-client";
 import { useRecallDataSyncEvents } from "@/hooks/useRecallDataSyncEvents";
 import { useResurfaceNotifications } from "@/hooks/useResurfaceNotifications";
@@ -27,7 +36,6 @@ export type MainView = "dashboard" | "memories" | "projects" | "settings";
 export function MainWindow() {
   const [view, setView] = useState<MainView>("dashboard");
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(null);
-  const runtime = useAppStore((s) => s.runtime);
   const selectMemory = useMemoryStore((state) => state.selectMemory);
   const settings = useSettingsStore((state) => state.settings);
   const updateAvailable = useUpdateStore((state) => state.updateAvailable);
@@ -36,6 +44,7 @@ export function MainWindow() {
   const installing = useUpdateStore((state) => state.installing);
   const maybeCheckOnStartup = useUpdateStore((state) => state.maybeCheckOnStartup);
   const downloadAndInstallUpdate = useUpdateStore((state) => state.downloadAndInstallUpdate);
+
   useRecallDataSyncEvents();
   useResurfaceNotifications();
 
@@ -63,74 +72,201 @@ export function MainWindow() {
     dismissedUpdateVersion !== availableVersion;
 
   return (
-    <div
-      style={{
-        width: "100vw",
-        height: "100vh",
-        display: "flex",
-        overflow: "hidden",
-        background: "linear-gradient(135deg, #0B0F1A 0%, #0E1424 60%, #0B1020 100%)",
-        position: "relative",
-      }}
-    >
-      <div className="recall-noise" />
-
-      <div
-        style={{
-          position: "fixed",
-          width: 600,
-          height: 600,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(79,124,255,0.08) 0%, transparent 70%)",
-          top: -120,
-          right: 80,
-          pointerEvents: "none",
-          zIndex: 0,
-        }}
-      />
-      <div
-        style={{
-          position: "fixed",
-          width: 400,
-          height: 400,
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(79,124,255,0.05) 0%, transparent 70%)",
-          bottom: 60,
-          left: 80,
-          pointerEvents: "none",
-          zIndex: 0,
-        }}
-      />
-
-      <Sidebar view={view} setView={setView} />
-
-      <main
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          position: "relative",
-          zIndex: 1,
-        }}
-      >
-        {showUpdateBanner && (
-          <UpdateAvailableBanner
-            version={availableVersion}
-            busy={downloading || installing}
-            onInstall={() => void downloadAndInstallUpdate()}
-            onDismiss={() => setDismissedUpdateVersion(availableVersion)}
-          />
-        )}
-        {view === "dashboard" && <Dashboard setView={setView} />}
-        {view === "memories" && <MemoriesView />}
-        {view === "projects" && <ProjectsView setView={setView} />}
-        {view === "settings" && <SettingsView />}
-        <InstantCaptureToast />
-      </main>
+    <div className="window">
+      <div className="titlebar">
+        <div className="tl-title">Recall</div>
+        <ThemeToggle />
+      </div>
+      <div className="app-body">
+        <Sidebar view={view} setView={setView} />
+        <main className="main">
+          <div className="main-scroll">
+            {view === "dashboard" && <Dashboard setView={setView} />}
+            {view === "memories" && <MemoriesView />}
+            {view === "projects" && <ProjectsView setView={setView} />}
+            {view === "settings" && <SettingsView />}
+          </div>
+          {showUpdateBanner && availableVersion ? (
+            <UpdateAvailableBanner
+              version={availableVersion}
+              busy={downloading || installing}
+              onInstall={() => void downloadAndInstallUpdate()}
+              onDismiss={() => setDismissedUpdateVersion(availableVersion)}
+            />
+          ) : null}
+          <InstantCaptureToast />
+        </main>
+      </div>
     </div>
   );
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Sidebar — 220px source list with brand mark, Library section, pinned
+   projects, and a footer "indexed locally" status row.
+   ──────────────────────────────────────────────────────────────────────── */
+
+function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => void }) {
+  const shortcuts = useSettingsStore((state) => state.shortcuts);
+  const memories = useMemoryStore((state) => state.memories);
+  const projects = useProjectStore((state) => state.projects);
+  const memoryCount = memories.length;
+  const projectCount = projects.length;
+  const pinned = projects.slice(0, 3);
+
+  const projectCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const memory of memories) {
+      if (!memory.projectId) continue;
+      counts.set(memory.projectId, (counts.get(memory.projectId) ?? 0) + 1);
+    }
+    return counts;
+  }, [memories]);
+
+  const searchShortcutLabel =
+    shortcuts.find((shortcut) => shortcut.action === "open-search")?.accelerator ?? "Alt+Space";
+
+  return (
+    <aside className="sidebar">
+      <div className="brand drag-region">
+        <RecallMark size={18} />
+        <span>Recall</span>
+        <span
+          className="no-drag"
+          style={{ marginLeft: "auto", fontSize: 10, color: "var(--t-4)", fontWeight: 500 }}
+        >
+          v0.1.14
+        </span>
+      </div>
+
+      <div className="nav-group">
+        <div className="nav-label">Library</div>
+        <NavRow
+          icon={<LayoutGrid size={15} strokeWidth={1.6} />}
+          label="Home"
+          active={view === "dashboard"}
+          onClick={() => setView("dashboard")}
+        />
+        <NavRow
+          icon={<Layers size={15} strokeWidth={1.6} />}
+          label="All Memories"
+          count={memoryCount}
+          active={view === "memories"}
+          onClick={() => setView("memories")}
+        />
+        <NavRow
+          icon={<FolderOpen size={15} strokeWidth={1.6} />}
+          label="Projects"
+          count={projectCount}
+          active={view === "projects"}
+          onClick={() => setView("projects")}
+        />
+        <NavRow
+          icon={<Search size={15} strokeWidth={1.6} />}
+          label="Search"
+          kbd={searchShortcutLabel}
+          onClick={() => void tauriClient.openSearchOverlay()}
+        />
+        <NavRow
+          icon={<Settings size={15} strokeWidth={1.6} />}
+          label="Settings"
+          active={view === "settings"}
+          onClick={() => setView("settings")}
+        />
+      </div>
+
+      {pinned.length > 0 ? (
+        <div className="nav-group">
+          <div className="nav-label">Pinned Projects</div>
+          {pinned.map((project, index) => (
+            <NavRow
+              key={project.id}
+              icon={
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 3,
+                    background: projectDotForIndex(index),
+                    display: "block",
+                  }}
+                />
+              }
+              label={project.name}
+              count={projectCounts.get(project.id) ?? 0}
+              onClick={() => {
+                setView("projects");
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      <SideFoot memoryCount={memoryCount} />
+    </aside>
+  );
+}
+
+function NavRow({
+  icon,
+  label,
+  count,
+  kbd,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count?: number;
+  kbd?: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`nav-item${active ? " selected" : ""}`}
+      onClick={onClick}
+    >
+      <span className="nav-icon-slot">{icon}</span>
+      <span style={{ flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {label}
+      </span>
+      {count !== undefined ? (
+        <span className="nav-count">{count.toLocaleString()}</span>
+      ) : kbd ? (
+        <span className="nav-count" style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+          {kbd}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function SideFoot({ memoryCount }: { memoryCount: number }) {
+  return (
+    <div className="side-foot">
+      <div className="avatar">SK</div>
+      <div className="user-meta">
+        <div className="user-name">You</div>
+        <div className="user-status">
+          <span className="dot-live" />
+          {memoryCount > 0 ? `${memoryCount.toLocaleString()} indexed locally` : "Indexed locally"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const projectDotForIndex = (index: number) => {
+  const hues = [245, 30, 145, 305, 80, 200];
+  return `oklch(0.7 0.08 ${hues[index % hues.length]})`;
+};
+
+/* ────────────────────────────────────────────────────────────────────────
+   Update banner — restyled as a small floating chip in the upper right of
+   the main column. Functionality (install / dismiss) preserved.
+   ──────────────────────────────────────────────────────────────────────── */
 
 function UpdateAvailableBanner({
   version,
@@ -147,123 +283,42 @@ function UpdateAvailableBanner({
     <div
       style={{
         position: "absolute",
-        top: 22,
-        right: 26,
+        top: 16,
+        right: 16,
         zIndex: 20,
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "10px 12px 10px 14px",
-        borderRadius: 999,
-        background: "rgba(17,24,39,0.82)",
-        border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 18px 50px rgba(0,0,0,0.28)",
-        backdropFilter: "blur(18px)",
+        gap: 10,
+        padding: "8px 8px 8px 14px",
+        borderRadius: 10,
+        background: "var(--panel-glass)",
+        boxShadow: "0 0 0 0.5px var(--sh-window-edge), 0 12px 32px var(--sh-overlay)",
+        backdropFilter: "blur(20px) saturate(160%)",
+        WebkitBackdropFilter: "blur(20px) saturate(160%)",
       }}
     >
-      <div style={{ fontSize: 13, color: "var(--text-primary)", whiteSpace: "nowrap" }}>
+      <div style={{ fontSize: 12, color: "var(--t-1)", whiteSpace: "nowrap" }}>
         Recall {version} is available
       </div>
-      <button className="btn-primary" onClick={onInstall} disabled={busy} style={{ padding: "7px 10px" }}>
-        <Download size={12} />
-        {busy ? "Installing" : "Install"}
+      <button
+        type="button"
+        className="btn btn-primary"
+        onClick={onInstall}
+        disabled={busy}
+        style={{ height: 26, padding: "0 10px", fontSize: 12 }}
+      >
+        <Download size={11} strokeWidth={1.8} />
+        {busy ? "Installing…" : "Install"}
       </button>
       <button
+        type="button"
         onClick={onDismiss}
         aria-label="Dismiss update"
-        style={{
-          width: 26,
-          height: 26,
-          borderRadius: "50%",
-          border: "1px solid rgba(255,255,255,0.08)",
-          background: "rgba(255,255,255,0.05)",
-          color: "rgba(255,255,255,0.5)",
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
+        className="detail-close"
+        style={{ width: 22, height: 22 }}
       >
-        <X size={13} />
+        <X size={11} strokeWidth={1.8} />
       </button>
     </div>
-  );
-}
-
-function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => void }) {
-  const shortcuts = useSettingsStore((state) => state.shortcuts);
-  const searchShortcutLabel =
-    shortcuts.find((shortcut) => shortcut.action === "open-search")?.accelerator ?? "Alt+Space";
-
-  return (
-    <nav className="sidebar" style={{ position: "relative", zIndex: 2 }}>
-      <div
-        style={{
-          width: 30,
-          height: 30,
-          borderRadius: "50%",
-          background: "rgba(79,124,255,0.18)",
-          border: "1.5px solid rgba(79,124,255,0.4)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          marginBottom: 14,
-        }}
-      >
-        <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#4F7CFF" }} />
-      </div>
-
-      <NavIcon
-        icon={<LayoutGrid size={18} strokeWidth={1.7} />}
-        label="Dashboard"
-        active={view === "dashboard"}
-        onClick={() => setView("dashboard")}
-      />
-      <NavIcon
-        icon={<FileText size={18} strokeWidth={1.7} />}
-        label="Memories"
-        active={view === "memories"}
-        onClick={() => setView("memories")}
-      />
-      <NavIcon
-        icon={<FolderOpen size={18} strokeWidth={1.7} />}
-        label="Projects"
-        active={view === "projects"}
-        onClick={() => setView("projects")}
-      />
-      <NavIcon
-        icon={<Search size={18} strokeWidth={1.7} />}
-        label={`Search ${searchShortcutLabel}`}
-        active={false}
-        onClick={() => tauriClient.openSearchOverlay()}
-      />
-
-      <div style={{ flex: 1 }} />
-
-      <NavIcon
-        icon={<Settings size={18} strokeWidth={1.7} />}
-        label="Settings"
-        active={view === "settings"}
-        onClick={() => setView("settings")}
-      />
-    </nav>
-  );
-}
-
-function NavIcon({
-  icon,
-  label,
-  active,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button className={`nav-icon ${active ? "active" : ""}`} title={label} onClick={onClick}>
-      {icon}
-    </button>
   );
 }
