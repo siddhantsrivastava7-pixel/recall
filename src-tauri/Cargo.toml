@@ -39,9 +39,11 @@ uuid = { version = "1.18.1", features = ["serde", "v4"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 # Apple Vision Framework bindings via the objc2 ecosystem.
 # `objc2-vision` exposes VNRecognizeTextRequest; `objc2-foundation` brings
-# NSString/NSData; `objc2-core-graphics` brings CGImage which Vision needs.
+# NSString/NSDictionary; `objc2-core-foundation` brings CFData; and
+# `objc2-core-graphics` brings CGImage which Vision needs.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSValue", "NSData", "NSDictionary", "NSError"] }
+objc2-core-foundation = { version = "0.3", features = ["CFBase", "CFData"] }
 objc2-vision = { version = "0.3", features = ["VNRequest", "VNRequestHandler", "VNRecognizeTextRequest", "VNObservation", "VNError", "VNTypes", "block2"] }
 objc2-core-graphics = { version = "0.3", features = ["CGImage", "CGDataProvider", "CGColorSpace"] }
 

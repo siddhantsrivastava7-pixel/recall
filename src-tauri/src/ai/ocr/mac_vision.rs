@@ -14,17 +14,15 @@
 //! single shared runtime stays responsive while text recognition (which
 //! can take 200ms–2s on a large screenshot) churns through.
 
-use std::ptr::NonNull;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use image::GenericImageView;
 use objc2::rc::Retained;
 use objc2::AnyThread;
+use objc2_core_foundation::{CFData, CFRetained};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
 };
-use objc2_foundation::{NSArray, NSData, NSDictionary, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSString};
 use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedTextObservation, VNRequest,
     VNRequestTextRecognitionLevel,
@@ -92,14 +90,16 @@ fn run_vision(image_bytes: &[u8]) -> AppResult<OcrResult> {
         )
     };
 
-    let requests_array: Retained<NSArray<VNRequest>> = {
-        let req_as_request: &VNRequest = unsafe {
-            // VNRecognizeTextRequest is a subclass of VNRequest; safe to
-            // upcast for the array.
-            &*(Retained::as_ptr(&request) as *const VNRequest)
-        };
-        NSArray::from_retained_slice(&[unsafe { Retained::retain(req_as_request).unwrap() }])
+    // VNRecognizeTextRequest is a subclass of VNRequest; clone-retain the
+    // pointer at the parent type so we can stuff it into `NSArray<VNRequest>`.
+    // `Retained::retain` increments the refcount and returns a fresh
+    // Retained<VNRequest>; the original `request` owner is unaffected.
+    let request_as_vn: Retained<VNRequest> = unsafe {
+        Retained::retain(Retained::as_ptr(&request) as *mut VNRequest)
+            .ok_or_else(|| AppError::Invalid("VNRequest retain returned null".into()))?
     };
+    let requests_array: Retained<NSArray<VNRequest>> =
+        NSArray::from_retained_slice(&[request_as_vn]);
 
     unsafe {
         handler
@@ -151,37 +151,33 @@ fn run_vision(image_bytes: &[u8]) -> AppResult<OcrResult> {
 /// Build a `CGImage` from PNG/JPEG/etc. bytes by decoding through the
 /// `image` crate to RGBA8, then wrapping the buffer in a `CGDataProvider`
 /// and constructing a CGImage with explicit bitmap parameters.
-fn build_cg_image(image_bytes: &[u8]) -> AppResult<Retained<CGImage>> {
+///
+/// Returns `CFRetained<CGImage>` rather than `Retained<CGImage>` because
+/// CGImage is a Core Foundation type — its retain count is managed via
+/// `CFRetain`/`CFRelease`, not the Objective-C runtime. The two smart
+/// pointers are not interchangeable and forcing `Retained` here is a
+/// type error.
+fn build_cg_image(image_bytes: &[u8]) -> AppResult<CFRetained<CGImage>> {
     let img = image::load_from_memory(image_bytes)
         .map_err(|err| AppError::Invalid(format!("OCR image decode failed: {err}")))?;
     let (width, height) = img.dimensions();
     let rgba = img.to_rgba8();
-    let raw: Arc<[u8]> = rgba.into_raw().into();
+    let raw: Vec<u8> = rgba.into_raw();
 
     let bytes_per_row = (width as usize)
         .checked_mul(4)
         .ok_or_else(|| AppError::Invalid("OCR image too large".into()))?;
 
-    // Wrap the Arc<[u8]> in an NSData (zero-copy reference, retained for
-    // the lifetime of the CGDataProvider).
-    let data = unsafe {
-        let ptr = NonNull::new_unchecked(raw.as_ptr() as *mut u8);
-        let _ = &raw; // ensure ownership for static lifetime via leak below
-        // We leak the Arc to give Vision a permanently-valid backing buffer.
-        // Sized at most 4096 * 4096 * 4 = 64 MB per OCR job; freed when the
-        // CGImage and its provider are released, which happens when the
-        // Retained<CGImage> goes out of scope. Leaking is safe because we
-        // don't hold the raw beyond the function — the NSData::new takes
-        // ownership pattern.
-        let leaked: &'static [u8] = Box::leak(Box::<[u8]>::from(raw.as_ref()));
-        NSData::with_bytes(leaked)
-    };
+    // Copy the pixel buffer into a CFData. The CFData owns the bytes and
+    // outlives the CGImage that wraps it (CGDataProvider takes a strong
+    // reference). At most ~64 MB for a 4096×4096 OCR-prepped image —
+    // we accept the one extra allocation per recognition since Vision
+    // itself is the speed bottleneck.
+    let cf_data: CFRetained<CFData> = unsafe { CFData::new(None, &raw) }
+        .ok_or_else(|| AppError::Invalid("CFData::new returned null".into()))?;
 
-    let provider = unsafe {
-        CGDataProvider::with_cf_data(data.as_ref() as *const NSData as *const _).ok_or_else(
-            || AppError::Invalid("CGDataProvider::with_cf_data returned null".into()),
-        )?
-    };
+    let provider = unsafe { CGDataProvider::with_cf_data(Some(&cf_data)) }
+        .ok_or_else(|| AppError::Invalid("CGDataProvider::with_cf_data returned null".into()))?;
 
     let color_space = unsafe { CGColorSpace::new_device_rgb() }
         .ok_or_else(|| AppError::Invalid("CGColorSpace::new_device_rgb returned null".into()))?;
@@ -189,6 +185,12 @@ fn build_cg_image(image_bytes: &[u8]) -> AppResult<Retained<CGImage>> {
     // RGBA8, non-premultiplied, byte order = big (network order).
     // 0x00000004 = kCGImageAlphaLast
     let bitmap_info = CGBitmapInfo(0x00000004);
+
+    // `kCGRenderingIntentDefault = 0`. The associated-constant name of
+    // this variant differs across objc2-core-graphics revisions, but
+    // the underlying ABI is stable; constructing the wrapper struct
+    // directly with the documented value is portable.
+    let rendering_intent = CGColorRenderingIntent(0);
 
     let cg_image = unsafe {
         CGImage::new(
@@ -202,7 +204,7 @@ fn build_cg_image(image_bytes: &[u8]) -> AppResult<Retained<CGImage>> {
             Some(&provider),
             std::ptr::null(),
             false,
-            CGColorRenderingIntent::Default,
+            rendering_intent,
         )
     }
     .ok_or_else(|| AppError::Invalid("CGImage::new returned null".into()))?;
