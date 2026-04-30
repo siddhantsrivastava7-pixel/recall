@@ -12,6 +12,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AiStatusPayload } from "@/domain/types";
 
+export interface ClipboardImageDiagnostic {
+  ok: boolean;
+  message: string;
+  width?: number;
+  height?: number;
+  byteSize?: number;
+}
+
 export const aiClient = {
   /// Read-only snapshot for the AI Settings tab + status badges.
   status: () => invoke<AiStatusPayload>("ai_status"),
@@ -35,4 +43,11 @@ export const aiClient = {
   /// Bulk-enqueue OCR for every eligible memory the queue doesn't
   /// already cover. Returns the number of rows newly queued.
   rebuildIndex: () => invoke<number>("ocr_rebuild_index"),
+
+  /// Diagnostic: synchronously call clipboard.read_image() and report
+  /// what came back. Surfaced by the "Test clipboard image" button in
+  /// AI Settings to debug why a copied screenshot might not turn into a
+  /// memory.
+  diagnoseClipboardImage: () =>
+    invoke<ClipboardImageDiagnostic>("ai_diagnose_clipboard_image"),
 };

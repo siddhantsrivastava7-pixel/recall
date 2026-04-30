@@ -117,16 +117,22 @@ impl AiWorkQueue {
     }
 
     /// Bulk-enqueue an OCR job for every memory that's eligible for OCR
-    /// today: source_type screenshot/imported_image, no successful OCR
-    /// recorded yet, and no live job in the queue. Returns the number of
-    /// rows inserted.
+    /// today and isn't already queued. Returns the number of rows
+    /// inserted. Eligibility:
+    ///
+    ///   * `source_app` is `'screenshot'` or `'imported_image'` — that's
+    ///     the carrier the v0.2.1 clipboard image branch tags rows with,
+    ///     and the same string the capture-service post-save hook gates
+    ///     on. (The PRD originally proposed `source_type`, but we kept
+    ///     the existing `source_type` enum unchanged for additive
+    ///     migration safety — the routing tag landed on `source_app`.)
+    ///   * No prior successful OCR (`ocr_status` is null, pending, or
+    ///     failed). Already-done rows aren't re-OCR'd by rebuild.
     pub async fn enqueue_ocr_backfill(&self, engine: &str) -> AppResult<u64> {
         // We compute candidate memory_ids and dedupe_keys in SQL to avoid a
         // round-trip per row. `ON CONFLICT DO NOTHING` makes this safe even
         // if a duplicate slipped in from a concurrent enqueue.
         let scheduled_for = Utc::now().to_rfc3339();
-        let dedupe_prefix = format!("ocr:::");
-        let _ = dedupe_prefix; // silence unused; building string per row below.
         let result = sqlx::query(
             r#"
             INSERT INTO ai_work_queue
@@ -140,7 +146,8 @@ impl AiWorkQueue {
               0,
               ?3
             FROM memories m
-            WHERE m.source_type IN ('screenshot', 'imported_image')
+            WHERE m.source_app IN ('screenshot', 'imported_image')
+              AND m.url IS NOT NULL
               AND (m.ocr_status IS NULL OR m.ocr_status IN ('failed', 'pending'))
             ON CONFLICT(dedupe_key) DO NOTHING
             "#,

@@ -13,8 +13,16 @@
 // settings. Those land in v0.3.0+ when the features behind them exist.
 
 import { useEffect, useState } from "react";
-import { Sparkles, Cpu, Eye, RefreshCw, AlertCircle, CheckCircle } from "lucide-react";
-import { aiClient } from "@/services/ai/AiClient";
+import {
+  Sparkles,
+  Cpu,
+  Eye,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
+  Clipboard,
+} from "lucide-react";
+import { aiClient, type ClipboardImageDiagnostic } from "@/services/ai/AiClient";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { AiStatusPayload } from "@/domain/types";
 
@@ -61,7 +69,8 @@ export function AiSettingsTab() {
   const { settings, updateSettings } = useSettingsStore();
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: "idle" });
-  const [busy, setBusy] = useState<"toggle" | "rebuild" | null>(null);
+  const [busy, setBusy] = useState<"toggle" | "rebuild" | "diagnose" | null>(null);
+  const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
   // Read once on mount and whenever the master flag flips so the queue
   // counts and engine readout stay in sync without polling.
@@ -97,6 +106,21 @@ export function AiSettingsTab() {
       const message =
         error instanceof Error ? error.message : "Unable to toggle AI.";
       setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDiagnose = async () => {
+    setBusy("diagnose");
+    setNotice({ kind: "idle" });
+    try {
+      const result = await aiClient.diagnoseClipboardImage();
+      setDiagnostic(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to diagnose clipboard.";
+      setDiagnostic({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -234,6 +258,62 @@ export function AiSettingsTab() {
               <CheckCircle size={12} />
             )}
             {notice.message}
+          </div>
+        ) : null}
+      </div>
+
+      <div
+        style={{
+          paddingTop: 24,
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          marginTop: 24,
+        }}
+      >
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 6 }}>
+          Diagnostics
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 12,
+            maxWidth: 540,
+            lineHeight: 1.5,
+          }}
+        >
+          Copy a screenshot and click below. If we can read it, you'll see the
+          dimensions; if we can't, the message tells you why. Useful when an
+          image you copied doesn't turn into a memory automatically.
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className="btn-ghost"
+            onClick={() => void handleDiagnose()}
+            disabled={busy === "diagnose"}
+          >
+            <Clipboard size={13} />
+            {busy === "diagnose" ? "Reading…" : "Test clipboard image"}
+          </button>
+        </div>
+        {diagnostic ? (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: diagnostic.ok ? "rgb(122,200,140)" : "var(--text-danger, #f87171)",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 6,
+              maxWidth: 600,
+              lineHeight: 1.5,
+            }}
+          >
+            {diagnostic.ok ? (
+              <CheckCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
+            ) : (
+              <AlertCircle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
+            )}
+            <span>{diagnostic.message}</span>
           </div>
         ) : null}
       </div>

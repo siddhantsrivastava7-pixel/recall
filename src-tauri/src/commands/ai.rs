@@ -15,7 +15,7 @@
 //! themselves and `ai_status`, which always reads.
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     ai::hardware::HardwareInfo,
@@ -141,4 +141,61 @@ pub async fn ocr_rebuild_index(state: State<'_, AppState>) -> AppResult<u64> {
         ));
     }
     scheduler.rebuild_ocr_index().await
+}
+
+/// Diagnostic snapshot of `clipboard.read_image()`. Used by the AI
+/// Settings "Test clipboard image" button to surface, in one click, why
+/// a copied screenshot might not be turning into a memory. Returns a
+/// structured result so the UI can render the same shape regardless of
+/// which branch hit (success / no image / error).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardImageDiagnostic {
+    /// `true` when `read_image()` returned a usable image with
+    /// non-zero dimensions and a buffer length matching width × height × 4.
+    pub ok: bool,
+    /// Human-readable summary: `"Got 1920×1080 image (8.3 MB)"` on
+    /// success, or the failure reason on the negative path.
+    pub message: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub byte_size: Option<u64>,
+}
+
+#[tauri::command]
+pub async fn ai_diagnose_clipboard_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<ClipboardImageDiagnostic> {
+    let result = state.platform.clipboard.read_image(&app).await;
+    Ok(match result {
+        Ok(Some(image)) => {
+            let bytes = image.rgba.len() as u64;
+            let mb = (bytes as f64) / (1024.0 * 1024.0);
+            ClipboardImageDiagnostic {
+                ok: true,
+                message: format!(
+                    "Got {}×{} image ({:.1} MB RGBA). Copy a screenshot, click again, and you should see a new memory appear.",
+                    image.width, image.height, mb
+                ),
+                width: Some(image.width),
+                height: Some(image.height),
+                byte_size: Some(bytes),
+            }
+        }
+        Ok(None) => ClipboardImageDiagnostic {
+            ok: false,
+            message: "No image on the clipboard, or the format isn't decodable. Copy an image (Win+Shift+S, Cmd+Shift+4, or right-click an image → Copy) and click again.".into(),
+            width: None,
+            height: None,
+            byte_size: None,
+        },
+        Err(error) => ClipboardImageDiagnostic {
+            ok: false,
+            message: format!("Clipboard read failed: {error}"),
+            width: None,
+            height: None,
+            byte_size: None,
+        },
+    })
 }
