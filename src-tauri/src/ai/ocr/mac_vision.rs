@@ -173,8 +173,14 @@ fn build_cg_image(image_bytes: &[u8]) -> AppResult<CFRetained<CGImage>> {
     // reference). At most ~64 MB for a 4096×4096 OCR-prepped image —
     // we accept the one extra allocation per recognition since Vision
     // itself is the speed bottleneck.
-    let cf_data: CFRetained<CFData> = unsafe { CFData::new(None, &raw) }
-        .ok_or_else(|| AppError::Invalid("CFData::new returned null".into()))?;
+    //
+    // `CFData::new` is a thin shim over `CFDataCreate`: 3 args
+    // (allocator, *const u8, CFIndex) — no `&[u8]` sugar yet in
+    // objc2-core-foundation 0.3, so we hand it the raw pointer + length.
+    let raw_len = raw.len() as isize; // CFIndex is isize on 64-bit Apple
+    let cf_data: CFRetained<CFData> =
+        unsafe { CFData::new(None, raw.as_ptr(), raw_len) }
+            .ok_or_else(|| AppError::Invalid("CFData::new returned null".into()))?;
 
     let provider = unsafe { CGDataProvider::with_cf_data(Some(&cf_data)) }
         .ok_or_else(|| AppError::Invalid("CGDataProvider::with_cf_data returned null".into()))?;
