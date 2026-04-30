@@ -1,19 +1,23 @@
 use std::collections::VecDeque;
 
+use chrono::Utc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::time::{sleep, Duration};
 
 use crate::{
     models::{MemoryInput, MemorySourceType},
-    services::spoken_transcript_service::{
-        detect_transcription_app, looks_like_transcript_text,
+    platform::contracts::ClipboardImage,
+    services::{
+        screenshot_store::SCREENSHOT_SOURCE_APP,
+        spoken_transcript_service::{detect_transcription_app, looks_like_transcript_text},
     },
     state::app_state::AppState,
 };
 
 const CLIPBOARD_POLL_INTERVAL_MS: u64 = 900;
 const RECENT_CAPTURE_SIGNATURE_LIMIT: usize = 64;
+const RECENT_IMAGE_SIGNATURE_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,10 +29,69 @@ pub fn start_clipboard_watcher(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_seen_signature = read_clipboard_signature(&app).await;
         let mut recent_capture_signatures = VecDeque::<String>::new();
+        // Image-side dedupe is independent of text dedupe — image
+        // captures arrive less often but each one is much heavier, and
+        // their "noise" comes from a different source (Win+PrintScreen
+        // double-firing) that text dedupe can't see.
+        let mut last_seen_image_hash: Option<u64> = None;
+        let mut recent_image_hashes: VecDeque<u64> = VecDeque::new();
 
         loop {
             sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS)).await;
 
+            // Gate everything on an active license once per tick — it
+            // matches the existing text path and avoids running OCR /
+            // disk writes for unactivated copies.
+            let state = app.state::<AppState>();
+            let license_active = state
+                .license_service
+                .get_state()
+                .await
+                .map(|license| license.is_activated)
+                .unwrap_or(false);
+            if !license_active {
+                continue;
+            }
+
+            // ── 1. Image branch ─────────────────────────────────────
+            //
+            // Try the image clipboard *before* text. On Windows, when
+            // you copy an image from a browser, the clipboard often
+            // contains both the image bytes and an HTML/text fallback;
+            // we want the screenshot memory, not the HTML.
+            if let Some(image) = read_clipboard_image(&app).await {
+                let hash = hash_rgba(&image);
+                let is_new = last_seen_image_hash != Some(hash)
+                    && !recent_image_hashes.contains(&hash);
+                last_seen_image_hash = Some(hash);
+                if is_new {
+                    match save_clipboard_image_capture(&app, image).await {
+                        Ok(memory_id) => {
+                            remember_image_hash(&mut recent_image_hashes, hash);
+                            let _ = app.emit(
+                                "recall://instant-capture-saved",
+                                InstantCaptureSavedEvent { memory_id },
+                            );
+                            // If the platform also exposes an HTML/text
+                            // fallback alongside the image, skip text
+                            // processing this tick so we don't double-
+                            // capture the same paste.
+                            continue;
+                        }
+                        Err(error) => {
+                            if cfg!(debug_assertions) {
+                                eprintln!(
+                                    "[recall][clipboard-watch] image capture failed: {error}"
+                                );
+                            }
+                            // Fall through to text — image failed but
+                            // a text fallback might still be useful.
+                        }
+                    }
+                }
+            }
+
+            // ── 2. Text branch ──────────────────────────────────────
             let Some(raw_content) = read_clipboard_text(&app).await else {
                 continue;
             };
@@ -48,17 +111,6 @@ pub fn start_clipboard_watcher(app: AppHandle) {
                 .iter()
                 .any(|recent| recent == &signature)
             {
-                continue;
-            }
-
-            let state = app.state::<AppState>();
-            let license_active = state
-                .license_service
-                .get_state()
-                .await
-                .map(|license| license.is_activated)
-                .unwrap_or(false);
-            if !license_active {
                 continue;
             }
 
@@ -88,6 +140,111 @@ async fn read_clipboard_signature(app: &AppHandle) -> Option<String> {
 async fn read_clipboard_text(app: &AppHandle) -> Option<String> {
     let state = app.state::<AppState>();
     state.platform.clipboard.read_text(app).await.ok().flatten()
+}
+
+async fn read_clipboard_image(app: &AppHandle) -> Option<ClipboardImage> {
+    let state = app.state::<AppState>();
+    state.platform.clipboard.read_image(app).await.ok().flatten()
+}
+
+/// Cheap hash of a clipboard image for in-memory dedupe. We only need
+/// to recognize "the same paste fired twice in a row", not be
+/// collision-resistant — a 64-bit FNV-1a over a sparse sample of the
+/// RGBA plane is plenty and avoids hashing 30 MB of pixels.
+fn hash_rgba(image: &ClipboardImage) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in image.width.to_le_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for byte in image.height.to_le_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    // Sparse sample: every 64th byte. For a 4K screenshot that's ~520k
+    // bytes mixed in, ~5ms of work, more than enough entropy.
+    for byte in image.rgba.iter().step_by(64) {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+async fn save_clipboard_image_capture(
+    app: &AppHandle,
+    image: ClipboardImage,
+) -> crate::errors::app_error::AppResult<String> {
+    let state = app.state::<AppState>();
+    let store = state.screenshot_store().ok_or_else(|| {
+        crate::errors::app_error::AppError::Invalid(
+            "Screenshot store not initialized.".into(),
+        )
+    })?;
+    let saved = store
+        .save_rgba(image.rgba, image.width, image.height)
+        .await?;
+
+    let context = state
+        .platform
+        .app_context
+        .detect_context()
+        .await
+        .unwrap_or(crate::models::AppContextSnapshot {
+            source_app: None,
+            source_window: None,
+        });
+
+    let now = Utc::now();
+    let title = format!("Screenshot · {}", now.format("%b %-d, %Y · %-I:%M %p"));
+    // Capture body holds a placeholder. The real searchable text lands
+    // on `memory.ocr_text` once the AI scheduler finishes the OCR pass
+    // (or never, if AI is disabled — that's fine, the screenshot still
+    // shows up in the timeline).
+    let placeholder_content = format!(
+        "Screenshot from clipboard ({}×{}). OCR will fill in the text once it runs.",
+        saved.width, saved.height
+    );
+
+    let memory = state
+        .memory_service
+        .create(MemoryInput {
+            // We deliberately keep `source_type = manual` (existing
+            // enum, no DB schema change) and tag the screenshot via
+            // `source_app` — that's what the capture-service OCR hook
+            // gates on, and what the frontend will use to render the
+            // image inline.
+            source_type: Some(MemorySourceType::Manual),
+            title: Some(title),
+            content: placeholder_content,
+            note: None,
+            project_id: None,
+            url: Some(saved.file_url),
+            external_id: None,
+            folder_path: None,
+            source_app: Some(SCREENSHOT_SOURCE_APP.to_string()),
+            source_window: context.source_window,
+            created_at: None,
+            updated_at: None,
+        })
+        .await?;
+
+    app.emit("recall://memory-saved", &memory)?;
+
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[recall][clipboard-watch] saved screenshot memory_id={} dimensions={}x{} bytes={}",
+            memory.id, saved.width, saved.height, saved.byte_size
+        );
+    }
+
+    Ok(memory.id)
+}
+
+fn remember_image_hash(recent: &mut VecDeque<u64>, hash: u64) {
+    recent.push_back(hash);
+    while recent.len() > RECENT_IMAGE_SIGNATURE_LIMIT {
+        let _ = recent.pop_front();
+    }
 }
 
 async fn save_clipboard_capture(

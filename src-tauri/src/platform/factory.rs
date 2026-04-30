@@ -122,6 +122,15 @@ impl ClipboardAdapter for UnsupportedClipboardAdapter {
     ) -> crate::errors::app_error::AppResult<()> {
         Ok(())
     }
+
+    async fn read_image(
+        &self,
+        _app: &AppHandle,
+    ) -> crate::errors::app_error::AppResult<
+        Option<crate::platform::contracts::ClipboardImage>,
+    > {
+        Ok(None)
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

@@ -503,6 +503,10 @@ const buildFieldAnalyses = (
     memory.summaryText,
     memory.previewText,
     memory.resolvedDescription,
+    // v0.2.0 — OCR text from screenshot / imported_image memories. Same
+    // weight as content so a phrase matched only via OCR ranks the same
+    // as a phrase matched in the body of a text memory.
+    memory.ocrText,
   ]
     .filter(Boolean)
     .join("\n");

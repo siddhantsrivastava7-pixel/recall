@@ -60,6 +60,13 @@ export interface Memory {
   resurfaceDismissedAt?: string | null;
   lastOpenedAt?: string | null;
   openCount?: number;
+  // v0.2.0 — OCR fields. Populated by the AI scheduler on screenshot /
+  // imported_image memories. Other memories carry these as `null`.
+  ocrText?: string | null;
+  ocrStatus?: "pending" | "running" | "done" | "failed" | null;
+  ocrProcessedAt?: string | null;
+  ocrEngine?: string | null;
+  ocrError?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -1,15 +1,24 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     db::repositories::SharedMemoryRepository,
     errors::app_error::{AppError, AppResult},
     models::{Memory, MemoryInput},
-    services::capture_service::CaptureService,
+    services::{
+        capture_service::CaptureService,
+        screenshot_store::{file_url_to_path, ScreenshotStore, SCREENSHOT_SOURCE_APP},
+    },
 };
 
 pub struct MemoryService {
     repository: SharedMemoryRepository,
     capture_service: Arc<CaptureService>,
+    /// Screenshot store handle, used to clean up the on-disk file when
+    /// a screenshot memory is deleted. Empty until installed at boot;
+    /// when missing, we silently skip the file unlink — the row still
+    /// deletes, we just leak the file (a v0.2.x model GC pass cleans
+    /// orphans on app upgrade).
+    screenshot_store: OnceLock<ScreenshotStore>,
 }
 
 impl MemoryService {
@@ -17,7 +26,14 @@ impl MemoryService {
         Self {
             repository,
             capture_service,
+            screenshot_store: OnceLock::new(),
         }
+    }
+
+    /// Install the screenshot store so that deleting a screenshot
+    /// memory also deletes the underlying file. Idempotent.
+    pub fn install_screenshot_store(&self, store: ScreenshotStore) {
+        let _ = self.screenshot_store.set(store);
     }
 
     pub async fn list(&self) -> AppResult<Vec<Memory>> {
@@ -37,7 +53,30 @@ impl MemoryService {
     }
 
     pub async fn delete(&self, id: &str) -> AppResult<()> {
-        self.repository.delete(id).await
+        // If the row is a screenshot memory and it lives in our
+        // screenshots dir, unlink the file *after* the row deletes
+        // (so a botched delete still leaves the row intact and
+        // recoverable). Best-effort: a stray file is much better than
+        // a row that won't delete because of a permissions hiccup on
+        // the file.
+        let target = self.repository.find(id).await?;
+        self.repository.delete(id).await?;
+        if let Some(memory) = target {
+            if memory.source_app.as_deref() == Some(SCREENSHOT_SOURCE_APP) {
+                if let (Some(store), Some(url)) =
+                    (self.screenshot_store.get(), memory.url.as_deref())
+                {
+                    if let Some(path) = file_url_to_path(url) {
+                        if let Err(error) = store.delete(&path).await {
+                            eprintln!(
+                                "[recall][memory-service] screenshot file cleanup failed for {id}: {error}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn duplicate(&self, id: &str) -> AppResult<Memory> {

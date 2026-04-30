@@ -6,10 +6,27 @@ use crate::{
     models::{AppContextSnapshot, BookmarkBrowser, RuntimePlatform, ShortcutBinding},
 };
 
+/// Raw clipboard image, decoded into RGBA pixels. Width/height are in
+/// pixels; `rgba` is `width * height * 4` bytes laid out row-major
+/// (R, G, B, A per pixel). Adapters return this shape rather than
+/// platform-specific image handles so the consumer (clipboard watcher)
+/// stays platform-agnostic.
+#[derive(Debug, Clone)]
+pub struct ClipboardImage {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[async_trait]
 pub trait ClipboardAdapter: Send + Sync {
     async fn read_text(&self, app: &AppHandle) -> AppResult<Option<String>>;
     async fn write_text(&self, app: &AppHandle, text: &str) -> AppResult<()>;
+    /// Read the current clipboard image, if any. Returns `Ok(None)` when
+    /// no image is on the clipboard or the host can't decode it (the
+    /// clipboard plugin classifies the absence of an image as an
+    /// error — we map to `None` so the caller can branch cleanly).
+    async fn read_image(&self, app: &AppHandle) -> AppResult<Option<ClipboardImage>>;
 }
 
 pub trait ShortcutAdapter: Send + Sync {

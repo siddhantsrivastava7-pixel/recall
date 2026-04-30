@@ -31,7 +31,9 @@ use commands::{
 use db::seed::ensure_seed_data;
 use platform::factory::create_platform_services;
 use services::{
-    clipboard_watcher_service::start_clipboard_watcher, shortcut_service::normalize_accelerator,
+    clipboard_watcher_service::start_clipboard_watcher,
+    screenshot_store::ScreenshotStore,
+    shortcut_service::normalize_accelerator,
 };
 use state::app_state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -330,6 +332,17 @@ pub fn run() {
                 {
                     eprintln!("[recall] Shortcut registration warning: {e}");
                 }
+                // Install screenshot store *before* the clipboard
+                // watcher starts so its first tick can already write
+                // image captures. It only needs the AppHandle. The
+                // memory service holds its own clone so deletes can
+                // unlink the on-disk file alongside the row.
+                let screenshot_store = ScreenshotStore::new(handle.clone());
+                managed.install_screenshot_store(screenshot_store.clone());
+                managed
+                    .memory_service
+                    .install_screenshot_store(screenshot_store);
+
                 start_bookmark_sync_loop(handle.clone());
                 start_clipboard_watcher(handle.clone());
                 managed.receiver_service.start(handle.clone());

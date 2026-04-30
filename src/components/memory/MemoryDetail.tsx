@@ -43,6 +43,7 @@ import {
 import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { ScreenshotPreview, isScreenshotMemory } from "./ScreenshotPreview";
 
 export function MemoryDetail({
   memory,
@@ -652,6 +653,12 @@ export function MemoryDetail({
               </div>
             )}
           </section>
+
+          {isScreenshotMemory(currentMemory) && (
+            <section style={{ marginBottom: 22 }}>
+              <ScreenshotPreview memory={currentMemory} />
+            </section>
+          )}
 
           <section style={{ marginBottom: normalizedNote ? 26 : 0 }}>
             {editingContent && canEditContentInline ? (

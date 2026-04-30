@@ -10,7 +10,8 @@ use crate::{
     models::{AppContextSnapshot, BookmarkBrowser, RuntimePlatform, ShortcutBinding},
     platform::contracts::{
         AppContextAdapter, BrowserBookmarkReader, BrowserPathResolver, ClipboardAdapter,
-        FileSystemAdapter, ParsedBookmarkRecord, ShortcutAdapter, StartupAdapter, WindowAdapter,
+        ClipboardImage, FileSystemAdapter, ParsedBookmarkRecord, ShortcutAdapter, StartupAdapter,
+        WindowAdapter,
     },
     services::bookmark_parser::parse_chromium_bookmark_bytes,
 };
@@ -49,6 +50,10 @@ impl ClipboardAdapter for MacClipboardAdapter {
             .write_text(text.to_string())
             .map_err(|error| crate::errors::app_error::AppError::Invalid(error.to_string()))?;
         Ok(())
+    }
+
+    async fn read_image(&self, app: &AppHandle) -> AppResult<Option<ClipboardImage>> {
+        Ok(crate::platform::read_image_via_plugin(app))
     }
 }
 

@@ -21,6 +21,7 @@ use crate::{
         pairing_service::PairingService,
         project_service::ProjectService,
         receiver_service::DesktopReceiverService,
+        screenshot_store::ScreenshotStore,
         settings_service::SettingsService,
         shortcut_service::ShortcutService,
         spoken_transcript_service::SpokenTranscriptService,
@@ -53,6 +54,11 @@ pub struct AppState {
     /// `&AppState` (which is all `tauri::State` exposes) without an
     /// unsafe cell or a `Mutex` we'd never lock for writes again.
     ai_scheduler_cell: OnceLock<AiScheduler>,
+    /// On-disk store for clipboard-image captures. Installed in
+    /// `setup()` once the AppHandle is available. `None` very briefly
+    /// during the window between AppState construction and `setup()` —
+    /// no clipboard watcher work runs in that window.
+    screenshot_store_cell: OnceLock<ScreenshotStore>,
     /// Capture service is exposed on AppState so the AI scheduler hook can
     /// re-use the existing post-save path. Held as Arc for cheap clones.
     pub capture_service: Arc<CaptureService>,
@@ -126,6 +132,7 @@ impl AppState {
             receiver_service,
             platform,
             ai_scheduler_cell: OnceLock::new(),
+            screenshot_store_cell: OnceLock::new(),
             capture_service,
             init_error: None,
             startup_bookmark_sync_completed: AtomicBool::new(false),
@@ -148,5 +155,18 @@ impl AppState {
         self.ai_scheduler_cell
             .get()
             .expect("scheduler should be present after set/get_or_init")
+    }
+
+    /// Read the screenshot store handle. `None` until installed at
+    /// startup; nothing depends on it being present synchronously
+    /// during AppState::new because the clipboard watcher doesn't run
+    /// until after `setup()` finishes.
+    pub fn screenshot_store(&self) -> Option<&ScreenshotStore> {
+        self.screenshot_store_cell.get()
+    }
+
+    /// Install the screenshot store. Idempotent.
+    pub fn install_screenshot_store(&self, store: ScreenshotStore) {
+        let _ = self.screenshot_store_cell.set(store);
     }
 }
