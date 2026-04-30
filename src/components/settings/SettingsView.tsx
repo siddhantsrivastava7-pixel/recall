@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone } from "lucide-react";
+import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone, Sparkles } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
@@ -10,14 +10,16 @@ import { syncBookmarksNow } from "@/services/bookmarks";
 import { getBookmarkBrowserOptions } from "@/domain/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
 import type { ShortcutBinding } from "@/domain/types";
+import { AiSettingsTab } from "@/views/Settings/AiSettingsTab";
 
-type Tab = "general" | "shortcuts" | "bookmarks" | "pairing" | "updates" | "license";
+type Tab = "general" | "ai" | "shortcuts" | "bookmarks" | "pairing" | "updates" | "license";
 
 export function SettingsView() {
   const [tab, setTab] = useState<Tab>("general");
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "general",   label: "General",   icon: <Zap      size={14} /> },
+    { id: "ai",        label: "AI",        icon: <Sparkles size={14} /> },
     { id: "shortcuts", label: "Shortcuts", icon: <Keyboard size={14} /> },
     { id: "bookmarks", label: "Bookmarks", icon: <BookOpen size={14} /> },
     { id: "pairing",   label: "Pairing",   icon: <Smartphone size={14} /> },
@@ -55,6 +57,7 @@ export function SettingsView() {
       {/* Content */}
       <div style={{ flex: 1, overflowY: "auto", padding: "36px 48px" }}>
         {tab === "general"   && <GeneralTab />}
+        {tab === "ai"        && <AiSettingsTab />}
         {tab === "shortcuts" && <ShortcutsTab />}
         {tab === "bookmarks" && <BookmarksTab />}
         {tab === "pairing"   && <PairingTab />}

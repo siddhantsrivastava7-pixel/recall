@@ -24,6 +24,12 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
     bookmarkSyncIntervalMinutes: 15,
     bookmarkSyncBrowsers: ["chrome", "edge", "brave"],
     bookmarkLastSyncedAt: null,
+    // v0.2.0 — AI subsystem defaults. Mirror the Rust-side defaults so
+    // the UI doesn't briefly render with the toggles in an undefined
+    // state before the bootstrap settings hydrate the store.
+    aiEnabled: false,
+    aiPauseOnBattery: true,
+    aiHeavyOnlyOnAc: true,
   },
   shortcuts: [],
   license: null,

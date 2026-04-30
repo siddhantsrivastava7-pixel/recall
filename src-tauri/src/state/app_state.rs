@@ -1,11 +1,12 @@
 use std::{
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, OnceLock},
 };
 
 use sqlx::SqlitePool;
 
 use crate::{
+    ai::scheduler::AiScheduler,
     db::repositories::{
         SharedLicenseRepository, SharedMemoryRepository, SharedProjectRepository,
         SharedSettingsRepository,
@@ -44,6 +45,17 @@ pub struct AppState {
     pub pairing_service: Arc<PairingService>,
     pub receiver_service: Arc<DesktopReceiverService>,
     pub platform: PlatformServices,
+    /// AI subsystem handle. Empty until initialized in `setup()` after the
+    /// window opens (kept off the bootstrap path so first paint is never
+    /// blocked on hardware probing or scheduler spawn). When the host has
+    /// no native OCR adapter the handle is still installed and reports
+    /// `ocr_engine = "unsupported"`. `OnceLock` lets us write through
+    /// `&AppState` (which is all `tauri::State` exposes) without an
+    /// unsafe cell or a `Mutex` we'd never lock for writes again.
+    ai_scheduler_cell: OnceLock<AiScheduler>,
+    /// Capture service is exposed on AppState so the AI scheduler hook can
+    /// re-use the existing post-save path. Held as Arc for cheap clones.
+    pub capture_service: Arc<CaptureService>,
     /// Set if initialization failed — bootstrap_app returns this as an error
     pub init_error: Option<String>,
     pub startup_bookmark_sync_completed: AtomicBool,
@@ -113,8 +125,28 @@ impl AppState {
             pairing_service,
             receiver_service,
             platform,
+            ai_scheduler_cell: OnceLock::new(),
+            capture_service,
             init_error: None,
             startup_bookmark_sync_completed: AtomicBool::new(false),
         }
+    }
+
+    /// Read the AI scheduler handle, if it has been installed by the
+    /// startup hook. Returns `None` for the brief window between window
+    /// open and `start_ai_scheduler` running, and forever on hosts where
+    /// scheduler init failed (extremely rare — only an OOM at boot).
+    pub fn ai_scheduler(&self) -> Option<&AiScheduler> {
+        self.ai_scheduler_cell.get()
+    }
+
+    /// Install the AI scheduler. Idempotent: a second call is a no-op
+    /// and returns the previously-installed handle. Called exactly once
+    /// at startup from `lib.rs::start_ai_scheduler`.
+    pub fn install_ai_scheduler(&self, scheduler: AiScheduler) -> &AiScheduler {
+        let _ = self.ai_scheduler_cell.set(scheduler);
+        self.ai_scheduler_cell
+            .get()
+            .expect("scheduler should be present after set/get_or_init")
     }
 }

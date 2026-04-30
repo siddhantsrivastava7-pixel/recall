@@ -1,7 +1,10 @@
+use std::sync::OnceLock;
+
 use chrono::Utc;
 use sqlx::SqlitePool;
 
 use crate::{
+    ai::scheduler::AiScheduler,
     db::{
         repositories::SharedMemoryRepository,
         system_projects::{ensure_default_inbox_project, DEFAULT_INBOX_PROJECT_ID},
@@ -63,11 +66,77 @@ impl CaptureInputBuilder {
 pub struct CaptureService {
     pool: SqlitePool,
     repository: SharedMemoryRepository,
+    /// AI scheduler for the post-save OCR hook. Empty until installed at
+    /// app boot via [`Self::install_ai_scheduler`]. Held as `OnceLock`
+    /// rather than `Option` so we can write through `&self` (the service
+    /// is wrapped in `Arc` and shared across handlers).
+    ai_scheduler: OnceLock<AiScheduler>,
 }
 
 impl CaptureService {
     pub fn new(pool: SqlitePool, repository: SharedMemoryRepository) -> Self {
-        Self { pool, repository }
+        Self {
+            pool,
+            repository,
+            ai_scheduler: OnceLock::new(),
+        }
+    }
+
+    /// Install the AI scheduler. Idempotent — only the first call wins.
+    /// The capture service will enqueue OCR jobs from this moment on for
+    /// any new screenshot / imported-image memory it commits.
+    pub fn install_ai_scheduler(&self, scheduler: AiScheduler) {
+        let _ = self.ai_scheduler.set(scheduler);
+    }
+
+    /// Post-save OCR hook. Called after `repository.create` returns so
+    /// the save path is never blocked by adapter probing or queue I/O.
+    /// All three PRD conditions are checked here:
+    ///   1. `source_type IN ('screenshot', 'imported_image')`
+    ///   2. `ocr_status IS NULL OR ocr_status IN ('failed', 'pending')`
+    ///   3. `dedupe_key UNIQUE` already prevents duplicate enqueueing —
+    ///      `enqueue_ocr_for_memory` returns `Ok(false)` on conflict.
+    /// Any error here is logged-and-swallowed: we never let the AI
+    /// subsystem's hiccups bubble up into the capture path.
+    fn maybe_enqueue_ocr(&self, memory: &Memory) {
+        let Some(scheduler) = self.ai_scheduler.get() else {
+            return; // scheduler not yet installed (pre-boot) — nothing to do
+        };
+        if !scheduler.is_enabled() {
+            return;
+        }
+
+        // Phase 1: source_type is still an enum of `manual | bookmark`,
+        // so the database column never matches `screenshot` or
+        // `imported_image` yet. The check is wired against the raw
+        // `source_app` string (set by capture pipelines when image
+        // sources land in v0.2.x) so the hook is forward-compatible.
+        let qualifies = matches!(
+            memory.source_app.as_deref(),
+            Some("screenshot") | Some("imported_image")
+        );
+        if !qualifies {
+            return;
+        }
+
+        match memory.ocr_status.as_deref() {
+            None | Some("pending") | Some("failed") => {}
+            // 'running' or 'done' — already covered.
+            _ => return,
+        }
+
+        let memory_id = memory.id.clone();
+        let scheduler = scheduler.clone();
+        // Fire-and-forget: the enqueue is a single SQL INSERT OR IGNORE,
+        // but we still don't want to extend the capture future's lifetime
+        // by awaiting it. Spawn into the tauri runtime.
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = scheduler.enqueue_ocr_for_memory(&memory_id).await {
+                eprintln!(
+                    "[recall][capture] OCR enqueue failed for {memory_id}: {error}"
+                );
+            }
+        });
     }
 
     pub async fn create(&self, input: MemoryInput) -> AppResult<Memory> {
@@ -157,6 +226,10 @@ impl CaptureService {
                     started_at.elapsed(),
                     &prepared.steps,
                 );
+                // v0.2.0: AI subsystem post-save hook. Save has already
+                // committed; enqueueing OCR is best-effort and async so
+                // any latency here can't bleed into the user's capture.
+                self.maybe_enqueue_ocr(&memory);
                 Ok(memory)
             }
             Err(error) => {

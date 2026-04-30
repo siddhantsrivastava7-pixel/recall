@@ -1,0 +1,364 @@
+// AI Settings tab — v0.2.0 (Phase 1: Foundation + Native OCR).
+//
+// Ruthlessly minimal per the locked PRD. Six controls, in this order:
+//
+//   1. AI master toggle (off by default)
+//   2. Detected hardware tier (read-only)
+//   3. OCR engine readout (read-only)
+//   4. Pause on battery toggle
+//   5. Run heavy tasks only while plugged in toggle
+//   6. Run OCR rebuild button
+//
+// No model storage path, no advanced AI mode picker, no unload-model
+// settings. Those land in v0.3.0+ when the features behind them exist.
+
+import { useEffect, useState } from "react";
+import { Sparkles, Cpu, Eye, RefreshCw, AlertCircle, CheckCircle } from "lucide-react";
+import { aiClient } from "@/services/ai/AiClient";
+import { useSettingsStore } from "@/stores/settingsStore";
+import type { AiStatusPayload } from "@/domain/types";
+
+type Notice =
+  | { kind: "idle" }
+  | { kind: "info"; message: string }
+  | { kind: "error"; message: string };
+
+const GB_BYTES = 1024 * 1024 * 1024;
+
+function formatRam(bytes: number) {
+  if (bytes <= 0) return "—";
+  const gb = bytes / GB_BYTES;
+  return gb >= 10 ? `${gb.toFixed(0)} GB` : `${gb.toFixed(1)} GB`;
+}
+
+function tierLabel(tier: AiStatusPayload["hardware"]["tier"]) {
+  switch (tier) {
+    case "a":
+      return "Tier A · 8 GB class";
+    case "b":
+      return "Tier B · 16 GB class";
+    case "c":
+      return "Tier C · 32 GB class";
+    default:
+      return "Unknown";
+  }
+}
+
+function ocrEngineLabel(engine: string) {
+  switch (engine) {
+    case "apple-vision":
+      return "Apple Vision";
+    case "windows-media-ocr":
+      return "Windows.Media.Ocr";
+    case "unsupported":
+      return "Not available on this OS";
+    default:
+      return engine;
+  }
+}
+
+export function AiSettingsTab() {
+  const { settings, updateSettings } = useSettingsStore();
+  const [status, setStatus] = useState<AiStatusPayload | null>(null);
+  const [notice, setNotice] = useState<Notice>({ kind: "idle" });
+  const [busy, setBusy] = useState<"toggle" | "rebuild" | null>(null);
+
+  // Read once on mount and whenever the master flag flips so the queue
+  // counts and engine readout stay in sync without polling.
+  useEffect(() => {
+    let cancelled = false;
+    aiClient
+      .status()
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error ? error.message : "Unable to read AI status.";
+        setNotice({ kind: "error", message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.aiEnabled]);
+
+  const handleToggleEnabled = async (next: boolean) => {
+    setBusy("toggle");
+    setNotice({ kind: "idle" });
+    try {
+      const updated = await aiClient.setEnabled(next);
+      setStatus(updated);
+      // Mirror the flip into the settings store so other components
+      // (e.g. the General tab, future status badges) see it without
+      // an extra round trip.
+      await updateSettings({ ...settings, aiEnabled: updated.enabled });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to toggle AI.";
+      setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleRebuild = async () => {
+    setBusy("rebuild");
+    setNotice({ kind: "idle" });
+    try {
+      const queued = await aiClient.rebuildIndex();
+      if (queued === 0) {
+        setNotice({
+          kind: "info",
+          message: "Nothing to do — every eligible memory already has OCR queued or done.",
+        });
+      } else {
+        setNotice({
+          kind: "info",
+          message: `Queued OCR for ${queued} ${queued === 1 ? "memory" : "memories"}.`,
+        });
+      }
+      const refreshed = await aiClient.status();
+      setStatus(refreshed);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to rebuild OCR index.";
+      setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const enabled = status?.enabled ?? settings.aiEnabled;
+  const ocrAvailable = status?.ocrAvailable ?? false;
+  const queue = status?.queue;
+
+  return (
+    <Section title="AI">
+      <div
+        style={{
+          fontSize: 13,
+          color: "var(--text-muted)",
+          marginBottom: 16,
+          maxWidth: 540,
+          lineHeight: 1.55,
+        }}
+      >
+        Recall&rsquo;s AI runs entirely on your machine. Off by default. When enabled,
+        it adds OCR to screenshots in the background so they become searchable.
+        No data leaves your device.
+      </div>
+
+      <Toggle
+        label="Enable on-device AI"
+        description="Master switch. Turning this off drains the queue and stops new work."
+        value={enabled}
+        disabled={busy === "toggle"}
+        onChange={handleToggleEnabled}
+        icon={<Sparkles size={14} />}
+      />
+
+      <ReadoutRow
+        icon={<Cpu size={14} />}
+        label="Detected hardware"
+        value={
+          status
+            ? `${tierLabel(status.hardware.tier)} · ${formatRam(
+                status.hardware.totalRamBytes,
+              )} · ${status.hardware.cpuCores} cores`
+            : "Detecting…"
+        }
+      />
+
+      <ReadoutRow
+        icon={<Eye size={14} />}
+        label="OCR engine"
+        value={status ? ocrEngineLabel(status.ocrEngine) : "Detecting…"}
+        warn={status != null && !ocrAvailable}
+      />
+
+      <Toggle
+        label="Pause on battery"
+        description="Don't claim new AI work while running on battery power."
+        value={settings.aiPauseOnBattery}
+        onChange={(v) => void updateSettings({ ...settings, aiPauseOnBattery: v })}
+      />
+
+      <Toggle
+        label="Run heavy tasks only while plugged in"
+        description="Limit OCR (and future embedding work) to AC power."
+        value={settings.aiHeavyOnlyOnAc}
+        onChange={(v) => void updateSettings({ ...settings, aiHeavyOnlyOnAc: v })}
+      />
+
+      <div
+        style={{
+          paddingTop: 24,
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          marginTop: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>
+          OCR
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className="btn-ghost"
+            onClick={() => void handleRebuild()}
+            disabled={!enabled || !ocrAvailable || busy === "rebuild"}
+          >
+            <RefreshCw size={13} /> {busy === "rebuild" ? "Queueing…" : "Run OCR rebuild"}
+          </button>
+          {queue ? (
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Queue: {queue.ocrQueued} pending · {queue.ocrRunning} running
+              {queue.ocrFailed > 0 ? ` · ${queue.ocrFailed} failed` : ""}
+            </span>
+          ) : null}
+        </div>
+        {notice.kind !== "idle" ? (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color:
+                notice.kind === "error" ? "var(--text-danger)" : "var(--text-muted)",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {notice.kind === "error" ? (
+              <AlertCircle size={12} />
+            ) : (
+              <CheckCircle size={12} />
+            )}
+            {notice.message}
+          </div>
+        ) : null}
+      </div>
+    </Section>
+  );
+}
+
+/* ─── small local primitives so we don't fork the parent file ───── */
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h2
+        style={{
+          fontSize: 19,
+          fontWeight: 700,
+          color: "var(--text-primary)",
+          letterSpacing: "-0.01em",
+        }}
+      >
+        {title}
+      </h2>
+      <div className="accent-line" style={{ marginBottom: 24 }} />
+      {children}
+    </div>
+  );
+}
+
+function Toggle({
+  label,
+  description,
+  value,
+  onChange,
+  disabled,
+  icon,
+}: {
+  label: string;
+  description: string;
+  value: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "16px 0",
+        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      <div>
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            color: "var(--text-primary)",
+            marginBottom: 2,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          {icon ? <span style={{ color: "var(--blue)" }}>{icon}</span> : null}
+          {label}
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{description}</div>
+      </div>
+      <button
+        className={`toggle ${value ? "on" : ""}`}
+        onClick={() => !disabled && onChange(!value)}
+        disabled={disabled}
+        style={disabled ? { cursor: "not-allowed" } : undefined}
+      >
+        <div className="toggle-thumb" />
+      </button>
+    </div>
+  );
+}
+
+function ReadoutRow({
+  icon,
+  label,
+  value,
+  warn,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  warn?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "16px 0",
+        borderBottom: "1px solid rgba(255,255,255,0.05)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 14,
+          color: "var(--text-primary)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span style={{ color: "var(--blue)" }}>{icon}</span>
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          color: warn ? "var(--text-danger, #f87171)" : "var(--text-muted)",
+          textAlign: "right",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}

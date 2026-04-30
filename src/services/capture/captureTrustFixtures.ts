@@ -84,6 +84,9 @@ const settings: AppSettings = {
   bookmarkSyncIntervalMinutes: 15,
   bookmarkSyncBrowsers: ["chrome", "edge", "brave"],
   bookmarkLastSyncedAt: null,
+  aiEnabled: false,
+  aiPauseOnBattery: true,
+  aiHeavyOnlyOnAc: true,
 };
 
 const shortcuts: ShortcutBinding[] = [];

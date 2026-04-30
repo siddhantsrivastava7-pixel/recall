@@ -124,6 +124,19 @@ pub struct Memory {
     pub resurface_dismissed_at: Option<String>,
     pub last_opened_at: Option<String>,
     pub open_count: i64,
+    /// OCR-extracted text from screenshot/imported_image memories.
+    /// `None` until the AI scheduler runs OCR on the image. v0.2.0+.
+    #[serde(default)]
+    pub ocr_text: Option<String>,
+    /// `NULL | 'pending' | 'running' | 'done' | 'failed'`. v0.2.0+.
+    #[serde(default)]
+    pub ocr_status: Option<String>,
+    #[serde(default)]
+    pub ocr_processed_at: Option<String>,
+    #[serde(default)]
+    pub ocr_engine: Option<String>,
+    #[serde(default)]
+    pub ocr_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -219,6 +232,16 @@ pub struct AppSettings {
     pub bookmark_last_synced_at: Option<String>,
     pub widget_position_x: Option<f64>,
     pub widget_position_y: Option<f64>,
+    /// Master AI subsystem switch. **Off by default** — every AI feature
+    /// (OCR in v0.2.0; embeddings/Ask Recall later) gates on this flag.
+    pub ai_enabled: bool,
+    /// Pause background AI work while the host is on battery. The
+    /// scheduler still drains in-flight items; only new claims are blocked.
+    pub ai_pause_on_battery: bool,
+    /// Heavier AI work (Phase 1 = OCR; Phase 2+ = embedding backfill,
+    /// model downloads) only runs while plugged into AC. Independent from
+    /// `ai_pause_on_battery` — both defaults to `true`.
+    pub ai_heavy_only_on_ac: bool,
 }
 
 impl Default for AppSettings {
@@ -233,6 +256,11 @@ impl Default for AppSettings {
             bookmark_last_synced_at: None,
             widget_position_x: None,
             widget_position_y: None,
+            // AI is opt-in. Existing users updating to v0.2.0 see zero
+            // behavior change until they flip the master toggle.
+            ai_enabled: false,
+            ai_pause_on_battery: true,
+            ai_heavy_only_on_ac: true,
         }
     }
 }

@@ -654,6 +654,11 @@ mod tests {
             resurface_dismissed_at: None,
             last_opened_at: None,
             open_count: 0,
+            ocr_text: None,
+            ocr_status: None,
+            ocr_processed_at: None,
+            ocr_engine: None,
+            ocr_error: None,
             created_at: created_at.into(),
             updated_at: created_at.into(),
         }

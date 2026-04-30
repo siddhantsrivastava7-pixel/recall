@@ -36,6 +36,21 @@ pub trait MemoryRepository: Send + Sync {
         updated_at: &str,
     ) -> AppResult<Option<Memory>>;
     async fn mark_opened(&self, id: &str, opened_at: &str) -> AppResult<Option<Memory>>;
+    /// Update OCR status fields on a memory row. Used by the AI scheduler:
+    /// `'running'` while a worker is processing it, `'done'` with the
+    /// recognized text on success, `'failed'` with the error on failure.
+    /// Passing `None` for any field leaves the existing value untouched
+    /// when the status is `'running'` (we don't want a transient state to
+    /// blow away last-good text); on `'done' | 'failed'` the fields are
+    /// written verbatim so callers control exactly what's persisted.
+    async fn set_ocr_status(
+        &self,
+        id: &str,
+        status: &str,
+        text: Option<&str>,
+        engine: Option<&str>,
+        processed_at: Option<&str>,
+    ) -> AppResult<()>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn clear(&self) -> AppResult<()>;
 }

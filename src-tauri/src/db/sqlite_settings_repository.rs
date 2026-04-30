@@ -98,6 +98,9 @@ impl SettingsRepository for SqliteSettingsRepository {
                 "widget_position_y" => {
                     settings.widget_position_y = value.parse::<f64>().ok();
                 }
+                "ai_enabled" => settings.ai_enabled = value == "true",
+                "ai_pause_on_battery" => settings.ai_pause_on_battery = value == "true",
+                "ai_heavy_only_on_ac" => settings.ai_heavy_only_on_ac = value == "true",
                 _ => {}
             }
         }
@@ -181,6 +184,20 @@ impl SettingsRepository for SqliteSettingsRepository {
             sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
                 .bind("widget_position_y")
                 .bind(y.to_string())
+                .execute(&mut *transaction)
+                .await?;
+        }
+
+        // v0.2.0: AI subsystem toggles. Always written so a flip from
+        // `true` back to `false` actually persists.
+        for (key, value) in [
+            ("ai_enabled", settings.ai_enabled),
+            ("ai_pause_on_battery", settings.ai_pause_on_battery),
+            ("ai_heavy_only_on_ac", settings.ai_heavy_only_on_ac),
+        ] {
+            sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+                .bind(key)
+                .bind(if value { "true" } else { "false" })
                 .execute(&mut *transaction)
                 .await?;
         }

@@ -1911,6 +1911,17 @@ mod tests {
             Ok(None)
         }
 
+        async fn set_ocr_status(
+            &self,
+            _id: &str,
+            _status: &str,
+            _text: Option<&str>,
+            _engine: Option<&str>,
+            _processed_at: Option<&str>,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn delete(&self, _id: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1959,6 +1970,11 @@ mod tests {
             resurface_dismissed_at: None,
             last_opened_at: None,
             open_count: 0,
+            ocr_text: None,
+            ocr_status: None,
+            ocr_processed_at: None,
+            ocr_engine: None,
+            ocr_error: None,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         }

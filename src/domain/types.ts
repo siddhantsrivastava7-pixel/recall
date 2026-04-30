@@ -105,6 +105,40 @@ export interface AppSettings {
   bookmarkSyncIntervalMinutes: number;
   bookmarkSyncBrowsers: BookmarkBrowser[];
   bookmarkLastSyncedAt: string | null;
+  // v0.2.0 — AI subsystem master switches. All default to safe values
+  // (off / pause-on-battery / heavy-only-on-AC) so existing users see
+  // zero behavior change after the update until they opt in.
+  aiEnabled: boolean;
+  aiPauseOnBattery: boolean;
+  aiHeavyOnlyOnAc: boolean;
+}
+
+// ── AI subsystem (v0.2.0+) ───────────────────────────────────────────
+export type HardwareTier = "a" | "b" | "c";
+export type CpuArch = "applesilicon" | "x86_64" | "other";
+export type OsKind = "macos" | "windows" | "other";
+
+export interface HardwareInfo {
+  tier: HardwareTier;
+  totalRamBytes: number;
+  cpuCores: number;
+  arch: CpuArch;
+  os: OsKind;
+}
+
+export interface SchedulerStatus {
+  enabled: boolean;
+  ocrQueued: number;
+  ocrRunning: number;
+  ocrFailed: number;
+}
+
+export interface AiStatusPayload {
+  enabled: boolean;
+  hardware: HardwareInfo;
+  ocrEngine: string;
+  ocrAvailable: boolean;
+  queue: SchedulerStatus;
 }
 
 export interface LicenseState {

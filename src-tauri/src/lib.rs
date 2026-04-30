@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 mod db;
 mod errors;
@@ -7,6 +8,7 @@ mod services;
 mod state;
 
 use commands::{
+    ai::{ai_set_enabled, ai_set_mode, ai_status, ocr_rebuild_index, ocr_run_for_memory},
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
@@ -121,6 +123,67 @@ fn start_bookmark_sync_loop(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+/// Boot the AI scheduler after the main window has opened. Two
+/// reasons this lives in its own helper rather than inline in `setup()`:
+///
+///   * Tightly scoping the runtime borrow makes the lifetime story easy
+///     to reason about.
+///   * It mirrors `start_bookmark_sync_loop` / `start_clipboard_watcher`
+///     — same shape, same deferred-start contract, same "background
+///     services after first paint" guarantee.
+///
+/// The scheduler handle is stored on `AppState`; workers only spawn when
+/// a native OCR adapter is available *and* the master flag is on. The
+/// adapter probe is cheap (a single WinRT `TryCreateFromUserProfileLanguages`
+/// or Vision availability check) so we run it eagerly and cache.
+fn start_ai_scheduler(
+    handle: &tauri::AppHandle,
+    runtime: &tokio::runtime::Runtime,
+    settings: &crate::models::AppSettings,
+) {
+    use ai::ocr::default_adapter;
+    use ai::scheduler::{queue::AiWorkQueue, worker, AiScheduler};
+
+    let state = handle.state::<AppState>();
+    let pool = state.pool.clone();
+
+    let queue = AiWorkQueue::new(pool.clone());
+
+    // Reclaim any rows stranded in `running` from a prior crash. Cheap —
+    // single UPDATE — and only runs once per app launch.
+    if let Err(error) = runtime.block_on(queue.reclaim_stale_running()) {
+        eprintln!("[recall][ai-scheduler] reclaim_stale_running failed: {error}");
+    }
+
+    let hardware = ai::hardware::detect();
+    let ocr_adapter = default_adapter();
+    let scheduler = AiScheduler::new(
+        queue,
+        ocr_adapter.clone(),
+        hardware.clone(),
+        state.settings_repository.clone(),
+        settings.ai_enabled,
+    );
+
+    // Spawn workers only when there's an adapter to drive them. Without
+    // an adapter the scheduler is a read-only status surface.
+    if ocr_adapter.is_some() {
+        let max_jobs = hardware.tier.max_ocr_jobs();
+        worker::spawn_workers(
+            scheduler.inner(),
+            pool,
+            state.memory_repository.clone(),
+            handle.clone(),
+            max_jobs,
+        );
+    }
+
+    state.install_ai_scheduler(scheduler.clone());
+    // Install on capture_service so post-save OCR enqueue picks up
+    // memories committed from this point onwards.
+    state.capture_service.install_ai_scheduler(scheduler);
 }
 
 pub fn run() {
@@ -271,6 +334,14 @@ pub fn run() {
                 start_clipboard_watcher(handle.clone());
                 managed.receiver_service.start(handle.clone());
 
+                // ─── v0.2.0: AI subsystem boot (off by default) ──────────
+                // The scheduler is constructed unconditionally so the
+                // AI Settings tab can read hardware tier + OCR engine
+                // even with AI disabled. Workers only spawn when there's
+                // a usable native OCR adapter — otherwise the scheduler
+                // is a read-only handle and `ocr_engine = "unsupported"`.
+                start_ai_scheduler(&handle, &runtime, &settings);
+
                 if let Ok(memories) = runtime.block_on(managed.memory_service.list()) {
                     runtime.block_on(
                         managed
@@ -291,6 +362,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            ai_status,
+            ai_set_enabled,
+            ai_set_mode,
+            ocr_run_for_memory,
+            ocr_rebuild_index,
             bootstrap_app,
             get_runtime_info,
             list_bookmark_sources,

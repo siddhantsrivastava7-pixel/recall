@@ -50,6 +50,11 @@ SELECT
   memories.resurface_dismissed_at,
   memories.last_opened_at,
   memories.open_count,
+  memories.ocr_text,
+  memories.ocr_status,
+  memories.ocr_processed_at,
+  memories.ocr_engine,
+  memories.ocr_error,
   memories.created_at,
   memories.updated_at
 FROM memories
@@ -658,6 +663,71 @@ impl MemoryRepository for SqliteMemoryRepository {
         }
 
         self.find(id).await
+    }
+
+    async fn set_ocr_status(
+        &self,
+        id: &str,
+        status: &str,
+        text: Option<&str>,
+        engine: Option<&str>,
+        processed_at: Option<&str>,
+    ) -> AppResult<()> {
+        // For 'running' we only flip the status — leave any existing text
+        // (e.g. from a prior successful OCR) and the last error untouched
+        // until the run actually finishes. For 'done' / 'failed' / 'pending'
+        // the caller writes the full triple and the row reflects that.
+        if status == "running" {
+            sqlx::query(
+                r#"
+                UPDATE memories
+                SET ocr_status = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(status)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        } else if status == "failed" {
+            sqlx::query(
+                r#"
+                UPDATE memories
+                SET ocr_status = ?,
+                    ocr_error  = ?,
+                    ocr_engine = COALESCE(?, ocr_engine),
+                    ocr_processed_at = COALESCE(?, ocr_processed_at)
+                WHERE id = ?
+                "#,
+            )
+            .bind(status)
+            .bind(text) // we overload `text` as the error message for status='failed'
+            .bind(engine)
+            .bind(processed_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE memories
+                SET ocr_status = ?,
+                    ocr_text   = ?,
+                    ocr_engine = ?,
+                    ocr_processed_at = ?,
+                    ocr_error  = NULL
+                WHERE id = ?
+                "#,
+            )
+            .bind(status)
+            .bind(text)
+            .bind(engine)
+            .bind(processed_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {

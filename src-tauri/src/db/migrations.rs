@@ -158,5 +158,68 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     .execute(pool)
     .await?;
 
+    // ─── v0.2.0: AI subsystem foundation (additive, rollback-safe) ───────
+    //
+    // OCR fields on memories. Allowed `ocr_status` values: NULL | 'pending'
+    // | 'running' | 'done' | 'failed'. `ocr_engine` records which native
+    // adapter produced the text (so we can re-OCR with a different engine
+    // later without losing the prior result on conflict).
+    ensure_column(pool, "memories", "ocr_text", "TEXT").await?;
+    ensure_column(pool, "memories", "ocr_status", "TEXT").await?;
+    ensure_column(pool, "memories", "ocr_processed_at", "TEXT").await?;
+    ensure_column(pool, "memories", "ocr_engine", "TEXT").await?;
+    ensure_column(pool, "memories", "ocr_error", "TEXT").await?;
+
+    // Empty model_assets table created in Phase 1 only so Phase 2 ships a
+    // column add (cheap) rather than a CREATE TABLE against a populated DB.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS model_assets (
+          id            TEXT PRIMARY KEY NOT NULL,
+          kind          TEXT NOT NULL,
+          version       TEXT NOT NULL,
+          sha256        TEXT NOT NULL,
+          byte_size     INTEGER,
+          status        TEXT NOT NULL DEFAULT 'absent',
+          downloaded_at TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Persisted AI work queue. `dedupe_key UNIQUE` is the linchpin: a crash
+    // mid-OCR followed by re-enqueue does not double-process. `started_at`
+    // / `finished_at` give us latency telemetry without a side log;
+    // `last_error` survives across retry attempts for diagnosis.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ai_work_queue (
+          id            TEXT PRIMARY KEY NOT NULL,
+          kind          TEXT NOT NULL,
+          payload       TEXT NOT NULL,
+          dedupe_key    TEXT UNIQUE NOT NULL,
+          status        TEXT NOT NULL,
+          attempts      INTEGER NOT NULL DEFAULT 0,
+          last_error    TEXT,
+          scheduled_for TEXT,
+          started_at    TEXT,
+          finished_at   TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_ai_work_queue_status_scheduled
+        ON ai_work_queue(status, scheduled_for)
+        WHERE status IN ('queued', 'failed')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
