@@ -334,7 +334,17 @@ fn prepare_capture_input(input: MemoryInput) -> AppResult<PreparedCaptureInput> 
 
     let title = normalize_optional_single_line(input.title);
     let note = normalize_optional_body_text(input.note);
-    let url = detect_primary_url(&normalized_content, input.url.as_deref());
+    // `file://` URLs come from the v0.2.1 clipboard image branch and
+    // point at on-disk screenshots. They have no host, so the regular
+    // URL normalizer (`detect_primary_url` → `Url::parse(...).host_str()?`)
+    // silently strips them — which would orphan the screenshot from
+    // its bytes and break OCR. Pass them through verbatim instead;
+    // they're not user-facing links and don't need normalization.
+    let url = if input.url.as_deref().is_some_and(|u| u.starts_with("file://")) {
+        input.url.clone()
+    } else {
+        detect_primary_url(&normalized_content, input.url.as_deref())
+    };
     let external_id = normalize_optional_single_line(input.external_id);
     let folder_path = normalize_optional_single_line(input.folder_path);
     let source_app = normalize_optional_single_line(input.source_app);
