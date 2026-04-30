@@ -11,6 +11,7 @@ pub mod memory_service;
 pub mod pairing_service;
 pub mod project_service;
 pub mod receiver_service;
+pub mod screenshot_retention;
 pub mod screenshot_store;
 pub mod settings_service;
 pub mod spoken_transcript_service;

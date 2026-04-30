@@ -730,6 +730,85 @@ impl MemoryRepository for SqliteMemoryRepository {
         Ok(())
     }
 
+    async fn promote_ocr_to_content(
+        &self,
+        id: &str,
+        ocr_text: &str,
+        derived_title: &str,
+    ) -> AppResult<bool> {
+        // Two guards keep this from clobbering user edits:
+        //   1. source_app must be 'screenshot' or 'imported_image' — only
+        //      Recall's own clipboard-image branch tags rows that way.
+        //   2. content must still match the synthetic placeholder body
+        //      that the watcher writes on first capture. Once the user
+        //      edits the body even slightly, the LIKE match misses and
+        //      the row is left alone.
+        // We also rebuild summary_text so the timeline preview reflects
+        // the new body.
+        let result = sqlx::query(
+            r#"
+            UPDATE memories
+            SET
+              content = ?1,
+              title = CASE
+                WHEN title LIKE 'Screenshot · %' THEN ?2
+                ELSE title
+              END,
+              summary_text = substr(?1, 1, 220),
+              updated_at = ?3
+            WHERE id = ?4
+              AND source_app IN ('screenshot', 'imported_image')
+              AND content LIKE 'Screenshot from clipboard%OCR will fill in%'
+            "#,
+        )
+        .bind(ocr_text)
+        .bind(derived_title)
+        .bind(Utc::now().to_rfc3339())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn clear_url_for_purged_screenshots(
+        &self,
+        purged_paths: &[String],
+    ) -> AppResult<u64> {
+        if purged_paths.is_empty() {
+            return Ok(0);
+        }
+
+        // Build the IN-clause dynamically. SQLite handles thousands of
+        // bound parameters fine; in practice the daily GC batch will be
+        // a few dozen at most.
+        let mut clauses = Vec::with_capacity(purged_paths.len());
+        for _ in purged_paths {
+            clauses.push("url LIKE ?");
+        }
+        let where_clause = clauses.join(" OR ");
+        let sql = format!(
+            r#"
+            UPDATE memories
+            SET url = NULL
+            WHERE source_app IN ('screenshot', 'imported_image')
+              AND url IS NOT NULL
+              AND ({where_clause})
+            "#
+        );
+
+        let mut query = sqlx::query(&sql);
+        for path in purged_paths {
+            // file:// URLs are stored verbatim; match on the path
+            // suffix (the filename portion) which is unique per file.
+            // `%/<filename>` covers both Windows (with mangled drive
+            // letter) and POSIX path layouts.
+            let like_pattern = format!("%{path}");
+            query = query.bind(like_pattern);
+        }
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
     async fn delete(&self, id: &str) -> AppResult<()> {
         sqlx::query("DELETE FROM memories WHERE id = ?")
             .bind(id)

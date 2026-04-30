@@ -1922,6 +1922,22 @@ mod tests {
             Ok(())
         }
 
+        async fn promote_ocr_to_content(
+            &self,
+            _id: &str,
+            _ocr_text: &str,
+            _derived_title: &str,
+        ) -> AppResult<bool> {
+            Ok(false)
+        }
+
+        async fn clear_url_for_purged_screenshots(
+            &self,
+            _purged_paths: &[String],
+        ) -> AppResult<u64> {
+            Ok(0)
+        }
+
         async fn delete(&self, _id: &str) -> AppResult<()> {
             Ok(())
         }

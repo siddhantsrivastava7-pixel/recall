@@ -35,6 +35,7 @@ use db::seed::ensure_seed_data;
 use platform::factory::create_platform_services;
 use services::{
     clipboard_watcher_service::start_clipboard_watcher,
+    screenshot_retention::start_retention_loop,
     screenshot_store::ScreenshotStore,
     shortcut_service::normalize_accelerator,
 };
@@ -345,6 +346,12 @@ pub fn run() {
                 managed
                     .memory_service
                     .install_screenshot_store(screenshot_store);
+
+                // v0.2.3: 60-day screenshot retention GC. Runs once
+                // immediately (so a freshly upgraded install processes
+                // any backlog) then sleeps 24h between passes. Best-
+                // effort — IO errors are logged and skipped.
+                start_retention_loop(handle.clone(), managed.memory_repository.clone());
 
                 start_bookmark_sync_loop(handle.clone());
                 start_clipboard_watcher(handle.clone());

@@ -51,6 +51,28 @@ pub trait MemoryRepository: Send + Sync {
         engine: Option<&str>,
         processed_at: Option<&str>,
     ) -> AppResult<()>;
+    /// After OCR succeeds on a screenshot memory, replace the placeholder
+    /// `"Screenshot from clipboard (...). OCR will fill in the text once
+    /// it runs."` body with the recognized text, and the placeholder
+    /// `"Screenshot · <date> · <time>"` title with the first line of
+    /// that text. Returns `Ok(true)` when the row was updated, `Ok(false)`
+    /// when the row's current content/title doesn't look like a
+    /// placeholder (i.e. the user edited it manually — we never clobber
+    /// human edits). The match is intentionally narrow on purpose.
+    async fn promote_ocr_to_content(
+        &self,
+        id: &str,
+        ocr_text: &str,
+        derived_title: &str,
+    ) -> AppResult<bool>;
+    /// Clear `memory.url` for screenshot memories whose backing file has
+    /// been purged by the retention GC. Returns the number of rows
+    /// updated. The OCR text + everything else stays — only the dangling
+    /// `file://` URL goes.
+    async fn clear_url_for_purged_screenshots(
+        &self,
+        purged_paths: &[String],
+    ) -> AppResult<u64>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn clear(&self) -> AppResult<()>;
 }

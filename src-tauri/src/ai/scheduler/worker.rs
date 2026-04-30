@@ -199,6 +199,30 @@ async fn process_ocr(
         )
         .await?;
 
+    // v0.2.3: promote the OCR text to be the memory's primary content.
+    // Once we have searchable text, the placeholder body
+    // ("Screenshot from clipboard (...). OCR will fill in the text once
+    // it runs.") is wasted screen space — replace it with the actual
+    // recognized text so the timeline reads naturally and screenshots
+    // feel like text memories that happen to have an image attached.
+    // The repository method preserves user edits (only matches the
+    // exact placeholder pattern).
+    if let Some(text) = ocr_text.as_deref() {
+        let derived_title = derive_screenshot_title(text);
+        if let Err(error) = memory_repo
+            .promote_ocr_to_content(&payload.memory_id, text, &derived_title)
+            .await
+        {
+            // Soft-fail: the OCR text is already on `ocr_text` and
+            // searchable. Failing to promote is a UX nit, not a data
+            // loss — log and move on.
+            eprintln!(
+                "[recall][ai-scheduler] promote_ocr_to_content failed for {}: {error}",
+                payload.memory_id
+            );
+        }
+    }
+
     // Notify the UI so any open detail panes refresh their search match
     // hits. The event payload is intentionally minimal.
     let _ = app.emit(
@@ -207,6 +231,27 @@ async fn process_ocr(
     );
 
     Ok(())
+}
+
+/// Pick a sensible title from OCR-recognized text. We use the first
+/// non-empty line, capped at 96 characters to keep timeline cards
+/// scannable. Falls back to a generic label when the text is all
+/// whitespace (the caller already gates on non-empty `ocr_text`, but
+/// belt-and-braces — better a working fallback than a panic).
+fn derive_screenshot_title(text: &str) -> String {
+    const MAX_TITLE_CHARS: usize = 96;
+    let first_line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Screenshot");
+
+    let char_count = first_line.chars().count();
+    if char_count <= MAX_TITLE_CHARS {
+        return first_line.to_string();
+    }
+    let truncated: String = first_line.chars().take(MAX_TITLE_CHARS).collect();
+    format!("{truncated}…")
 }
 
 /// Read the raw image bytes for a memory eligible for OCR.
