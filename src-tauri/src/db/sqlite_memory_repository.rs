@@ -836,86 +836,81 @@ impl MemoryRepository for SqliteMemoryRepository {
         memory_id: &str,
         chunks: &[ChunkUpsert<'_>],
     ) -> AppResult<Vec<String>> {
-        // Read existing chunks once and index by content_hash. Hash
-        // matches keep their existing chunk_id + embedding columns;
-        // hash misses are fresh inserts that need to be embedded.
+        // Read existing chunks once, key by content_hash so we can
+        // copy embedding columns forward for any incoming chunk whose
+        // text didn't actually change. The chunk_id changes (we're
+        // re-inserting), but the embedding bytes don't — and any
+        // ai_work_queue rows that referenced the old chunk_id will
+        // become no-op successes when the worker can't find them
+        // (process_embed_chunk treats missing chunk as Ok(())).
+        //
+        // We can't UPDATE existing rows' chunk_index in place — when
+        // chunker output reshuffles (e.g., a daily transcript grew
+        // and pushed boundaries), an UPDATE that moves a row to an
+        // index still held by another (about-to-be-orphaned) row
+        // hits `UNIQUE(memory_id, chunk_index)` before we ever get to
+        // delete the orphan. So: DELETE every existing row for this
+        // memory first, then INSERT the new chunks at their final
+        // positions. Preserves hash-aware embedding reuse, drops the
+        // UNIQUE-collision risk entirely.
         let existing = self.list_chunks_for_memory(memory_id).await?;
-        let mut by_hash: std::collections::HashMap<String, MemoryChunkRow> =
-            existing.into_iter().map(|r| (r.content_hash.clone(), r)).collect();
+        let by_hash: std::collections::HashMap<String, MemoryChunkRow> = existing
+            .into_iter()
+            .map(|r| (r.content_hash.clone(), r))
+            .collect();
 
         let now = Utc::now().to_rfc3339();
         let mut transaction = self.pool.begin().await?;
-        let mut needs_embedding: Vec<String> = Vec::new();
-        let mut keep_ids: Vec<String> = Vec::new();
 
+        sqlx::query("DELETE FROM memory_chunks WHERE memory_id = ?")
+            .bind(memory_id)
+            .execute(&mut *transaction)
+            .await?;
+
+        let mut needs_embedding: Vec<String> = Vec::new();
         for chunk in chunks {
-            if let Some(existing_row) = by_hash.remove(chunk.content_hash) {
-                // Same hash → reuse the row, just bump index/offsets in
-                // case content was rearranged. Keep existing embedding.
-                sqlx::query(
-                    r#"
-                    UPDATE memory_chunks
-                    SET chunk_index = ?,
-                        start_offset = ?,
-                        end_offset = ?,
-                        byte_size = ?,
-                        token_estimate = ?
-                    WHERE id = ?
-                    "#,
-                )
-                .bind(chunk.chunk_index as i64)
-                .bind(chunk.start_offset as i64)
-                .bind(chunk.end_offset as i64)
-                .bind(chunk.byte_size as i64)
-                .bind(chunk.token_estimate as i64)
-                .bind(&existing_row.id)
-                .execute(&mut *transaction)
-                .await?;
-                if existing_row.embedding_vector.is_none() {
-                    needs_embedding.push(existing_row.id.clone());
-                }
-                keep_ids.push(existing_row.id);
-            } else {
-                // Novel hash → insert a fresh row with no embedding.
-                let id = Uuid::new_v4().to_string();
-                sqlx::query(
-                    r#"
-                    INSERT INTO memory_chunks
-                      (id, memory_id, chunk_index, text, start_offset, end_offset,
-                       byte_size, token_estimate, content_hash,
-                       embedding_model, embedding_dim, embedding_vector, embedding_generated_at,
-                       created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
-                    "#,
-                )
-                .bind(&id)
-                .bind(memory_id)
-                .bind(chunk.chunk_index as i64)
-                .bind(chunk.text)
-                .bind(chunk.start_offset as i64)
-                .bind(chunk.end_offset as i64)
-                .bind(chunk.byte_size as i64)
-                .bind(chunk.token_estimate as i64)
-                .bind(chunk.content_hash)
-                .bind(&now)
-                .execute(&mut *transaction)
-                .await?;
-                needs_embedding.push(id.clone());
-                keep_ids.push(id);
+            let new_id = Uuid::new_v4().to_string();
+            let preserved = by_hash.get(chunk.content_hash);
+            sqlx::query(
+                r#"
+                INSERT INTO memory_chunks
+                  (id, memory_id, chunk_index, text, start_offset, end_offset,
+                   byte_size, token_estimate, content_hash,
+                   embedding_model, embedding_dim, embedding_vector, embedding_generated_at,
+                   created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&new_id)
+            .bind(memory_id)
+            .bind(chunk.chunk_index as i64)
+            .bind(chunk.text)
+            .bind(chunk.start_offset as i64)
+            .bind(chunk.end_offset as i64)
+            .bind(chunk.byte_size as i64)
+            .bind(chunk.token_estimate as i64)
+            .bind(chunk.content_hash)
+            .bind(preserved.and_then(|r| r.embedding_model.as_deref()))
+            .bind(preserved.and_then(|r| r.embedding_dim))
+            .bind(preserved.and_then(|r| r.embedding_vector.as_deref()))
+            .bind(preserved.and_then(|r| r.embedding_generated_at.as_deref()))
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+
+            // Need a fresh embedding when either there's no preserved
+            // row at all (novel hash) or the preserved row never had
+            // a vector to begin with.
+            let needs_fresh = match preserved {
+                Some(p) => p.embedding_vector.is_none(),
+                None => true,
+            };
+            if needs_fresh {
+                needs_embedding.push(new_id);
             }
         }
 
-        // Anything left in `by_hash` is a chunk whose content vanished
-        // from the new version — delete.
-        for orphan in by_hash.values() {
-            sqlx::query("DELETE FROM memory_chunks WHERE id = ?")
-                .bind(&orphan.id)
-                .execute(&mut *transaction)
-                .await?;
-        }
-
         transaction.commit().await?;
-        let _ = keep_ids; // collected for potential future telemetry
         Ok(needs_embedding)
     }
 
