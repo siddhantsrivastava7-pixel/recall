@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useBlendedSearch } from "@/hooks/useBlendedSearch";
 import { MemoryCard } from "./MemoryCard";
 import { MemoryDetail } from "./MemoryDetail";
 import { getProjectRelevantMemories } from "@/services/context/ContextEngine";
@@ -20,23 +21,33 @@ export function MemoriesView() {
     ? memories.find((memory) => memory.id === selectedMemoryId) ?? null
     : null;
 
-  let list = memories
-    .filter(m => activeProjectId === "all" || m.projectId === activeProjectId)
-    .filter(m => {
-      if (!filter.trim()) return true;
-      const q = filter.toLowerCase();
-      return [
-        m.title,
-        m.resolvedTitle,
-        m.content,
-        m.extractedText,
-        m.previewText,
-        m.resolvedDescription,
-        m.note,
-      ].some((value) => (value || "").toLowerCase().includes(q));
-    });
+  // v0.3.8: route All Memories filter through the same blended
+  // pipeline as the floating-bar search. Empty query keeps the
+  // legacy browse-and-sort behavior (project filter + sort order).
+  // Non-empty query switches to relevance-ranked results from
+  // keyword + async semantic. Project filter applies as a post-hoc
+  // intersection so the user's currently-active project still
+  // narrows results; sort order is ignored when search is active
+  // (relevance dominates).
+  const { results: searchResults } = useBlendedSearch(filter, memories, projects, {
+    limit: 200,
+  });
 
-  if (sortOrder === "oldest") list = [...list].reverse();
+  let list: typeof memories;
+  const isSearching = filter.trim().length > 0;
+  if (isSearching) {
+    const ranked = searchResults
+      .map((r) => r.memory)
+      .filter(
+        (m) => activeProjectId === "all" || m.projectId === activeProjectId,
+      );
+    list = ranked;
+  } else {
+    list = memories.filter(
+      (m) => activeProjectId === "all" || m.projectId === activeProjectId,
+    );
+    if (sortOrder === "oldest") list = [...list].reverse();
+  }
 
   const bookmarkCount = list.filter((memory) => memory.sourceType === "bookmark").length;
 

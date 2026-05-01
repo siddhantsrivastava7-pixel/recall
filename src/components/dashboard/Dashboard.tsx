@@ -17,7 +17,7 @@ import {
   getUsefulForgottenBookmarks,
 } from "@/services/bookmarks/bookmarkIntelligence";
 import { getRecallFeed, summarizeSessionContext } from "@/services/context/ContextEngine";
-import { searchMemories } from "@/services/search/searchMemories";
+import { useBlendedSearch } from "@/hooks/useBlendedSearch";
 import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -112,16 +112,17 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [projects, activeProjectId],
   );
-  const dashboardSearchResults = useMemo(
-    () =>
-      searchQuery.trim()
-        ? searchMemories(memories, projects, {
-            text: searchQuery,
-            limit: 10,
-          })
-        : [],
-    [memories, projects, searchQuery],
+  // v0.3.8: Dashboard quick search now goes through the same
+  // blended pipeline (keyword + async semantic) as the floating bar.
+  // Previous implementation was keyword-only, which missed
+  // semantically-matched memories that the floating bar would find.
+  const { results: blendedSearchResults } = useBlendedSearch(
+    searchQuery,
+    memories,
+    projects,
+    { limit: 10 },
   );
+  const dashboardSearchResults = blendedSearchResults;
   const searchShortcutLabel =
     shortcuts.find((shortcut) => shortcut.action === "open-search")?.accelerator ?? "Alt+Space";
   const visibleMemories = searchQuery.trim()
