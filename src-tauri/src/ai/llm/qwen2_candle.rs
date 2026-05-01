@@ -29,9 +29,10 @@ use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2GGUF;
-use hf_hub::api::tokio::Api as HfApi;
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 use tokenizers::Tokenizer;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::ai::llm::registry::LlmModelEntry;
@@ -44,6 +45,26 @@ use crate::errors::app_error::{AppError, AppResult};
 /// live. Distinct from the embedding model dir so a future model
 /// GC pass can target one without affecting the other.
 const CACHE_SUBDIR: &str = "models/llm";
+
+/// Event payload for `recall://llm-download-progress`. The UI
+/// listens, accumulates `(bytes_downloaded, bytes_total)` per
+/// `phase`, and renders a progress bar. `bytes_total = 0` means
+/// the server didn't return Content-Length — the UI shows an
+/// indeterminate spinner in that case.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmDownloadProgress {
+    /// `"gguf"` while pulling the weights file, `"tokenizer"`
+    /// while pulling the tokenizer JSON, `"complete"` when the
+    /// whole download finishes (or returns immediately because
+    /// files were already on disk).
+    pub phase: &'static str,
+    pub bytes_downloaded: u64,
+    pub bytes_total: u64,
+    /// Optional human-readable summary line — empty for incremental
+    /// progress events, populated for phase boundaries.
+    pub message: String,
+}
 
 pub struct CandleQwen2Adapter {
     app: AppHandle,
@@ -95,58 +116,163 @@ impl CandleQwen2Adapter {
     }
 
     /// Pull GGUF + tokenizer from their respective HF repos into
-    /// the cache dir. Idempotent — files already on disk are
-    /// skipped. Two repos because Qwen's GGUF and base-model
-    /// repos are split (only the base repo carries tokenizer.json).
+    /// the cache dir. Streams the response with reqwest so we can
+    /// emit progress events to the UI — hf-hub's built-in download
+    /// only renders progress in a terminal (uses `indicatif`),
+    /// which is invisible inside a Tauri release build. Two repos
+    /// because Qwen's GGUF and base-model repos are split (only
+    /// the base repo carries tokenizer.json).
+    ///
+    /// Idempotent — files already on disk are skipped (and emit a
+    /// `phase = "skipped"` final event so the UI can flip cleanly).
     async fn ensure_files_downloaded(&self) -> AppResult<()> {
         let gguf_path = self.gguf_path()?;
         let tokenizer_path = self.tokenizer_path()?;
         if gguf_path.exists() && tokenizer_path.exists() {
+            self.emit_progress(LlmDownloadProgress {
+                phase: "complete",
+                bytes_downloaded: 0,
+                bytes_total: 0,
+                message: "Model already on disk.".into(),
+            });
             return Ok(());
         }
 
-        let api = HfApi::new()
-            .map_err(|err| AppError::Invalid(format!("hf-hub init failed: {err}")))?;
-
         if !gguf_path.exists() {
-            let gguf_repo = api.model(self.entry.gguf_repo.to_string());
-            let downloaded = gguf_repo
-                .get(self.entry.gguf_file)
-                .await
-                .map_err(|err| {
-                    AppError::Invalid(format!(
-                        "Failed to download {}/{}: {err}",
-                        self.entry.gguf_repo, self.entry.gguf_file
-                    ))
-                })?;
-            std::fs::copy(&downloaded, &gguf_path).map_err(|err| {
-                AppError::Invalid(format!(
-                    "Failed to copy GGUF into cache {}: {err}",
-                    gguf_path.display()
-                ))
-            })?;
+            let url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                self.entry.gguf_repo, self.entry.gguf_file
+            );
+            self.stream_download(&url, &gguf_path, "gguf").await?;
         }
 
         if !tokenizer_path.exists() {
-            let tok_repo = api.model(self.entry.tokenizer_repo.to_string());
-            let downloaded = tok_repo
-                .get(self.entry.tokenizer_file)
-                .await
-                .map_err(|err| {
-                    AppError::Invalid(format!(
-                        "Failed to download {}/{}: {err}",
-                        self.entry.tokenizer_repo, self.entry.tokenizer_file
-                    ))
-                })?;
-            std::fs::copy(&downloaded, &tokenizer_path).map_err(|err| {
-                AppError::Invalid(format!(
-                    "Failed to copy tokenizer into cache {}: {err}",
-                    tokenizer_path.display()
-                ))
-            })?;
+            let url = format!(
+                "https://huggingface.co/{}/resolve/main/{}",
+                self.entry.tokenizer_repo, self.entry.tokenizer_file
+            );
+            self.stream_download(&url, &tokenizer_path, "tokenizer")
+                .await?;
         }
 
+        self.emit_progress(LlmDownloadProgress {
+            phase: "complete",
+            bytes_downloaded: 0,
+            bytes_total: 0,
+            message: "Download complete.".into(),
+        });
         Ok(())
+    }
+
+    /// Single-file streaming download with `reqwest`. Writes to
+    /// `<dest>.partial`, then renames on success so a partial file
+    /// from a crash never gets misinterpreted as ready. Emits a
+    /// progress event roughly every 1% of the download or every
+    /// 256 KB for files where we don't know the total size — keeps
+    /// the UI updates responsive without spamming the IPC channel.
+    async fn stream_download(
+        &self,
+        url: &str,
+        dest: &std::path::Path,
+        phase: &'static str,
+    ) -> AppResult<()> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60 * 60)) // 1h ceiling
+            .build()?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| AppError::Invalid(format!("Request failed for {url}: {err}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::Invalid(format!(
+                "Download {url} returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        let bytes_total = response.content_length().unwrap_or(0);
+        // Initial event so the UI can flip from "Downloading…" to
+        // a real progress bar with a denominator immediately.
+        self.emit_progress(LlmDownloadProgress {
+            phase,
+            bytes_downloaded: 0,
+            bytes_total,
+            message: format!("Starting {phase} download ({} MB)", bytes_total / (1024 * 1024)),
+        });
+
+        let partial_path = dest.with_extension("partial");
+        let mut file = tokio::fs::File::create(&partial_path).await.map_err(|err| {
+            AppError::Invalid(format!(
+                "Failed to create {}: {err}",
+                partial_path.display()
+            ))
+        })?;
+
+        let mut bytes_downloaded: u64 = 0;
+        let mut last_emitted_bytes: u64 = 0;
+        // Emit at least every 1% (or 256 KB if total unknown).
+        let emit_interval: u64 = if bytes_total > 0 {
+            (bytes_total / 100).max(64 * 1024)
+        } else {
+            256 * 1024
+        };
+
+        let mut response = response;
+        loop {
+            let next = response.chunk().await.map_err(|err| {
+                AppError::Invalid(format!("Stream read failed for {url}: {err}"))
+            })?;
+            let Some(chunk) = next else {
+                break;
+            };
+            file.write_all(&chunk).await.map_err(|err| {
+                AppError::Invalid(format!(
+                    "Write failed for {}: {err}",
+                    partial_path.display()
+                ))
+            })?;
+            bytes_downloaded += chunk.len() as u64;
+            if bytes_downloaded - last_emitted_bytes >= emit_interval {
+                last_emitted_bytes = bytes_downloaded;
+                self.emit_progress(LlmDownloadProgress {
+                    phase,
+                    bytes_downloaded,
+                    bytes_total,
+                    message: String::new(),
+                });
+            }
+        }
+
+        file.flush().await.map_err(|err| {
+            AppError::Invalid(format!(
+                "Flush failed for {}: {err}",
+                partial_path.display()
+            ))
+        })?;
+        drop(file);
+
+        tokio::fs::rename(&partial_path, dest).await.map_err(|err| {
+            AppError::Invalid(format!(
+                "Rename failed {} → {}: {err}",
+                partial_path.display(),
+                dest.display()
+            ))
+        })?;
+
+        // Final event with 100% — UI uses this to move the bar to
+        // full before the request resolves.
+        self.emit_progress(LlmDownloadProgress {
+            phase,
+            bytes_downloaded,
+            bytes_total: bytes_total.max(bytes_downloaded),
+            message: format!("{phase} download complete"),
+        });
+        Ok(())
+    }
+
+    fn emit_progress(&self, payload: LlmDownloadProgress) {
+        let _ = self.app.emit("recall://llm-download-progress", payload);
     }
 
     /// Load weights + tokenizer into memory. Caller holds the state

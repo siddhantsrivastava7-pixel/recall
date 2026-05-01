@@ -29,6 +29,7 @@ import {
   aiClient,
   type ClipboardImageDiagnostic,
   type LlmDiagnosticPayload,
+  type LlmDownloadProgress,
   type LlmStatusPayload,
 } from "@/services/ai/AiClient";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -84,6 +85,19 @@ function tierLabel(tier: AiStatusPayload["hardware"]["tier"]) {
   }
 }
 
+function formatProgress(progress: LlmDownloadProgress): string {
+  const downloadedMb = progress.bytesDownloaded / (1024 * 1024);
+  if (progress.bytesTotal === 0) {
+    return `${downloadedMb.toFixed(0)} MB`;
+  }
+  const totalMb = progress.bytesTotal / (1024 * 1024);
+  const pct = (progress.bytesDownloaded / progress.bytesTotal) * 100;
+  if (totalMb >= 1024) {
+    return `${(downloadedMb / 1024).toFixed(2)} / ${(totalMb / 1024).toFixed(2)} GB · ${pct.toFixed(0)}%`;
+  }
+  return `${downloadedMb.toFixed(0)} / ${totalMb.toFixed(0)} MB · ${pct.toFixed(0)}%`;
+}
+
 function hasStaleNamespaceEmbeddings(status: AiStatusPayload): boolean {
   const cov = status.embeddingCoverage;
   // We have stale namespace rows if there are total embedded chunks
@@ -122,6 +136,7 @@ export function AiSettingsTab() {
   >(null);
   const [llmStatus, setLlmStatus] = useState<LlmStatusPayload | null>(null);
   const [llmDiagnostic, setLlmDiagnostic] = useState<LlmDiagnosticPayload | null>(null);
+  const [llmProgress, setLlmProgress] = useState<LlmDownloadProgress | null>(null);
   const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
   // Live status: poll on a short tick so the chunk-embed coverage
@@ -231,6 +246,9 @@ export function AiSettingsTab() {
   // v0.4.0a: pull initial LLM status on mount (and when tab is
   // switched back to). Cheap — no model load, just disk-presence
   // check + registry lookup.
+  // v0.4.2: also listen for download-progress events from the
+  // backend so the UI can render a real progress bar during the
+  // multi-GB GGUF download instead of just "Downloading…".
   useEffect(() => {
     let cancelled = false;
     aiClient
@@ -242,8 +260,28 @@ export function AiSettingsTab() {
         // LLM adapter not configured on this host — leave llmStatus null,
         // the UI hides the section.
       });
+
+    const unlistenPromise = listen<LlmDownloadProgress>(
+      "recall://llm-download-progress",
+      (event) => {
+        if (cancelled) return;
+        const payload = event.payload;
+        setLlmProgress(payload);
+        if (payload.phase === "complete") {
+          // Refresh ready state so the button flips to "Model ready".
+          aiClient
+            .llmStatus()
+            .then((s) => {
+              if (!cancelled) setLlmStatus(s);
+            })
+            .catch(() => {});
+        }
+      },
+    );
+
     return () => {
       cancelled = true;
+      void unlistenPromise.then((dispose) => dispose());
     };
   }, []);
 
@@ -621,6 +659,68 @@ export function AiSettingsTab() {
               </button>
             ) : null}
           </div>
+
+          {/*
+            v0.4.2: live progress during download. Shown while
+            `busy === "downloadLlm"` AND the backend has emitted
+            at least one progress event. Hides itself once the
+            phase flips to "complete" so the panel collapses
+            cleanly.
+          */}
+          {busy === "downloadLlm" && llmProgress && llmProgress.phase !== "complete" ? (
+            <div style={{ marginTop: 14, maxWidth: 600 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                  marginBottom: 6,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                <span>
+                  {llmProgress.phase === "gguf"
+                    ? "Downloading model weights"
+                    : "Downloading tokenizer"}
+                </span>
+                <span>{formatProgress(llmProgress)}</span>
+              </div>
+              <div
+                style={{
+                  height: 6,
+                  borderRadius: 3,
+                  background: "rgba(255,255,255,0.06)",
+                  overflow: "hidden",
+                  position: "relative",
+                }}
+              >
+                {llmProgress.bytesTotal > 0 ? (
+                  <div
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (llmProgress.bytesDownloaded / llmProgress.bytesTotal) * 100,
+                      ).toFixed(2)}%`,
+                      height: "100%",
+                      background: "var(--blue, rgb(120,160,255))",
+                      transition: "width 200ms linear",
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: "30%",
+                      height: "100%",
+                      background: "var(--blue, rgb(120,160,255))",
+                      animation: "slide-indeterminate 1.5s infinite linear",
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
+
           {llmDiagnostic ? (
             <div
               style={{

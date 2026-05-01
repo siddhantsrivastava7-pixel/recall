@@ -121,6 +121,17 @@ export interface LlmStatusPayload {
   ready: boolean;
 }
 
+/// v0.4.2: progress event payload for `recall://llm-download-progress`.
+/// Emitted by the backend during the GGUF + tokenizer download so the
+/// UI can render a real progress bar instead of a "Downloading…" string.
+export interface LlmDownloadProgress {
+  phase: "gguf" | "tokenizer" | "complete";
+  bytesDownloaded: number;
+  /// 0 when Content-Length is missing (UI falls back to indeterminate).
+  bytesTotal: number;
+  message: string;
+}
+
 /// v0.4.0a: smoke-test response.
 export interface LlmDiagnosticPayload {
   ok: boolean;
