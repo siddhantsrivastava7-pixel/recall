@@ -94,10 +94,10 @@ impl CandleQwen2Adapter {
         Ok(self.cache_dir()?.join(self.entry.tokenizer_file))
     }
 
-    /// Pull `gguf_file` and `tokenizer_file` from the model's HF repo
-    /// into the cache dir. Idempotent — if both files are already
-    /// present we just return. The download itself is a one-time
-    /// cost (1–4 GB depending on tier).
+    /// Pull GGUF + tokenizer from their respective HF repos into
+    /// the cache dir. Idempotent — files already on disk are
+    /// skipped. Two repos because Qwen's GGUF and base-model
+    /// repos are split (only the base repo carries tokenizer.json).
     async fn ensure_files_downloaded(&self) -> AppResult<()> {
         let gguf_path = self.gguf_path()?;
         let tokenizer_path = self.tokenizer_path()?;
@@ -107,16 +107,16 @@ impl CandleQwen2Adapter {
 
         let api = HfApi::new()
             .map_err(|err| AppError::Invalid(format!("hf-hub init failed: {err}")))?;
-        let repo = api.model(self.entry.hf_repo.to_string());
 
         if !gguf_path.exists() {
-            let downloaded = repo
+            let gguf_repo = api.model(self.entry.gguf_repo.to_string());
+            let downloaded = gguf_repo
                 .get(self.entry.gguf_file)
                 .await
                 .map_err(|err| {
                     AppError::Invalid(format!(
                         "Failed to download {}/{}: {err}",
-                        self.entry.hf_repo, self.entry.gguf_file
+                        self.entry.gguf_repo, self.entry.gguf_file
                     ))
                 })?;
             std::fs::copy(&downloaded, &gguf_path).map_err(|err| {
@@ -128,13 +128,14 @@ impl CandleQwen2Adapter {
         }
 
         if !tokenizer_path.exists() {
-            let downloaded = repo
+            let tok_repo = api.model(self.entry.tokenizer_repo.to_string());
+            let downloaded = tok_repo
                 .get(self.entry.tokenizer_file)
                 .await
                 .map_err(|err| {
                     AppError::Invalid(format!(
                         "Failed to download {}/{}: {err}",
-                        self.entry.hf_repo, self.entry.tokenizer_file
+                        self.entry.tokenizer_repo, self.entry.tokenizer_file
                     ))
                 })?;
             std::fs::copy(&downloaded, &tokenizer_path).map_err(|err| {
@@ -209,7 +210,10 @@ impl AskRecallAdapter for CandleQwen2Adapter {
     }
 
     fn hf_repo(&self) -> &'static str {
-        self.entry.hf_repo
+        // GGUF repo is the dominant download (1–5 GB) and what the
+        // user mostly cares about being shown. Tokenizer is a few
+        // MB from the base repo and elided from the UI.
+        self.entry.gguf_repo
     }
 
     async fn is_ready(&self) -> bool {

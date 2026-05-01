@@ -17,14 +17,28 @@ use crate::ai::llm::LlmModelId;
 #[derive(Debug, Clone, Copy)]
 pub struct LlmModelEntry {
     pub model_id: LlmModelId,
-    /// Hugging Face repo, like `"Qwen/Qwen2.5-1.5B-Instruct-GGUF"`.
-    pub hf_repo: &'static str,
-    /// GGUF filename inside the repo. Q4_K_M strikes the best
-    /// quality-vs-size balance for our model sizes per the Qwen
-    /// team's published benchmarks.
+    /// Hugging Face repo for the GGUF weights file. Qwen's official
+    /// GGUF repos use `Qwen/Qwen2.5-{N}-Instruct-GGUF`, but their
+    /// 7B Q4_K_M is **sharded into two files** which candle's
+    /// `quantized_qwen2::ModelWeights::from_gguf` can't read directly.
+    /// For tiers where Qwen ships a single-file Q4_K_M we use their
+    /// repo; for the 7B we point at `bartowski/Qwen2.5-7B-Instruct-GGUF`
+    /// which packages the same weights as one file.
+    pub gguf_repo: &'static str,
+    /// GGUF filename inside `gguf_repo`. Q4_K_M strikes the best
+    /// quality-vs-size balance per the Qwen team's published
+    /// benchmarks. Casing varies by mirror — Qwen uses lowercase,
+    /// bartowski capitalizes — so this is stored verbatim.
     pub gguf_file: &'static str,
-    /// Tokenizer filename — Qwen uses Hugging Face fast-tokenizer
-    /// JSON, served from the same repo.
+    /// Hugging Face repo for the tokenizer JSON. Qwen's GGUF repos
+    /// don't ship tokenizer.json (only weights), so the tokenizer
+    /// has to come from the base instruction-tuned repo,
+    /// `Qwen/Qwen2.5-{N}-Instruct`. Splitting these into two repos
+    /// is unavoidable given the upstream layout.
+    pub tokenizer_repo: &'static str,
+    /// Tokenizer filename inside `tokenizer_repo` — always
+    /// `tokenizer.json` for Qwen, kept as a field so swapping in
+    /// non-Qwen models later is one constant change.
     pub tokenizer_file: &'static str,
     /// Approximate download size for the UI "this is a ~N GB
     /// download" prompt. Real download size may differ slightly
@@ -66,8 +80,10 @@ pub fn entry_by_id(model_id: &str) -> Option<LlmModelEntry> {
 
 const SMALL: LlmModelEntry = LlmModelEntry {
     model_id: "qwen2.5-1.5b-instruct-q4",
-    hf_repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    // 1.5B Q4_K_M ships as a single file from Qwen's own repo.
+    gguf_repo: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
     gguf_file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    tokenizer_repo: "Qwen/Qwen2.5-1.5B-Instruct",
     tokenizer_file: "tokenizer.json",
     approx_download_mb: 1_000,
     approx_inference_ram_mb: 1_500,
@@ -76,8 +92,10 @@ const SMALL: LlmModelEntry = LlmModelEntry {
 
 const MEDIUM: LlmModelEntry = LlmModelEntry {
     model_id: "qwen2.5-3b-instruct-q4",
-    hf_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF",
+    // 3B Q4_K_M also single-file in Qwen's own repo.
+    gguf_repo: "Qwen/Qwen2.5-3B-Instruct-GGUF",
     gguf_file: "qwen2.5-3b-instruct-q4_k_m.gguf",
+    tokenizer_repo: "Qwen/Qwen2.5-3B-Instruct",
     tokenizer_file: "tokenizer.json",
     approx_download_mb: 2_000,
     approx_inference_ram_mb: 3_000,
@@ -86,10 +104,16 @@ const MEDIUM: LlmModelEntry = LlmModelEntry {
 
 const LARGE: LlmModelEntry = LlmModelEntry {
     model_id: "qwen2.5-7b-instruct-q4",
-    hf_repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
-    gguf_file: "qwen2.5-7b-instruct-q4_k_m.gguf",
+    // Qwen's official 7B Q4_K_M is sharded into two files (`-00001-of-00002`
+    // and `-00002-of-00002`). candle's `from_gguf` can't load shards
+    // directly, so we point at the bartowski mirror which packages the
+    // same Q4_K_M quantization as a single file. Functionally identical
+    // weights; just packaging differs.
+    gguf_repo: "bartowski/Qwen2.5-7B-Instruct-GGUF",
+    gguf_file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    tokenizer_repo: "Qwen/Qwen2.5-7B-Instruct",
     tokenizer_file: "tokenizer.json",
-    approx_download_mb: 4_400,
+    approx_download_mb: 4_700,
     approx_inference_ram_mb: 6_000,
     context_window_tokens: 8_192,
 };
