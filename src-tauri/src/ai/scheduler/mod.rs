@@ -26,8 +26,9 @@ use std::sync::{
     Arc,
 };
 
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
+use crate::ai::embeddings::similarity::CentroidCache;
 use crate::ai::embeddings::EmbeddingAdapter;
 use crate::ai::hardware::HardwareInfo;
 use crate::ai::ocr::OcrAdapter;
@@ -52,6 +53,12 @@ pub(crate) struct SchedulerInner {
     pub settings: SharedSettingsRepository,
     pub enabled: AtomicBool,
     pub notify: Notify,
+    /// Lazy cache of the corpus centroid for the *active* embedding
+    /// model. v0.3.3 — used to mean-subtract embeddings before cosine
+    /// so we measure topical similarity rather than the English-baseline
+    /// signal that dominates raw cosine on BGE outputs.
+    /// Invalidated on model switch or chunk-count delta ≥ 50.
+    pub(crate) centroid: Mutex<Option<CentroidCache>>,
 }
 
 impl AiScheduler {
@@ -72,6 +79,7 @@ impl AiScheduler {
                 settings,
                 enabled: AtomicBool::new(initially_enabled),
                 notify: Notify::new(),
+                centroid: Mutex::new(None),
             }),
         }
     }
@@ -206,6 +214,88 @@ impl AiScheduler {
     /// downloading so previously-deferred embed jobs get a fresh shot).
     pub fn wake_workers(&self) {
         self.inner.notify.notify_waiters();
+    }
+
+    /// Lazy access to the corpus centroid for the active embedding
+    /// model. Computes on first call (or after invalidation) by mean-
+    /// averaging every embedded chunk vector for the active model.
+    /// Mean-subtraction at query time is what shifts cosine from
+    /// "every English passage matches every other English passage at
+    /// 0.65–0.85" to actually-discriminating topical similarity.
+    ///
+    /// Returns `None` when no embedding adapter is configured or the
+    /// corpus has no embedded chunks for the active model yet (for
+    /// instance, mid-upgrade, when small-model rows are stale and
+    /// no base-model rows have landed). Callers fall back to
+    /// uncentered cosine in that case — better than blocking the
+    /// retrieval entirely.
+    pub async fn corpus_centroid(
+        &self,
+        memory_repo: &crate::db::repositories::SharedMemoryRepository,
+    ) -> AppResult<Option<Vec<f32>>> {
+        use crate::ai::embeddings::similarity::{centroid, CentroidCache};
+        use crate::ai::embeddings::EmbeddingVector;
+
+        let Some(adapter) = self.inner.embedding_adapter.as_ref() else {
+            return Ok(None);
+        };
+        let model_id = adapter.model_id();
+        let count = memory_repo.count_embedded_chunks_for_model(model_id).await?;
+        if count == 0 {
+            // Cache miss with nothing to compute over; clear any stale
+            // entry so the next attempt after the first row lands
+            // recomputes from scratch.
+            *self.inner.centroid.lock().await = None;
+            return Ok(None);
+        }
+
+        // Fast path: cached and not stale.
+        {
+            let guard = self.inner.centroid.lock().await;
+            if let Some(cache) = guard.as_ref() {
+                if !cache.is_stale(model_id, count) {
+                    return Ok(Some(cache.centroid.clone()));
+                }
+            }
+        }
+
+        // Recompute. Load every embedded chunk for the active model
+        // and mean-average.
+        let rows = memory_repo.list_embedded_chunks_for_model(model_id).await?;
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Some(bytes) = row.embedding_vector.as_ref() else {
+                continue;
+            };
+            if let Some(v) = EmbeddingVector::from_bytes(model_id, bytes) {
+                vectors.push(v.values);
+            }
+        }
+        let Some(c) = centroid(&vectors) else {
+            return Ok(None);
+        };
+
+        let mut guard = self.inner.centroid.lock().await;
+        *guard = Some(CentroidCache {
+            model_id: model_id.to_string(),
+            chunk_count_at_compute: count,
+            centroid: c.clone(),
+        });
+        Ok(Some(c))
+    }
+
+    /// Embed a query string with the active adapter. Single shot
+    /// (one text in, one vector out). Returns `None` when no adapter
+    /// is configured — callers fall back to keyword search.
+    pub async fn embed_query(&self, query: &str) -> AppResult<Option<crate::ai::embeddings::EmbeddingVector>> {
+        let Some(adapter) = self.inner.embedding_adapter.as_ref() else {
+            return Ok(None);
+        };
+        if !adapter.is_ready().await {
+            return Ok(None);
+        }
+        let mut vectors = adapter.embed_batch(vec![query.to_string()]).await?;
+        Ok(vectors.pop())
     }
 
     /// Stats for the AI status command.

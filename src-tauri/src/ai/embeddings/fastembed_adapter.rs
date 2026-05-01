@@ -1,13 +1,21 @@
 //! `fastembed-rs` embedding adapter.
 //!
-//! v0.3.0 ships a single model — BGE-small-en-v1.5 (384-dim, ~30MB
-//! download) — for all hardware tiers. Tier-aware model selection
-//! (BGE-base for B, BGE-large for C) is deferred to v0.3.1 because
-//! switching models invalidates every existing embedding and we want
-//! to bake "Related memories" on a single model first.
+//! v0.3.3 ships tier-aware embedding models:
 //!
-//! Model file lives in `<app_data>/models/embeddings/`. fastembed
-//! downloads it from Hugging Face on first `prepare()` — that's the
+//! | Tier | Model              | Dim | Approx download | Approx RSS at use |
+//! |------|--------------------|-----|-----------------|--------------------|
+//! |  A   | bge-small-en-v1.5  | 384 |  ~30 MB         |  ~200 MB           |
+//! |  B   | bge-base-en-v1.5   | 768 | ~110 MB         |  ~450 MB           |
+//! |  C   | bge-base-en-v1.5   | 768 | ~110 MB         |  ~450 MB           |
+//!
+//! BGE-base is meaningfully better at near-misses on a 1k+ memory
+//! library than BGE-small — our retrieval-quality work in v0.3.3
+//! made the difference visible in Related and Ask Recall surfaces.
+//! BGE-large (1024) was on the table but the marginal recall gain
+//! doesn't justify a 1.3 GB download.
+//!
+//! Model files live in `<app_data>/models/embeddings/`. fastembed
+//! downloads them from Hugging Face on first `prepare()` — that's the
 //! one-time, opt-in cloud call mentioned in the no-cloud-calls policy
 //! header in `ai/mod.rs`. Once downloaded, every embed call is
 //! offline and stays offline.
@@ -25,32 +33,67 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::OnceCell;
 
 use crate::ai::embeddings::{EmbeddingAdapter, EmbeddingModelId, EmbeddingVector};
+use crate::ai::hardware::HardwareTier;
 use crate::errors::app_error::{AppError, AppResult};
 
-/// Stable id stored on `memory_chunks.embedding_model`. When this
-/// changes (e.g. v0.3.1 ships tier-aware models) the worker re-embeds
-/// any chunk whose `embedding_model` doesn't match the current adapter.
-pub const MODEL_ID: EmbeddingModelId = "bge-small-en-v1.5";
+/// Stable id stored on `memory_chunks.embedding_model`. Used by the
+/// worker to detect stale rows after a model upgrade and re-embed them.
+pub const MODEL_ID_SMALL: EmbeddingModelId = "bge-small-en-v1.5";
+pub const MODEL_ID_BASE: EmbeddingModelId = "bge-base-en-v1.5";
 
-/// Vector dimension for BGE-small. Stored on each chunk so a future
-/// adapter that emits a different dim can detect the mismatch and
-/// trigger re-embedding without trusting the stored value.
-pub const MODEL_DIM: u32 = 384;
+pub const MODEL_DIM_SMALL: u32 = 384;
+pub const MODEL_DIM_BASE: u32 = 768;
 
 /// fastembed cache subdirectory under `app_data_dir()`. Files end up
 /// at `<app_data>/models/embeddings/`.
 const CACHE_SUBDIR: &str = "models/embeddings";
 
+/// Pick the embedding model size to install based on the detected
+/// hardware tier. Tier A (~8 GB RAM) gets the small model; B and C
+/// get base. Override knobs land in a later release if real users
+/// need them; the auto pick is the right default.
+pub fn default_model_for_tier(tier: HardwareTier) -> (EmbeddingModelId, u32, EmbeddingModel) {
+    match tier {
+        HardwareTier::A => (MODEL_ID_SMALL, MODEL_DIM_SMALL, EmbeddingModel::BGESmallENV15),
+        HardwareTier::B | HardwareTier::C => {
+            (MODEL_ID_BASE, MODEL_DIM_BASE, EmbeddingModel::BGEBaseENV15)
+        }
+    }
+}
+
 pub struct FastembedAdapter {
     app: AppHandle,
     cell: OnceCell<Arc<TextEmbedding>>,
+    model_id: EmbeddingModelId,
+    model_dim: u32,
+    fastembed_model: EmbeddingModel,
 }
 
 impl FastembedAdapter {
+    /// Construct the adapter for a specific hardware tier. Pick is
+    /// captured at scheduler init; switching tiers requires a restart
+    /// (ok for v0.3.3 — the user-facing knob will land later).
+    pub fn for_tier(app: AppHandle, tier: HardwareTier) -> Self {
+        let (model_id, model_dim, fastembed_model) = default_model_for_tier(tier);
+        Self {
+            app,
+            cell: OnceCell::new(),
+            model_id,
+            model_dim,
+            fastembed_model,
+        }
+    }
+
+    /// Backwards-compat constructor used by older callers; defaults
+    /// to BGE-small. New code should use `for_tier` so the right
+    /// model is picked for the host.
     pub fn new(app: AppHandle) -> Self {
         Self {
             app,
             cell: OnceCell::new(),
+            model_id: MODEL_ID_SMALL,
+            model_dim: MODEL_DIM_SMALL,
+            fastembed_model: EmbeddingModel::BGESmallENV15,
         }
     }
 
@@ -72,15 +115,16 @@ impl FastembedAdapter {
 
     /// Lazily instantiate the underlying `TextEmbedding`. The first
     /// call triggers the download from Hugging Face if the files
-    /// aren't on-disk yet (~30MB once); subsequent calls return the
-    /// cached `Arc<TextEmbedding>`.
+    /// aren't on-disk yet (~30 MB for small, ~110 MB for base);
+    /// subsequent calls return the cached `Arc<TextEmbedding>`.
     async fn ensure_model(&self) -> AppResult<Arc<TextEmbedding>> {
         if let Some(model) = self.cell.get() {
             return Ok(model.clone());
         }
         let cache_dir = self.cache_dir()?;
+        let fastembed_model = self.fastembed_model.clone();
         let model = tokio::task::spawn_blocking(move || {
-            let opts = InitOptions::new(EmbeddingModel::BGESmallENV15)
+            let opts = InitOptions::new(fastembed_model)
                 .with_show_download_progress(false)
                 .with_cache_dir(cache_dir);
             TextEmbedding::try_new(opts)
@@ -98,11 +142,11 @@ impl FastembedAdapter {
 #[async_trait]
 impl EmbeddingAdapter for FastembedAdapter {
     fn model_id(&self) -> EmbeddingModelId {
-        MODEL_ID
+        self.model_id
     }
 
     fn dim(&self) -> u32 {
-        MODEL_DIM
+        self.model_dim
     }
 
     async fn is_ready(&self) -> bool {
@@ -145,13 +189,14 @@ impl EmbeddingAdapter for FastembedAdapter {
         let mut out = Vec::with_capacity(embeddings.len());
         for values in embeddings {
             let dim = values.len() as u32;
-            if dim != MODEL_DIM {
+            if dim != self.model_dim {
                 return Err(AppError::Invalid(format!(
-                    "Unexpected embedding dim {dim} (expected {MODEL_DIM})"
+                    "Unexpected embedding dim {dim} (expected {})",
+                    self.model_dim
                 )));
             }
             out.push(EmbeddingVector {
-                model: MODEL_ID,
+                model: self.model_id,
                 dim,
                 values,
             });

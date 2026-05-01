@@ -22,6 +22,17 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Number of new chunks since the last centroid compute that triggers
+/// a refresh. The centroid is robust to small additions — keeping it
+/// stable across short bursts of captures matters more than freshness.
+const CENTROID_INVALIDATION_DELTA: u64 = 50;
+
+/// Hard cosine threshold (post-centering) below which a candidate is
+/// dropped entirely. With centered embeddings, ~0.15 is the empirical
+/// boundary between "shares topic" and "shares English baseline" —
+/// below it we'd be surfacing noise.
+pub const SEMANTIC_FLOOR: f32 = 0.15;
+
 /// MMR diversity weight. λ=1.0 = pure relevance (the original list).
 /// λ=0.0 = pure diversity. 0.7 is "mostly relevance, some diversity"
 /// — typical for related-document UIs.
@@ -159,6 +170,102 @@ pub fn aggregate_with_mmr(
     selected
 }
 
+/// Compute the centroid (per-dimension arithmetic mean) of a slice of
+/// vectors. All vectors must share dimension. Returns `None` for an
+/// empty input. Used as the "English baseline" subtraction term that
+/// dramatically improves cosine signal-to-noise on BGE outputs.
+pub fn centroid(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
+    let first = vectors.first()?;
+    let dim = first.len();
+    if dim == 0 {
+        return None;
+    }
+    let mut sum = vec![0.0_f32; dim];
+    let mut n: u64 = 0;
+    for v in vectors {
+        if v.len() != dim {
+            // Mixing vector dims would silently corrupt the centroid;
+            // bail rather than pretend.
+            return None;
+        }
+        for (i, value) in v.iter().enumerate() {
+            sum[i] += *value;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    for slot in sum.iter_mut() {
+        *slot /= n as f32;
+    }
+    Some(sum)
+}
+
+/// Subtract `centroid` from `vector` in place. Returns the result so
+/// the caller can chain. Centroid must match dim; mismatch is ignored
+/// (returns vector unchanged) so callers don't have to special-case
+/// the not-yet-built case.
+pub fn subtract_centroid(mut vector: Vec<f32>, centroid: &[f32]) -> Vec<f32> {
+    if vector.len() != centroid.len() {
+        return vector;
+    }
+    for i in 0..vector.len() {
+        vector[i] -= centroid[i];
+    }
+    vector
+}
+
+/// Coarse human-readable label for a *centered* cosine score. Skips
+/// the misleading "% match" framing — centered cosine isn't a
+/// probability, and uncentered cosine is buried in baseline noise.
+/// Buckets are calibrated against BGE-small + BGE-base after
+/// centering on a real user library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchStrength {
+    Strong,
+    Related,
+    Loose,
+}
+
+impl MatchStrength {
+    pub fn from_centered_cosine(score: f32) -> Self {
+        if score >= 0.45 {
+            MatchStrength::Strong
+        } else if score >= 0.30 {
+            MatchStrength::Related
+        } else {
+            MatchStrength::Loose
+        }
+    }
+}
+
+/// Snapshot of corpus centroid state. The scheduler caches this and
+/// invalidates on either model-id change or chunk-count delta crossing
+/// `CENTROID_INVALIDATION_DELTA`.
+#[derive(Debug, Clone)]
+pub struct CentroidCache {
+    pub model_id: String,
+    pub chunk_count_at_compute: u64,
+    pub centroid: Vec<f32>,
+}
+
+impl CentroidCache {
+    /// Should we recompute? `true` when the active model changed
+    /// (different embedding space — old centroid is meaningless), or
+    /// when the corpus has grown by more than the invalidation delta
+    /// (new captures haven't shifted the mean meaningfully yet, but
+    /// they will if we let it drift).
+    pub fn is_stale(&self, active_model_id: &str, current_chunk_count: u64) -> bool {
+        if self.model_id != active_model_id {
+            return true;
+        }
+        current_chunk_count.saturating_sub(self.chunk_count_at_compute)
+            >= CENTROID_INVALIDATION_DELTA
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +360,76 @@ mod tests {
         let vectors = HashMap::new();
         let hits = aggregate_with_mmr(chunks, &vectors, "src", 0);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn centroid_averages_per_dimension() {
+        let vectors = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![3.0, 2.0, 1.0],
+            vec![2.0, 2.0, 2.0],
+        ];
+        let c = centroid(&vectors).expect("centroid");
+        assert_eq!(c, vec![2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn centroid_empty_returns_none() {
+        assert!(centroid(&[]).is_none());
+    }
+
+    #[test]
+    fn centroid_mismatched_dim_returns_none() {
+        let vectors = vec![vec![1.0, 2.0], vec![3.0, 4.0, 5.0]];
+        assert!(centroid(&vectors).is_none());
+    }
+
+    #[test]
+    fn subtract_centroid_shifts_each_dim() {
+        let v = vec![5.0, 5.0, 5.0];
+        let c = vec![2.0, 3.0, 4.0];
+        let result = subtract_centroid(v, &c);
+        assert_eq!(result, vec![3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn subtract_centroid_dim_mismatch_no_op() {
+        let v = vec![5.0, 5.0];
+        let c = vec![1.0, 2.0, 3.0];
+        let result = subtract_centroid(v.clone(), &c);
+        assert_eq!(result, v); // unchanged
+    }
+
+    #[test]
+    fn match_strength_buckets() {
+        assert_eq!(MatchStrength::from_centered_cosine(0.50), MatchStrength::Strong);
+        assert_eq!(MatchStrength::from_centered_cosine(0.45), MatchStrength::Strong);
+        assert_eq!(MatchStrength::from_centered_cosine(0.40), MatchStrength::Related);
+        assert_eq!(MatchStrength::from_centered_cosine(0.30), MatchStrength::Related);
+        assert_eq!(MatchStrength::from_centered_cosine(0.20), MatchStrength::Loose);
+        assert_eq!(MatchStrength::from_centered_cosine(-0.05), MatchStrength::Loose);
+    }
+
+    #[test]
+    fn centroid_cache_stale_on_model_change() {
+        let cache = CentroidCache {
+            model_id: "bge-small-en-v1.5".into(),
+            chunk_count_at_compute: 100,
+            centroid: vec![0.0; 384],
+        };
+        assert!(cache.is_stale("bge-base-en-v1.5", 100));
+    }
+
+    #[test]
+    fn centroid_cache_stale_on_chunk_growth() {
+        let cache = CentroidCache {
+            model_id: "bge-small-en-v1.5".into(),
+            chunk_count_at_compute: 100,
+            centroid: vec![0.0; 384],
+        };
+        assert!(!cache.is_stale("bge-small-en-v1.5", 100));
+        assert!(!cache.is_stale("bge-small-en-v1.5", 149));
+        assert!(cache.is_stale("bge-small-en-v1.5", 150));
+        assert!(cache.is_stale("bge-small-en-v1.5", 200));
     }
 }

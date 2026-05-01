@@ -68,7 +68,31 @@ export const aiClient = {
   /// diversity aggregation.
   findRelated: (memoryId: string, limit?: number) =>
     invoke<RelatedMemoryView[]>("find_related", { memoryId, limit }),
+
+  /// v0.3.3: hybrid keyword + semantic search. Server-side embeds
+  /// the query, runs cosine over active-model chunks (mean-centered),
+  /// MMR-aggregates to memory level, then blends with a keyword score
+  /// at 0.5 / 0.5. Returns empty list if AI / embeddings aren't ready
+  /// — caller falls back to the TS-side keyword path.
+  semanticSearch: (query: string, limit?: number) =>
+    invoke<SemanticSearchHit[]>("semantic_search", { query, limit }),
 };
+
+/// v0.3.3: blended search result row. The strength label uses the
+/// semantic score only; ranking uses the blended score.
+export interface SemanticSearchHit {
+  memoryId: string;
+  /// Blended ranking score in [0, 1].
+  score: number;
+  /// Centered cosine, used to derive `strength`.
+  semanticScore: number;
+  /// Keyword contribution before blending, in [0, 1].
+  keywordScore: number;
+  strength: "strong" | "related" | "loose";
+  chunkText: string;
+  chunkStart: number;
+  chunkEnd: number;
+}
 
 /// v0.3.2: backfill summary returned by `embed_all_memories`.
 export interface EmbedAllSummary {
@@ -82,9 +106,14 @@ export interface EmbedAllSummary {
 /// v0.3.0: result row from `find_related`. The chunk fields point at
 /// the best-matching slice within the parent memory so the UI can
 /// render an excerpt with offsets to highlight.
+///
+/// v0.3.3: `score` is now the centered cosine (post-mean-subtraction)
+/// rather than raw cosine. Use `strength` for human display — the raw
+/// number is too misleading to render as a percent.
 export interface RelatedMemoryView {
   memoryId: string;
   score: number;
+  strength: "strong" | "related" | "loose";
   chunkText: string;
   chunkStart: number;
   chunkEnd: number;

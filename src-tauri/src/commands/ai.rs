@@ -20,7 +20,10 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::{
-    ai::embeddings::similarity::{aggregate_with_mmr, cosine, RelatedMemoryHit, ScoredChunk},
+    ai::embeddings::similarity::{
+        aggregate_with_mmr, cosine, subtract_centroid, MatchStrength, RelatedMemoryHit,
+        ScoredChunk, SEMANTIC_FLOOR,
+    },
     ai::embeddings::EmbeddingVector,
     ai::hardware::HardwareInfo,
     ai::scheduler::SchedulerStatus,
@@ -71,7 +74,13 @@ pub async fn ai_status(state: State<'_, AppState>) -> AppResult<AiStatusPayload>
     let ocr_engine = scheduler.ocr_engine_label();
     let embedding_model = scheduler.embedding_model_label();
     let embedding_ready = scheduler.embedding_is_ready().await;
-    let embedding_coverage = state.memory_repository.embedding_coverage().await?;
+    let mut embedding_coverage = state.memory_repository.embedding_coverage().await?;
+    if embedding_model != "unsupported" {
+        embedding_coverage.embedded_chunks_active_model = state
+            .memory_repository
+            .count_embedded_chunks_for_model(embedding_model)
+            .await?;
+    }
 
     Ok(AiStatusPayload {
         enabled: scheduler.is_enabled(),
@@ -104,7 +113,14 @@ pub async fn ai_set_enabled(
     scheduler.set_enabled(enabled);
 
     let queue = scheduler.status_snapshot().await?;
-    let embedding_coverage = state.memory_repository.embedding_coverage().await?;
+    let embedding_model = scheduler.embedding_model_label();
+    let mut embedding_coverage = state.memory_repository.embedding_coverage().await?;
+    if embedding_model != "unsupported" {
+        embedding_coverage.embedded_chunks_active_model = state
+            .memory_repository
+            .count_embedded_chunks_for_model(embedding_model)
+            .await?;
+    }
     let embedding_ready = scheduler.embedding_is_ready().await;
     Ok(AiStatusPayload {
         enabled,
@@ -310,22 +326,36 @@ pub async fn embed_all_memories(state: State<'_, AppState>) -> AppResult<EmbedAl
 
 /// One memory in a related-memory result list. The chunk fields point
 /// at the best-matching slice within the parent memory so the UI can
-/// render an excerpt with offsets to highlight.
+/// render an excerpt with offsets to highlight. v0.3.3 replaces the
+/// raw "% match" with a coarse strength bucket — raw cosine is too
+/// misleading to display as a probability.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelatedMemoryView {
     pub memory_id: String,
+    /// Centered cosine score; useful for the UI to sort or threshold
+    /// further but **not** for human display. Use `strength` for
+    /// labels.
     pub score: f32,
+    pub strength: MatchStrength,
     pub chunk_text: String,
     pub chunk_start: i64,
     pub chunk_end: i64,
 }
 
 /// Return up to `limit` related memories for the given source memory,
-/// ranked by mean-of-top-2 chunk similarity with MMR diversity. Excludes
-/// the source memory's own chunks. Returns an empty list when the
-/// source has no embedded chunks (e.g. embedding model isn't downloaded
-/// yet, or the row was just created and the worker hasn't gotten to it).
+/// ranked by mean-of-top-2 chunk similarity with MMR diversity.
+///
+/// v0.3.3 changes:
+///   * Filters retrieval to chunks embedded under the *active* model
+///     (`embedding_model = ?adapter`) so a mid-upgrade DB with mixed
+///     small/base namespaces never produces dim-mismatched cosine.
+///   * Subtracts the corpus centroid from both source and candidate
+///     vectors before cosine. Drops the BGE "English baseline" floor
+///     of ~0.65–0.85 that was making everything look highly related.
+///   * Drops candidates below `SEMANTIC_FLOOR` (centered cosine 0.15)
+///     so the panel surfaces "no related memories" instead of a list
+///     of weak hits.
 #[tauri::command]
 pub async fn find_related(
     memory_id: String,
@@ -343,7 +373,13 @@ pub async fn find_related(
 
     let top_n = limit.unwrap_or(5).max(1) as usize;
 
-    // Source memory's chunks (with embeddings).
+    let centroid = scheduler
+        .corpus_centroid(&state.memory_repository)
+        .await?;
+
+    // Source memory's chunks for the active model only — chunks
+    // still embedded under the old model are stale and would mix
+    // dimensions if we used them.
     let source_chunks = state
         .memory_repository
         .list_chunks_for_memory(&memory_id)
@@ -351,18 +387,24 @@ pub async fn find_related(
     let source_vectors: Vec<Vec<f32>> = source_chunks
         .iter()
         .filter_map(|chunk| {
+            if chunk.embedding_model.as_deref() != Some(model_label) {
+                return None;
+            }
             let bytes = chunk.embedding_vector.as_ref()?;
-            EmbeddingVector::from_bytes(model_label, bytes).map(|v| v.values)
+            let v = EmbeddingVector::from_bytes(model_label, bytes)?.values;
+            Some(maybe_center(v, centroid.as_deref()))
         })
         .collect();
     if source_vectors.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Brute-force cosine over the entire embedded chunk set. Fast
-    // enough at our scale; we'll swap to sqlite-vec if/when a real
-    // user crosses ~50k vectors and starts feeling latency.
-    let all_chunks = state.memory_repository.list_embedded_chunks().await?;
+    // Active-model chunks across the whole corpus. Excludes
+    // dim-mismatched rows by construction.
+    let all_chunks = state
+        .memory_repository
+        .list_embedded_chunks_for_model(model_label)
+        .await?;
 
     let mut scored: Vec<ScoredChunk> = Vec::with_capacity(all_chunks.len());
     let mut chunk_vectors: HashMap<String, Vec<f32>> = HashMap::new();
@@ -377,15 +419,18 @@ pub async fn find_related(
         let Some(vec) = EmbeddingVector::from_bytes(model_label, bytes) else {
             continue;
         };
+        let centered = maybe_center(vec.values, centroid.as_deref());
 
-        // Per chunk: max similarity to any source chunk.
         let max_sim = source_vectors
             .iter()
-            .map(|src| cosine(src, &vec.values))
+            .map(|src| cosine(src, &centered))
             .fold(f32::NEG_INFINITY, f32::max);
 
-        chunk_vectors.insert(chunk.id.clone(), vec.values);
+        if max_sim < SEMANTIC_FLOOR {
+            continue;
+        }
 
+        chunk_vectors.insert(chunk.id.clone(), centered);
         scored.push(ScoredChunk {
             chunk_id: chunk.id.clone(),
             memory_id: chunk.memory_id.clone(),
@@ -401,14 +446,195 @@ pub async fn find_related(
 
     Ok(hits
         .into_iter()
+        .filter(|h| h.score >= SEMANTIC_FLOOR)
         .map(|h| RelatedMemoryView {
             memory_id: h.memory_id,
             score: h.score,
+            strength: MatchStrength::from_centered_cosine(h.score),
             chunk_text: h.best_chunk.text,
             chunk_start: h.best_chunk.start_offset,
             chunk_end: h.best_chunk.end_offset,
         })
         .collect())
+}
+
+fn maybe_center(values: Vec<f32>, centroid: Option<&[f32]>) -> Vec<f32> {
+    match centroid {
+        Some(c) => subtract_centroid(values, c),
+        None => values,
+    }
+}
+
+/// One row in the blended search result list. `keyword_score` and
+/// `semantic_score` are returned alongside the blended `score` for
+/// transparency / debugging — frontend ranks on `score`, displays the
+/// `strength` label from the cosine side only.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticSearchHit {
+    pub memory_id: String,
+    /// Blended ranking score in [0, 1]. Used for ordering only.
+    pub score: f32,
+    /// Centered cosine, in approximately [-0.2, 1.0]. Source of
+    /// `strength`; useful for tuning thresholds in the future.
+    pub semantic_score: f32,
+    /// Keyword path's contribution before blending, in [0, 1].
+    pub keyword_score: f32,
+    pub strength: MatchStrength,
+    pub chunk_text: String,
+    pub chunk_start: i64,
+    pub chunk_end: i64,
+}
+
+/// Hybrid keyword + semantic search. v0.3.3.
+///
+///   * Embed the query string with the active adapter.
+///   * Cosine across all active-model chunks (mean-centered).
+///   * MMR-aggregate to memory level (mean-of-top-2 + λ=0.7 diversity).
+///   * Compute a per-memory keyword score (substring + word overlap
+///     with title/content/note/source-app fields, normalized).
+///   * Blend at 0.5 / 0.5 (keyword / semantic); both sides clamped to
+///     [0, 1] so the blend is well-defined regardless of underlying
+///     score ranges.
+///   * Filter out blended results below SEMANTIC_FLOOR on the
+///     semantic side — keyword-only matches still rank, but a row
+///     with zero topical signal and a thin keyword hit shouldn't
+///     promote past a strongly-related-but-keyword-poor memory.
+///
+/// Returns up to `limit` results (default 12) ordered by blended
+/// score descending.
+#[tauri::command]
+pub async fn semantic_search(
+    query: String,
+    limit: Option<u32>,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<SemanticSearchHit>> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+    let model_label = scheduler.embedding_model_label();
+    if model_label == "unsupported" {
+        return Ok(Vec::new());
+    }
+
+    let top_n = limit.unwrap_or(12).max(1) as usize;
+
+    // 1. Embed the query.
+    let Some(query_embedding) = scheduler.embed_query(trimmed).await? else {
+        // Adapter not ready yet — return empty so the caller falls
+        // back to keyword-only search.
+        return Ok(Vec::new());
+    };
+    let centroid = scheduler
+        .corpus_centroid(&state.memory_repository)
+        .await?;
+    let query_vec = maybe_center(query_embedding.values, centroid.as_deref());
+
+    // 2. Cosine across active-model chunks.
+    let all_chunks = state
+        .memory_repository
+        .list_embedded_chunks_for_model(model_label)
+        .await?;
+    let mut scored: Vec<ScoredChunk> = Vec::with_capacity(all_chunks.len());
+    let mut chunk_vectors: HashMap<String, Vec<f32>> = HashMap::new();
+    for chunk in &all_chunks {
+        let Some(bytes) = &chunk.embedding_vector else {
+            continue;
+        };
+        let Some(v) = EmbeddingVector::from_bytes(model_label, bytes) else {
+            continue;
+        };
+        let centered = maybe_center(v.values, centroid.as_deref());
+        let sim = cosine(&query_vec, &centered);
+        if sim < SEMANTIC_FLOOR {
+            continue;
+        }
+        chunk_vectors.insert(chunk.id.clone(), centered);
+        scored.push(ScoredChunk {
+            chunk_id: chunk.id.clone(),
+            memory_id: chunk.memory_id.clone(),
+            start_offset: chunk.start_offset,
+            end_offset: chunk.end_offset,
+            text: chunk.text.clone(),
+            score: sim,
+        });
+    }
+
+    // 3. MMR-aggregate to memory level. Use a sentinel "src" id since
+    // there's no source memory to exclude — the query is the source.
+    let semantic_hits = aggregate_with_mmr(scored, &chunk_vectors, "::query::", top_n * 3);
+
+    // 4. Compute a keyword score per matched memory. We score a memory
+    // by counting query tokens that appear in its title/content/note/
+    // source_app, then normalizing to [0, 1].
+    let query_tokens = tokenize_query(trimmed);
+    let mut blended: Vec<SemanticSearchHit> = Vec::with_capacity(semantic_hits.len());
+    for hit in semantic_hits {
+        let memory = match state.memory_repository.find(&hit.memory_id).await? {
+            Some(m) => m,
+            None => continue,
+        };
+        let kw = keyword_score(&memory, &query_tokens);
+        let semantic = hit.score.clamp(0.0, 1.0);
+        let blended_score = 0.5 * kw + 0.5 * semantic;
+        blended.push(SemanticSearchHit {
+            memory_id: hit.memory_id,
+            score: blended_score,
+            semantic_score: hit.score,
+            keyword_score: kw,
+            strength: MatchStrength::from_centered_cosine(hit.score),
+            chunk_text: hit.best_chunk.text,
+            chunk_start: hit.best_chunk.start_offset,
+            chunk_end: hit.best_chunk.end_offset,
+        });
+    }
+
+    blended.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    blended.truncate(top_n);
+    Ok(blended)
+}
+
+fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() > 1)
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// Keyword score in [0, 1]: fraction of query tokens that appear
+/// somewhere in the memory's textual fields. Weighted slightly toward
+/// title hits but kept simple — this score is one input to the blend,
+/// not the whole story.
+fn keyword_score(memory: &crate::models::Memory, query_tokens: &[String]) -> f32 {
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
+    let title = memory.title.as_deref().unwrap_or("").to_lowercase();
+    let content = memory.content.to_lowercase();
+    let note = memory.note.as_deref().unwrap_or("").to_lowercase();
+    let source_app = memory.source_app.as_deref().unwrap_or("").to_lowercase();
+    let summary = memory.summary_text.as_deref().unwrap_or("").to_lowercase();
+
+    let mut hits = 0_f32;
+    for token in query_tokens {
+        let in_title = title.contains(token);
+        let in_others =
+            content.contains(token) || note.contains(token) || summary.contains(token)
+                || source_app.contains(token);
+        if in_title {
+            hits += 1.0;
+        } else if in_others {
+            hits += 0.7;
+        }
+    }
+    let max_possible = query_tokens.len() as f32;
+    (hits / max_possible).min(1.0)
 }
 
 #[tauri::command]

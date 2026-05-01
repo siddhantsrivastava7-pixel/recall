@@ -12,7 +12,8 @@
 // No model storage path, no advanced AI mode picker, no unload-model
 // settings. Those land in v0.3.0+ when the features behind them exist.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   Sparkles,
   Cpu,
@@ -27,6 +28,11 @@ import {
 import { aiClient, type ClipboardImageDiagnostic } from "@/services/ai/AiClient";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { AiStatusPayload } from "@/domain/types";
+
+/// Poll cadence for the AI status snapshot while this tab is mounted.
+/// 2s is fast enough that "Embed all memories" feels live without
+/// hammering SQLite — the underlying query is a few COUNT aggregates.
+const STATUS_POLL_INTERVAL_MS = 2000;
 
 type Notice =
   | { kind: "idle" }
@@ -54,6 +60,14 @@ function tierLabel(tier: AiStatusPayload["hardware"]["tier"]) {
   }
 }
 
+function hasStaleNamespaceEmbeddings(status: AiStatusPayload): boolean {
+  const cov = status.embeddingCoverage;
+  // We have stale namespace rows if there are total embedded chunks
+  // out there, but the active model accounts for fewer of them. In
+  // a fresh install both numbers are equal (or both zero).
+  return cov.embeddedChunks > cov.embeddedChunksActiveModel;
+}
+
 function ocrEngineLabel(engine: string) {
   switch (engine) {
     case "apple-vision":
@@ -76,23 +90,52 @@ export function AiSettingsTab() {
   >(null);
   const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
-  // Read once on mount and whenever the master flag flips so the queue
-  // counts and engine readout stay in sync without polling.
+  // Live status: poll on a short tick so the chunk-embed coverage
+  // counter and queue badges actually update while you watch the tab.
+  // The Tauri scheduler also emits `recall://memory-ocr-updated` and
+  // `recall://memory-embedding-updated` — we listen on both as a
+  // push-based fast path in addition to the polling safety net.
+  // Component unmount stops the timer; switching tabs in the parent
+  // settings view unmounts this component, so polling never runs in
+  // the background.
+  const lastFetchAt = useRef<number>(0);
   useEffect(() => {
     let cancelled = false;
-    aiClient
-      .status()
-      .then((next) => {
+
+    async function refresh() {
+      // Coalesce: ignore refreshes within 250ms of each other so a
+      // burst of `memory-embedding-updated` events while the worker
+      // pool drains a queue doesn't fan out to N concurrent reads.
+      const now = Date.now();
+      if (now - lastFetchAt.current < 250) return;
+      lastFetchAt.current = now;
+      try {
+        const next = await aiClient.status();
         if (!cancelled) setStatus(next);
-      })
-      .catch((error) => {
+      } catch (error) {
         if (cancelled) return;
         const message =
           error instanceof Error ? error.message : "Unable to read AI status.";
-        setNotice({ kind: "error", message });
-      });
+        setNotice((current) =>
+          current.kind === "error" ? current : { kind: "error", message },
+        );
+      }
+    }
+
+    void refresh();
+
+    const interval = setInterval(() => void refresh(), STATUS_POLL_INTERVAL_MS);
+    const ocrUnlistenPromise = listen("recall://memory-ocr-updated", () => void refresh());
+    const embedUnlistenPromise = listen(
+      "recall://memory-embedding-updated",
+      () => void refresh(),
+    );
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
+      void ocrUnlistenPromise.then((dispose) => dispose());
+      void embedUnlistenPromise.then((dispose) => dispose());
     };
   }, [settings.aiEnabled]);
 
@@ -349,8 +392,12 @@ export function AiSettingsTab() {
               }}
             >
               <Layers size={12} />
-              {status.embeddingCoverage.embeddedChunks.toLocaleString()} of{" "}
+              {status.embeddingCoverage.embeddedChunksActiveModel.toLocaleString()} of{" "}
               {status.embeddingCoverage.totalChunks.toLocaleString()} chunks embedded
+              {" "}
+              <span style={{ color: "var(--t-4)" }}>
+                ({status.embeddingModel})
+              </span>
               {status.queue.embedQueued > 0
                 ? ` · ${status.queue.embedQueued} queued`
                 : ""}
@@ -363,6 +410,27 @@ export function AiSettingsTab() {
             </span>
           ) : null}
         </div>
+        {status && hasStaleNamespaceEmbeddings(status) ? (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "var(--blue-dim, rgba(64,128,255,0.10))",
+              border: "1px solid var(--blue-border, rgba(64,128,255,0.28))",
+              color: "var(--text-primary)",
+              fontSize: 12,
+              lineHeight: 1.5,
+              maxWidth: 600,
+            }}
+          >
+            <strong>New embedding model: {status.embeddingModel}.</strong>{" "}
+            Older embeddings exist under a previous model namespace and won't
+            be used for ranking. Click <em>Embed all memories</em> to upgrade
+            them — re-embedding is incremental, so unchanged chunks recompute
+            once and cache.
+          </div>
+        ) : null}
       </div>
 
       <div

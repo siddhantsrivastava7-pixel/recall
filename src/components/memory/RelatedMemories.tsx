@@ -151,12 +151,11 @@ export function RelatedMemories({ memory, onOpenMemory }: Props) {
                 <div
                   style={{
                     fontSize: 11,
-                    color: "var(--t-4)",
+                    color: strengthColor(row.strength),
                     marginTop: 2,
-                    fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  {(row.score * 100).toFixed(0)}% match
+                  {strengthLabel(row.strength)}
                 </div>
               </button>
             );
@@ -187,4 +186,26 @@ function makeExcerpt(text: string, maxChars: number): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   if (collapsed.length <= maxChars) return collapsed;
   return `${collapsed.slice(0, maxChars - 1)}…`;
+}
+
+function strengthLabel(strength: "strong" | "related" | "loose"): string {
+  switch (strength) {
+    case "strong":
+      return "Strong match";
+    case "related":
+      return "Related";
+    case "loose":
+      return "Loose match";
+  }
+}
+
+function strengthColor(strength: "strong" | "related" | "loose"): string {
+  switch (strength) {
+    case "strong":
+      return "rgb(122,200,140)";
+    case "related":
+      return "var(--blue, rgb(120,160,255))";
+    case "loose":
+      return "var(--t-4)";
+  }
 }

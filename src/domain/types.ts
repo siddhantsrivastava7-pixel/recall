@@ -154,6 +154,10 @@ export interface EmbeddingCoverage {
   memoriesWithChunks: number;
   totalChunks: number;
   embeddedChunks: number;
+  /// v0.3.3 — chunks embedded under the *currently-active* model.
+  /// Lags `embeddedChunks` after a model upgrade until the user runs
+  /// "Embed all memories"; the gap drives the upgrade banner.
+  embeddedChunksActiveModel: number;
 }
 
 export interface AiStatusPayload {

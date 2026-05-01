@@ -982,7 +982,45 @@ impl MemoryRepository for SqliteMemoryRepository {
         Ok(rows)
     }
 
+    async fn list_embedded_chunks_for_model(
+        &self,
+        model_id: &str,
+    ) -> AppResult<Vec<MemoryChunkRow>> {
+        let rows = sqlx::query_as::<_, MemoryChunkRow>(
+            r#"
+            SELECT id, memory_id, chunk_index, text, start_offset, end_offset,
+                   byte_size, token_estimate, content_hash, embedding_model,
+                   embedding_dim, embedding_vector, embedding_generated_at, created_at
+            FROM memory_chunks
+            WHERE embedding_vector IS NOT NULL
+              AND embedding_model = ?1
+            "#,
+        )
+        .bind(model_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn count_embedded_chunks_for_model(&self, model_id: &str) -> AppResult<u64> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE embedding_vector IS NOT NULL
+              AND embedding_model = ?1
+            "#,
+        )
+        .bind(model_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0.max(0) as u64)
+    }
+
     async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage> {
+        // `embedded_chunks_active_model` is left at 0 here; the
+        // command layer fills it in by calling
+        // `count_embedded_chunks_for_model` with the live adapter id —
+        // the repository doesn't know which model is currently active.
         let row = sqlx::query(
             r#"
             SELECT
@@ -999,6 +1037,7 @@ impl MemoryRepository for SqliteMemoryRepository {
             memories_with_chunks: row.try_get::<i64, _>("memories_with_chunks")?.max(0) as u64,
             total_chunks: row.try_get::<i64, _>("total_chunks")?.max(0) as u64,
             embedded_chunks: row.try_get::<i64, _>("embedded_chunks")?.max(0) as u64,
+            embedded_chunks_active_model: 0,
         })
     }
 

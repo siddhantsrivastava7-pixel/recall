@@ -11,6 +11,7 @@ use commands::{
     ai::{
         ai_diagnose_clipboard_image, ai_download_embedding_model, ai_set_enabled, ai_set_mode,
         ai_status, embed_all_memories, find_related, ocr_rebuild_index, ocr_run_for_memory,
+        semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
@@ -169,8 +170,15 @@ fn start_ai_scheduler(
     // v0.3.0: embedding adapter. fastembed-rs handles its own model
     // download lazily; we always install the adapter so the worker can
     // claim embed jobs once the user opts in via the AI Settings tab.
+    // v0.3.3: model size is picked from the detected tier (A→small,
+    // B/C→base). Existing chunks embedded under a different model_id
+    // get re-embedded automatically by the worker (mismatch check)
+    // once the user clicks "Embed all memories".
     let embedding_adapter: Option<std::sync::Arc<dyn ai::embeddings::EmbeddingAdapter>> =
-        Some(std::sync::Arc::new(FastembedAdapter::new(handle.clone())));
+        Some(std::sync::Arc::new(FastembedAdapter::for_tier(
+            handle.clone(),
+            hardware.tier,
+        )));
     let scheduler = AiScheduler::new(
         queue,
         ocr_adapter.clone(),
@@ -401,6 +409,7 @@ pub fn run() {
             ai_download_embedding_model,
             embed_all_memories,
             find_related,
+            semantic_search,
             ocr_run_for_memory,
             ocr_rebuild_index,
             bootstrap_app,

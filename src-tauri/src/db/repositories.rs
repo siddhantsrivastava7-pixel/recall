@@ -116,6 +116,22 @@ pub trait MemoryRepository: Send + Sync {
     /// threshold.
     async fn list_embedded_chunks(&self) -> AppResult<Vec<MemoryChunkRow>>;
 
+    /// v0.3.3: Read every chunk embedded with a *specific* model.
+    /// During a model upgrade (e.g. small → base), the table holds
+    /// rows from both namespaces side-by-side until re-embed catches
+    /// up; cosine across mixed dimensions is undefined, so retrieval
+    /// must filter to the active model's rows only. Memories whose
+    /// chunks haven't been re-embedded yet stay reachable via keyword
+    /// search until the worker catches them.
+    async fn list_embedded_chunks_for_model(
+        &self,
+        model_id: &str,
+    ) -> AppResult<Vec<MemoryChunkRow>>;
+
+    /// v0.3.3: Count chunks embedded with a specific model. Used by
+    /// the centroid cache to decide when to invalidate (delta ≥ 50).
+    async fn count_embedded_chunks_for_model(&self, model_id: &str) -> AppResult<u64>;
+
     /// Aggregate embedding-coverage counts for the AI Settings tab:
     /// how many memories have at least one chunk, how many of those
     /// have all chunks embedded, etc.
@@ -144,6 +160,11 @@ pub struct EmbeddingCoverage {
     pub memories_with_chunks: u64,
     pub total_chunks: u64,
     pub embedded_chunks: u64,
+    /// v0.3.3: embedded chunks for the *currently-active* embedding
+    /// model. After a model swap (small → base), this lags
+    /// `embedded_chunks` until the user runs "Embed all memories".
+    /// The settings UI uses the gap to surface the upgrade banner.
+    pub embedded_chunks_active_model: u64,
 }
 
 #[async_trait]

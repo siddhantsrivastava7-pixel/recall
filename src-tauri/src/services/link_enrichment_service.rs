@@ -1968,6 +1968,17 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn list_embedded_chunks_for_model(
+            &self,
+            _model_id: &str,
+        ) -> AppResult<Vec<crate::models::MemoryChunkRow>> {
+            Ok(Vec::new())
+        }
+
+        async fn count_embedded_chunks_for_model(&self, _model_id: &str) -> AppResult<u64> {
+            Ok(0)
+        }
+
         async fn embedding_coverage(
             &self,
         ) -> AppResult<crate::db::repositories::EmbeddingCoverage> {
