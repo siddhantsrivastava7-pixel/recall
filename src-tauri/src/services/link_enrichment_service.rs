@@ -1980,6 +1980,18 @@ mod tests {
             Ok(0)
         }
 
+        async fn merge_topic_labels(
+            &self,
+            _memory_id: &str,
+            _additional_tags: &[&str],
+        ) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn topic_labels_for_memory(&self, _memory_id: &str) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
         async fn embedding_coverage(
             &self,
         ) -> AppResult<crate::db::repositories::EmbeddingCoverage> {

@@ -38,8 +38,16 @@ use crate::errors::app_error::{AppError, AppResult};
 
 /// Stable id stored on `memory_chunks.embedding_model`. Used by the
 /// worker to detect stale rows after a model upgrade and re-embed them.
-pub const MODEL_ID_SMALL: EmbeddingModelId = "bge-small-en-v1.5";
-pub const MODEL_ID_BASE: EmbeddingModelId = "bge-base-en-v1.5";
+///
+/// v0.3.7 bumps the suffix to `+t` because the embedding *strategy*
+/// changed (now enriches each chunk's text with the parent memory's
+/// title and `topic_labels` before embedding). The model file is the
+/// same — fastembed still pulls bge-base-en-v1.5 — but the vectors
+/// produced live in a semantically different space than the
+/// pre-v0.3.7 ones, so we mark them with a different id and let the
+/// existing model-mismatch re-embed path catch the upgrade.
+pub const MODEL_ID_SMALL: EmbeddingModelId = "bge-small-en-v1.5+t";
+pub const MODEL_ID_BASE: EmbeddingModelId = "bge-base-en-v1.5+t";
 
 pub const MODEL_DIM_SMALL: u32 = 384;
 pub const MODEL_DIM_BASE: u32 = 768;

@@ -143,6 +143,22 @@ pub trait MemoryRepository: Send + Sync {
     /// the centroid cache to decide when to invalidate (delta ≥ 50).
     async fn count_embedded_chunks_for_model(&self, model_id: &str) -> AppResult<u64>;
 
+    /// v0.3.7: Merge new tags into a memory's `topic_labels`.
+    /// Existing tags from prior link enrichment / classifier passes
+    /// are preserved; the merge is a deduped union. No-op when
+    /// `additional_tags` is empty. Returns the final tag list so
+    /// callers don't need to re-read.
+    async fn merge_topic_labels(
+        &self,
+        memory_id: &str,
+        additional_tags: &[&str],
+    ) -> AppResult<Vec<String>>;
+
+    /// v0.3.7: Read `topic_labels` for a memory. Convenience for
+    /// the embedding worker which needs to format the chunk's
+    /// enriched embedding text alongside the title.
+    async fn topic_labels_for_memory(&self, memory_id: &str) -> AppResult<Vec<String>>;
+
     /// Aggregate embedding-coverage counts for the AI Settings tab:
     /// how many memories have at least one chunk, how many of those
     /// have all chunks embedded, etc.

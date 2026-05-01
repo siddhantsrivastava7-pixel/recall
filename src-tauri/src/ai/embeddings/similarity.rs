@@ -231,9 +231,15 @@ pub enum MatchStrength {
 
 impl MatchStrength {
     pub fn from_centered_cosine(score: f32) -> Self {
+        // v0.3.7: Related threshold tightened from 0.30 to 0.38
+        // based on user feedback that the 0.30–0.45 band caught too
+        // many topical-neighborhood matches that aren't actually
+        // related (same vocabulary, different subject). 0.38+ keeps
+        // genuinely related matches while dropping the most common
+        // false positives.
         if score >= 0.45 {
             MatchStrength::Strong
-        } else if score >= 0.30 {
+        } else if score >= 0.38 {
             MatchStrength::Related
         } else {
             MatchStrength::Loose
@@ -404,8 +410,12 @@ mod tests {
     fn match_strength_buckets() {
         assert_eq!(MatchStrength::from_centered_cosine(0.50), MatchStrength::Strong);
         assert_eq!(MatchStrength::from_centered_cosine(0.45), MatchStrength::Strong);
+        // v0.3.7: 0.40 is now Related (was Related), 0.30 is now
+        // Loose (was Related — moved into Loose because the 0.30–0.38
+        // band was too noisy in practice).
         assert_eq!(MatchStrength::from_centered_cosine(0.40), MatchStrength::Related);
-        assert_eq!(MatchStrength::from_centered_cosine(0.30), MatchStrength::Related);
+        assert_eq!(MatchStrength::from_centered_cosine(0.38), MatchStrength::Related);
+        assert_eq!(MatchStrength::from_centered_cosine(0.30), MatchStrength::Loose);
         assert_eq!(MatchStrength::from_centered_cosine(0.20), MatchStrength::Loose);
         assert_eq!(MatchStrength::from_centered_cosine(-0.05), MatchStrength::Loose);
     }

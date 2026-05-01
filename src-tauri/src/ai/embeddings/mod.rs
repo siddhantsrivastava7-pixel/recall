@@ -14,6 +14,7 @@
 //! `db/migrations.rs`). Vectors are encoded as little-endian f32 BLOBs
 //! so the on-disk size is `4 × dim` bytes per chunk.
 
+pub mod auto_tagger;
 pub mod chunker;
 pub mod fastembed_adapter;
 pub mod similarity;

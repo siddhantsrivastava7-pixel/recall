@@ -4,7 +4,10 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 
 use crate::{
-    ai::{embeddings::chunker, scheduler::AiScheduler},
+    ai::{
+        embeddings::{auto_tagger, chunker},
+        scheduler::AiScheduler,
+    },
     db::{
         repositories::{ChunkUpsert, SharedMemoryRepository},
         system_projects::{ensure_default_inbox_project, DEFAULT_INBOX_PROJECT_ID},
@@ -114,19 +117,56 @@ impl CaptureService {
         }
 
         let memory_id = memory.id.clone();
+        let title = memory.title.clone();
         let content = memory.content.clone();
         let scheduler = scheduler.clone();
         let repository = self.repository.clone();
         tauri::async_runtime::spawn(async move {
-            // 1. Run the chunker. Empty content → no chunks → nothing
+            // 1. Auto-tag opaque-token content (license keys, URLs,
+            // emails, etc.) so dense retrieval can bridge the gap
+            // when raw tokens carry no natural-language signal.
+            // Merged into existing `topic_labels` (preserves any
+            // tags already set by link enrichment / classifier
+            // passes).
+            let detected_tags = auto_tagger::detect_tags(&content);
+            let tags = match repository
+                .merge_topic_labels(&memory_id, &detected_tags)
+                .await
+            {
+                Ok(merged) => merged,
+                Err(error) => {
+                    eprintln!(
+                        "[recall][capture] tag merge failed for {memory_id}: {error}"
+                    );
+                    Vec::new()
+                }
+            };
+
+            // 2. Run the chunker. Empty content → no chunks → nothing
             // to do (the row stays unembedded; resurface logic skips
             // it cleanly).
-            let chunks = chunker::chunk_text(&content);
+            let mut chunks = chunker::chunk_text(&content);
             if chunks.is_empty() {
                 return;
             }
 
-            // 2. Hash-aware replace. Returns the IDs of chunks that
+            // 3. Recompute each chunk's content_hash to reflect the
+            // *enriched* embedding text (title + tags + chunk text).
+            // Why: the embedding worker constructs the same enriched
+            // text at embed time, so a title or tag change should
+            // invalidate the cached vector even if chunk_text is
+            // unchanged. Hash semantics align with embedding semantics
+            // — neither a stale vector nor an unnecessary re-embed.
+            for chunk in &mut chunks {
+                let enriched = auto_tagger::enriched_embedding_text(
+                    title.as_deref(),
+                    &tags,
+                    &chunk.text,
+                );
+                chunk.content_hash = chunker::fnv1a_64_hex(&enriched);
+            }
+
+            // 4. Hash-aware replace. Returns the IDs of chunks that
             // need a fresh embedding — anything reused via hash match
             // keeps its existing vector and is excluded from this list.
             let upserts: Vec<ChunkUpsert<'_>> = chunks

@@ -288,9 +288,34 @@ pub async fn embed_all_memories(state: State<'_, AppState>) -> AppResult<EmbedAl
             continue;
         }
 
-        let chunks = chunker::chunk_text(&memory.content);
+        // v0.3.7: backfill auto-tags for existing memories. Detected
+        // tags get merged into topic_labels (preserves any tags from
+        // prior link-enrichment / classifier passes). The embedding
+        // worker reads tags + title at embed time to build the
+        // enriched text, so this is the only place tag detection
+        // needs to happen for existing memories.
+        let detected_tags = crate::ai::embeddings::auto_tagger::detect_tags(&memory.content);
+        let tags = state
+            .memory_repository
+            .merge_topic_labels(&memory.id, &detected_tags)
+            .await
+            .unwrap_or_default();
+
+        let mut chunks = chunker::chunk_text(&memory.content);
         if chunks.is_empty() {
             continue;
+        }
+
+        // Match the capture-hook hash semantics: each chunk's
+        // content_hash reflects the *enriched* embedding text
+        // (title + tags + chunk text), not the raw chunk text.
+        for chunk in &mut chunks {
+            let enriched = crate::ai::embeddings::auto_tagger::enriched_embedding_text(
+                memory.title.as_deref(),
+                &tags,
+                &chunk.text,
+            );
+            chunk.content_hash = chunker::fnv1a_64_hex(&enriched);
         }
 
         let upserts: Vec<ChunkUpsert<'_>> = chunks

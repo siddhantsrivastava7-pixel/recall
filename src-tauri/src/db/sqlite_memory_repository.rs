@@ -1019,6 +1019,58 @@ impl MemoryRepository for SqliteMemoryRepository {
         Ok(row.0.max(0) as u64)
     }
 
+    async fn merge_topic_labels(
+        &self,
+        memory_id: &str,
+        additional_tags: &[&str],
+    ) -> AppResult<Vec<String>> {
+        if additional_tags.is_empty() {
+            return self.topic_labels_for_memory(memory_id).await;
+        }
+        // Read existing, merge, dedupe, write back. Stays a single
+        // round-trip plus an UPDATE — at our memory-count scale this
+        // is fine. Rewriting topic_labels happens at most once per
+        // capture / re-tag pass.
+        let existing = self.topic_labels_for_memory(memory_id).await?;
+        let mut merged: Vec<String> = existing.clone();
+        for tag in additional_tags {
+            let tag_str = tag.to_string();
+            if !merged.contains(&tag_str) {
+                merged.push(tag_str);
+            }
+        }
+        if merged == existing {
+            return Ok(existing);
+        }
+        let json_value = Json(&merged);
+        sqlx::query(
+            r#"
+            UPDATE memories
+            SET topic_labels = ?1,
+                updated_at = ?2
+            WHERE id = ?3
+            "#,
+        )
+        .bind(json_value)
+        .bind(Utc::now().to_rfc3339())
+        .bind(memory_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(merged)
+    }
+
+    async fn topic_labels_for_memory(&self, memory_id: &str) -> AppResult<Vec<String>> {
+        let row: Option<(Option<Json<Vec<String>>>,)> =
+            sqlx::query_as("SELECT topic_labels FROM memories WHERE id = ?1")
+                .bind(memory_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .and_then(|(labels,)| labels)
+            .map(|j| j.0)
+            .unwrap_or_default())
+    }
+
     async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage> {
         // `embedded_chunks_active_model` is left at 0 here; the
         // command layer fills it in by calling

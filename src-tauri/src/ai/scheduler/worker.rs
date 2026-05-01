@@ -201,7 +201,28 @@ async fn process_embed_chunk(
         return Ok(());
     }
 
-    let mut vectors = adapter.embed_batch(vec![target.text.clone()]).await?;
+    // v0.3.7: enrich embedding text with the memory's title and tags
+    // so dense retrieval can bridge opaque-token cases (license keys,
+    // URLs, code blocks, etc. — content whose tokens carry no
+    // natural-language signal on their own). The chunk row's `text`
+    // field stays unchanged; only the embedded vector reflects the
+    // enriched form.
+    let enriched_text = {
+        let title = memory_repo
+            .find(&payload.memory_id)
+            .await?
+            .and_then(|m| m.title);
+        let tags = memory_repo
+            .topic_labels_for_memory(&payload.memory_id)
+            .await
+            .unwrap_or_default();
+        crate::ai::embeddings::auto_tagger::enriched_embedding_text(
+            title.as_deref(),
+            &tags,
+            &target.text,
+        )
+    };
+    let mut vectors = adapter.embed_batch(vec![enriched_text]).await?;
     let vector = vectors
         .pop()
         .ok_or_else(|| AppError::Invalid("Embedding adapter returned empty vector".into()))?;
@@ -332,12 +353,37 @@ async fn chunk_and_enqueue_embeds(
     memory_id: &str,
     content: &str,
 ) -> AppResult<()> {
-    use crate::ai::embeddings::chunker;
+    use crate::ai::embeddings::{auto_tagger, chunker};
     use crate::db::repositories::ChunkUpsert;
 
-    let chunks = chunker::chunk_text(content);
+    // v0.3.7: same enrichment as capture hook + embed_all. Detect
+    // opaque-token tags, merge into topic_labels, then hash chunks
+    // against the enriched text so a tag/title change invalidates
+    // the cached vector.
+    let detected_tags = auto_tagger::detect_tags(content);
+    let tags = memory_repo
+        .merge_topic_labels(memory_id, &detected_tags)
+        .await
+        .unwrap_or_default();
+    let title = memory_repo
+        .find(memory_id)
+        .await?
+        .and_then(|m| m.title);
+
+    let mut chunks = chunker::chunk_text(content);
     if chunks.is_empty() {
         return Ok(());
+    }
+
+    // Recompute each chunk's content_hash against enriched text so
+    // hash semantics align with embedding semantics.
+    for chunk in &mut chunks {
+        let enriched = auto_tagger::enriched_embedding_text(
+            title.as_deref(),
+            &tags,
+            &chunk.text,
+        );
+        chunk.content_hash = chunker::fnv1a_64_hex(&enriched);
     }
 
     let upserts: Vec<ChunkUpsert<'_>> = chunks
