@@ -34,6 +34,25 @@ import type { AiStatusPayload } from "@/domain/types";
 /// hammering SQLite — the underlying query is a few COUNT aggregates.
 const STATUS_POLL_INTERVAL_MS = 2000;
 
+/// Tauri's `invoke` rejects with whatever Rust returns from `Err(_)`.
+/// AppError serializes to a string (see `errors/app_error.rs`), so the
+/// promise rejection arrives as a plain string — `error instanceof Error`
+/// is false in that case, which would silently swallow the actual
+/// reason. Always use this helper inside `catch` blocks so the user
+/// sees the real message.
+function describeError(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 type Notice =
   | { kind: "idle" }
   | { kind: "info"; message: string }
@@ -114,8 +133,7 @@ export function AiSettingsTab() {
         if (!cancelled) setStatus(next);
       } catch (error) {
         if (cancelled) return;
-        const message =
-          error instanceof Error ? error.message : "Unable to read AI status.";
+        const message = describeError(error, "Unable to read AI status.");
         setNotice((current) =>
           current.kind === "error" ? current : { kind: "error", message },
         );
@@ -150,8 +168,7 @@ export function AiSettingsTab() {
       // an extra round trip.
       await updateSettings({ ...settings, aiEnabled: updated.enabled });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to toggle AI.";
+      const message = describeError(error, "Unable to toggle AI.");
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -189,8 +206,7 @@ export function AiSettingsTab() {
       const refreshed = await aiClient.status();
       setStatus(refreshed);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to start embedding pass.";
+      const message = describeError(error, "Failed to start embedding pass.");
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -212,8 +228,7 @@ export function AiSettingsTab() {
       const refreshed = await aiClient.status();
       setStatus(refreshed);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to download embedding model.";
+      const message = describeError(error, "Failed to download embedding model.");
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -227,8 +242,7 @@ export function AiSettingsTab() {
       const result = await aiClient.diagnoseClipboardImage();
       setDiagnostic(result);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to diagnose clipboard.";
+      const message = describeError(error, "Unable to diagnose clipboard.");
       setDiagnostic({ ok: false, message });
     } finally {
       setBusy(null);
@@ -254,8 +268,7 @@ export function AiSettingsTab() {
       const refreshed = await aiClient.status();
       setStatus(refreshed);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to rebuild OCR index.";
+      const message = describeError(error, "Unable to rebuild OCR index.");
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
