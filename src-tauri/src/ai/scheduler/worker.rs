@@ -354,8 +354,12 @@ async fn chunk_and_enqueue_embeds(
         })
         .collect();
 
+    let active_model = inner
+        .embedding_adapter
+        .as_ref()
+        .map(|a| a.model_id());
     let needs_embedding = memory_repo
-        .replace_chunks_hash_aware(memory_id, &upserts)
+        .replace_chunks_hash_aware(memory_id, &upserts, active_model)
         .await?;
 
     // Enqueue an embed job per novel chunk via the scheduler. We go

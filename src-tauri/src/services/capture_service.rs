@@ -143,8 +143,15 @@ impl CaptureService {
                 })
                 .collect();
 
+            // Capture path doesn't have a direct handle on the
+            // scheduler's adapter id without an extra hop, but we
+            // know the embedding adapter is wired alongside the
+            // scheduler we already hold. Re-use the scheduler's
+            // model label as the active model — same value the
+            // worker checks, same value embed_all uses.
+            let active_model = Some(scheduler.embedding_model_label());
             let needs_embedding = match repository
-                .replace_chunks_hash_aware(&memory_id, &upserts)
+                .replace_chunks_hash_aware(&memory_id, &upserts, active_model)
                 .await
             {
                 Ok(ids) => ids,

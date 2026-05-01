@@ -835,24 +835,23 @@ impl MemoryRepository for SqliteMemoryRepository {
         &self,
         memory_id: &str,
         chunks: &[ChunkUpsert<'_>],
+        active_embedding_model: Option<&str>,
     ) -> AppResult<Vec<String>> {
-        // Read existing chunks once, key by content_hash so we can
-        // copy embedding columns forward for any incoming chunk whose
-        // text didn't actually change. The chunk_id changes (we're
-        // re-inserting), but the embedding bytes don't — and any
-        // ai_work_queue rows that referenced the old chunk_id will
-        // become no-op successes when the worker can't find them
-        // (process_embed_chunk treats missing chunk as Ok(())).
+        // See trait doc for the why. Briefly: we DELETE every existing
+        // row for this memory first, then INSERT new chunks at their
+        // final positions. UPDATE-in-place trips
+        // `UNIQUE(memory_id, chunk_index)` whenever chunker output
+        // reshuffles, since the new index may still be held by an
+        // about-to-be-orphaned row.
         //
-        // We can't UPDATE existing rows' chunk_index in place — when
-        // chunker output reshuffles (e.g., a daily transcript grew
-        // and pushed boundaries), an UPDATE that moves a row to an
-        // index still held by another (about-to-be-orphaned) row
-        // hits `UNIQUE(memory_id, chunk_index)` before we ever get to
-        // delete the orphan. So: DELETE every existing row for this
-        // memory first, then INSERT the new chunks at their final
-        // positions. Preserves hash-aware embedding reuse, drops the
-        // UNIQUE-collision risk entirely.
+        // Preservation is restricted to (content_hash match) AND
+        // (preserved.embedding_model == active model). After a model
+        // upgrade, the preserved bytes belong to a different
+        // embedding space — copying them forward marks the new row
+        // "done" with a stale vector that retrieval (correctly)
+        // ignores, leaving the chunk in limbo: not visible to the
+        // active model, not enqueued for re-embed. The model-match
+        // gate fixes that.
         let existing = self.list_chunks_for_memory(memory_id).await?;
         let by_hash: std::collections::HashMap<String, MemoryChunkRow> = existing
             .into_iter()
@@ -870,7 +869,16 @@ impl MemoryRepository for SqliteMemoryRepository {
         let mut needs_embedding: Vec<String> = Vec::new();
         for chunk in chunks {
             let new_id = Uuid::new_v4().to_string();
-            let preserved = by_hash.get(chunk.content_hash);
+            let raw_preserved = by_hash.get(chunk.content_hash);
+            // Only carry embedding bytes forward when the preserved
+            // row's model matches the active model. Mismatch means
+            // the preserved bytes are dim-incompatible and would
+            // mark the new row as "done" with an unusable vector.
+            let preserved = raw_preserved.filter(|p| match active_embedding_model {
+                Some(active) => p.embedding_model.as_deref() == Some(active),
+                None => false,
+            });
+
             sqlx::query(
                 r#"
                 INSERT INTO memory_chunks
@@ -898,9 +906,9 @@ impl MemoryRepository for SqliteMemoryRepository {
             .execute(&mut *transaction)
             .await?;
 
-            // Need a fresh embedding when either there's no preserved
-            // row at all (novel hash) or the preserved row never had
-            // a vector to begin with.
+            // Needs a fresh embedding when nothing was preserved
+            // (novel hash, or hash matched but model didn't), or the
+            // preserved row never had a vector.
             let needs_fresh = match preserved {
                 Some(p) => p.embedding_vector.is_none(),
                 None => true,

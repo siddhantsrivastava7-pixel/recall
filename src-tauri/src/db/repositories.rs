@@ -89,14 +89,25 @@ pub trait MemoryRepository: Send + Sync {
 
     /// Replace a memory's chunks. Hash-aware: an incoming chunk whose
     /// `content_hash` matches an existing chunk keeps its existing
-    /// `embedding_*` columns (avoiding a re-embed). Chunks that go
-    /// missing are deleted; novel chunks are inserted with
-    /// `embedding_generated_at = NULL` so the worker picks them up.
+    /// `embedding_*` columns (avoiding a re-embed) **only when** that
+    /// existing row's `embedding_model` matches `active_embedding_model`.
+    /// During a model upgrade (e.g. small → base), preserved bytes
+    /// from the old model are dim-mismatched and live in a different
+    /// embedding space — copying them forward would mark the new row
+    /// as "done" with a stale vector that retrieval skips. So we
+    /// drop preservation when the model changes and the new row goes
+    /// out for fresh embedding instead.
+    ///
+    /// Pass `None` for `active_embedding_model` when the caller has
+    /// no opinion (e.g. capture path with no adapter configured); in
+    /// that case nothing is preserved.
+    ///
     /// Returns the IDs of chunks that need fresh embeddings.
     async fn replace_chunks_hash_aware(
         &self,
         memory_id: &str,
         chunks: &[ChunkUpsert<'_>],
+        active_embedding_model: Option<&str>,
     ) -> AppResult<Vec<String>>;
 
     /// Persist an embedding on a chunk row. Called by the worker after

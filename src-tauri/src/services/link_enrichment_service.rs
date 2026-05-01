@@ -1949,6 +1949,7 @@ mod tests {
             &self,
             _memory_id: &str,
             _chunks: &[crate::db::repositories::ChunkUpsert<'_>],
+            _active_embedding_model: Option<&str>,
         ) -> AppResult<Vec<String>> {
             Ok(Vec::new())
         }

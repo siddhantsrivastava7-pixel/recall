@@ -309,7 +309,11 @@ pub async fn embed_all_memories(state: State<'_, AppState>) -> AppResult<EmbedAl
 
         let needs_embedding = state
             .memory_repository
-            .replace_chunks_hash_aware(&memory.id, &upserts)
+            .replace_chunks_hash_aware(
+                &memory.id,
+                &upserts,
+                Some(scheduler.embedding_model_label()),
+            )
             .await?;
 
         summary.memories_chunked += 1;
