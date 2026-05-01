@@ -10,7 +10,7 @@ mod state;
 use commands::{
     ai::{
         ai_diagnose_clipboard_image, ai_download_embedding_model, ai_set_enabled, ai_set_mode,
-        ai_status, find_related, ocr_rebuild_index, ocr_run_for_memory,
+        ai_status, embed_all_memories, find_related, ocr_rebuild_index, ocr_run_for_memory,
     },
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
@@ -399,6 +399,7 @@ pub fn run() {
             ai_set_mode,
             ai_diagnose_clipboard_image,
             ai_download_embedding_model,
+            embed_all_memories,
             find_related,
             ocr_run_for_memory,
             ocr_rebuild_index,

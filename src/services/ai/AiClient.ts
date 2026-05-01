@@ -57,12 +57,27 @@ export const aiClient = {
   /// every embed call runs offline.
   downloadEmbeddingModel: () => invoke<boolean>("ai_download_embedding_model"),
 
+  /// v0.3.2: chunk + enqueue embeds for every memory in the library.
+  /// Idempotent — chunks whose content_hash already matches keep
+  /// their existing vectors. Resets failed embed jobs as part of the
+  /// pass so previously-stuck rows get a fresh shot.
+  embedAllMemories: () => invoke<EmbedAllSummary>("embed_all_memories"),
+
   /// v0.3.0: return up to `limit` semantically-related memories for a
   /// source memory. Server-side runs chunk-level cosine + MMR
   /// diversity aggregation.
   findRelated: (memoryId: string, limit?: number) =>
     invoke<RelatedMemoryView[]>("find_related", { memoryId, limit }),
 };
+
+/// v0.3.2: backfill summary returned by `embed_all_memories`.
+export interface EmbedAllSummary {
+  memoriesScanned: number;
+  memoriesChunked: number;
+  chunksCreated: number;
+  chunksEnqueued: number;
+  failedJobsReset: number;
+}
 
 /// v0.3.0: result row from `find_related`. The chunk fields point at
 /// the best-matching slice within the parent memory so the UI can

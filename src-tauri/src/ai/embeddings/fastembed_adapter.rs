@@ -109,22 +109,16 @@ impl EmbeddingAdapter for FastembedAdapter {
         if self.cell.get().is_some() {
             return true;
         }
-        // Heuristic: if the cache dir exists *and* contains files,
-        // fastembed will load from disk without a network call.
+        // Heuristic: if the cache dir exists *and* contains a
+        // recursively-readable file, fastembed will load from disk
+        // without a network call. Files end up nested under a Hugging
+        // Face repo subdirectory (`models--Qdrant--bge-small-en-v1.5/`),
+        // so a top-level `next_entry` finding *something* is sufficient.
         let Ok(dir) = self.cache_dir() else {
             return false;
         };
         match tokio::fs::read_dir(&dir).await {
-            Ok(mut entries) => {
-                tokio::task::block_in_place(|| {
-                    let runtime = tokio::runtime::Handle::current();
-                    runtime.block_on(async {
-                        // Any entry at all is sufficient; fastembed
-                        // checksums on load anyway.
-                        entries.next_entry().await.ok().flatten().is_some()
-                    })
-                })
-            }
+            Ok(mut entries) => entries.next_entry().await.ok().flatten().is_some(),
             Err(_) => false,
         }
     }

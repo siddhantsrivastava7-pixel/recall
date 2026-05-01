@@ -72,7 +72,7 @@ export function AiSettingsTab() {
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: "idle" });
   const [busy, setBusy] = useState<
-    "toggle" | "rebuild" | "diagnose" | "downloadModel" | null
+    "toggle" | "rebuild" | "diagnose" | "downloadModel" | "embedAll" | null
   >(null);
   const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
@@ -109,6 +109,45 @@ export function AiSettingsTab() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to toggle AI.";
+      setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleEmbedAll = async () => {
+    setBusy("embedAll");
+    setNotice({ kind: "idle" });
+    try {
+      const summary = await aiClient.embedAllMemories();
+      const queued = summary.chunksEnqueued;
+      const reset = summary.failedJobsReset;
+      const parts: string[] = [];
+      if (summary.memoriesChunked > 0) {
+        parts.push(
+          `chunked ${summary.memoriesChunked.toLocaleString()} ${
+            summary.memoriesChunked === 1 ? "memory" : "memories"
+          } into ${summary.chunksCreated.toLocaleString()} ${
+            summary.chunksCreated === 1 ? "chunk" : "chunks"
+          }`,
+        );
+      }
+      if (queued > 0) {
+        parts.push(`queued ${queued.toLocaleString()} for embedding`);
+      }
+      if (reset > 0) {
+        parts.push(`reset ${reset.toLocaleString()} stuck job${reset === 1 ? "" : "s"}`);
+      }
+      const message =
+        parts.length === 0
+          ? "Already up to date — every chunk has an embedding."
+          : `Embedding pass: ${parts.join(", ")}.`;
+      setNotice({ kind: "info", message });
+      const refreshed = await aiClient.status();
+      setStatus(refreshed);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to start embedding pass.";
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -286,6 +325,19 @@ export function AiSettingsTab() {
                 ? "Model ready"
                 : "Download embedding model"}
           </button>
+          <button
+            className="btn-ghost"
+            onClick={() => void handleEmbedAll()}
+            disabled={!enabled || !status?.embeddingReady || busy === "embedAll"}
+            title={
+              !status?.embeddingReady
+                ? "Download the embedding model first."
+                : "Re-chunk every memory and (re-)embed any that lack vectors. Safe to run any time."
+            }
+          >
+            <RefreshCw size={13} />
+            {busy === "embedAll" ? "Embedding…" : "Embed all memories"}
+          </button>
           {status ? (
             <span
               style={{
@@ -304,6 +356,9 @@ export function AiSettingsTab() {
                 : ""}
               {status.queue.embedRunning > 0
                 ? ` · ${status.queue.embedRunning} running`
+                : ""}
+              {status.queue.embedFailed > 0
+                ? ` · ${status.queue.embedFailed} failed`
                 : ""}
             </span>
           ) : null}

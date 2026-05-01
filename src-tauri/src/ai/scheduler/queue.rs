@@ -311,6 +311,33 @@ impl AiWorkQueue {
         Ok(())
     }
 
+    /// Reset every failed embed_chunk job back to `queued` with
+    /// `attempts = 0`. Used when the user explicitly retries
+    /// embedding (e.g. after first downloading the model — any embed
+    /// jobs that ran before the download succeeded would have hit
+    /// MAX_ATTEMPTS as "Embedding model not yet downloaded" failures).
+    /// Returns the number of rows updated.
+    pub async fn reset_failed_embed_chunk_jobs(&self) -> AppResult<u64> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            r#"
+            UPDATE ai_work_queue
+            SET status = 'queued',
+                attempts = 0,
+                last_error = NULL,
+                started_at = NULL,
+                finished_at = NULL,
+                scheduled_for = ?1
+            WHERE kind = 'embed_chunk'
+              AND status IN ('failed', 'running')
+            "#,
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Revive items that were `running` when the process died. Called once
     /// at startup before any worker spawns, so every claim attempt sees a
     /// consistent table.

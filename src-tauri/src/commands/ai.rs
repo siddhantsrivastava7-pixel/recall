@@ -188,14 +188,124 @@ pub struct ClipboardImageDiagnostic {
 
 /// Trigger embedding model download. Idempotent: returns immediately
 /// when files are already on disk. Surfaced via the "Download embedding
-/// model" button in Settings → AI.
+/// model" button in Settings → AI. After the download completes we
+/// also reset any failed embed jobs so they retry against the now-
+/// available model — covers the case where embed jobs were enqueued
+/// before the download finished.
 #[tauri::command]
 pub async fn ai_download_embedding_model(state: State<'_, AppState>) -> AppResult<bool> {
     let scheduler = state
         .ai_scheduler()
         .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
     scheduler.prepare_embedding_model().await?;
+    let _ = scheduler.reset_failed_embed_jobs().await;
+    scheduler.wake_workers();
     Ok(true)
+}
+
+/// Backfill summary returned to the UI after `embed_all_memories`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedAllSummary {
+    pub memories_scanned: u64,
+    pub memories_chunked: u64,
+    pub chunks_created: u64,
+    pub chunks_enqueued: u64,
+    pub failed_jobs_reset: u64,
+}
+
+/// Iterate every memory, run the chunker, hash-aware-replace into
+/// `memory_chunks`, and enqueue embed jobs for any chunks without
+/// vectors yet. Also resets failed `embed_chunk` queue rows so they
+/// retry. Idempotent — running twice is safe; nothing changes for
+/// memories whose chunks haven't drifted.
+///
+/// This is what makes the v0.3.0 release useful for users who already
+/// had memories before upgrading: their pre-existing rows never went
+/// through `capture_service.create()` so they have zero chunks. Until
+/// we backfill, "Related memories" has nothing to relate against.
+#[tauri::command]
+pub async fn embed_all_memories(state: State<'_, AppState>) -> AppResult<EmbedAllSummary> {
+    use crate::ai::embeddings::chunker;
+    use crate::db::repositories::ChunkUpsert;
+
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+    if !scheduler.is_enabled() {
+        return Err(AppError::Invalid(
+            "Enable AI first to run an embedding rebuild.".into(),
+        ));
+    }
+    if scheduler.embedding_model_label() == "unsupported" {
+        return Err(AppError::Invalid(
+            "No embedding adapter is configured on this host.".into(),
+        ));
+    }
+
+    // Reset any stuck failed/running jobs first so they don't block
+    // the dedupe_key for genuinely-new enqueues.
+    let failed_jobs_reset = scheduler.reset_failed_embed_jobs().await?;
+
+    let memories = state.memory_service.list().await?;
+    let mut summary = EmbedAllSummary {
+        memories_scanned: memories.len() as u64,
+        memories_chunked: 0,
+        chunks_created: 0,
+        chunks_enqueued: 0,
+        failed_jobs_reset,
+    };
+
+    for memory in memories {
+        // Skip placeholder bodies — screenshots whose OCR hasn't
+        // landed yet shouldn't get embedded against the placeholder
+        // text. The OCR worker re-fires the chunk-and-embed flow
+        // after promote_ocr_to_content runs.
+        let content = memory.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if memory.source_app.as_deref() == Some("screenshot")
+            && content.starts_with("Screenshot from clipboard")
+            && content.contains("OCR will fill in")
+        {
+            continue;
+        }
+
+        let chunks = chunker::chunk_text(&memory.content);
+        if chunks.is_empty() {
+            continue;
+        }
+
+        let upserts: Vec<ChunkUpsert<'_>> = chunks
+            .iter()
+            .enumerate()
+            .map(|(idx, c)| ChunkUpsert {
+                chunk_index: idx,
+                text: &c.text,
+                start_offset: c.start_offset,
+                end_offset: c.end_offset,
+                byte_size: c.byte_size(),
+                token_estimate: c.token_estimate(),
+                content_hash: &c.content_hash,
+            })
+            .collect();
+
+        let needs_embedding = state
+            .memory_repository
+            .replace_chunks_hash_aware(&memory.id, &upserts)
+            .await?;
+
+        summary.memories_chunked += 1;
+        summary.chunks_created += chunks.len() as u64;
+        for chunk_id in needs_embedding {
+            if scheduler.enqueue_embed_chunk(&chunk_id, &memory.id).await? {
+                summary.chunks_enqueued += 1;
+            }
+        }
+    }
+
+    Ok(summary)
 }
 
 /// One memory in a related-memory result list. The chunk fields point

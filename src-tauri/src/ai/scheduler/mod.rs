@@ -189,6 +189,25 @@ impl AiScheduler {
         Ok(inserted)
     }
 
+    /// Reset all `failed` and `running` embed_chunk jobs back to
+    /// queued. Idempotent. Used by the "Re-embed all memories"
+    /// settings button so users can recover from transient failures
+    /// (e.g. the model wasn't yet downloaded when the worker first
+    /// tried) without nuking the queue history.
+    pub async fn reset_failed_embed_jobs(&self) -> AppResult<u64> {
+        let count = self.inner.queue.reset_failed_embed_chunk_jobs().await?;
+        if count > 0 {
+            self.inner.notify.notify_waiters();
+        }
+        Ok(count)
+    }
+
+    /// Wake idle workers (used when the embedding model finishes
+    /// downloading so previously-deferred embed jobs get a fresh shot).
+    pub fn wake_workers(&self) {
+        self.inner.notify.notify_waiters();
+    }
+
     /// Stats for the AI status command.
     pub async fn status_snapshot(&self) -> AppResult<SchedulerStatus> {
         let ocr = self.inner.queue.counts_by_kind(WorkKind::Ocr).await?;
