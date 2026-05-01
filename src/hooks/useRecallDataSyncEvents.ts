@@ -36,6 +36,26 @@ export function useRecallDataSyncEvents() {
       },
     );
 
+    // v0.3.0+: scheduler emits this when a chunk's embedding lands.
+    // Refetch the parent memory so `embedding_generated_at` updates,
+    // which is the dependency the RelatedMemories component uses to
+    // trigger a fresh `find_related` call.
+    const disposeEmbeddingUpdated = listen<{ memoryId: string }>(
+      "recall://memory-embedding-updated",
+      async (event) => {
+        const id = event.payload?.memoryId;
+        if (!id) return;
+        try {
+          const fresh = await tauriClient.getMemory(id);
+          if (fresh) {
+            useMemoryStore.getState().upsertMemory(fresh);
+          }
+        } catch {
+          // Best-effort.
+        }
+      },
+    );
+
     const disposeBookmarksSynced = listen<BookmarkSyncSummary>("recall://bookmarks-synced", (event) => {
       void applyBookmarkSyncToStores(event.payload);
     });
@@ -47,6 +67,7 @@ export function useRecallDataSyncEvents() {
     return () => {
       void disposeMemorySaved.then((dispose) => dispose());
       void disposeOcrUpdated.then((dispose) => dispose());
+      void disposeEmbeddingUpdated.then((dispose) => dispose());
       void disposeBookmarksSynced.then((dispose) => dispose());
       void disposePairingUpdated.then((dispose) => dispose());
     };

@@ -28,6 +28,7 @@ use std::sync::{
 
 use tokio::sync::Notify;
 
+use crate::ai::embeddings::EmbeddingAdapter;
 use crate::ai::hardware::HardwareInfo;
 use crate::ai::ocr::OcrAdapter;
 use crate::db::repositories::SharedSettingsRepository;
@@ -46,6 +47,7 @@ pub struct AiScheduler {
 pub(crate) struct SchedulerInner {
     pub queue: AiWorkQueue,
     pub ocr_adapter: Option<Arc<dyn OcrAdapter>>,
+    pub embedding_adapter: Option<Arc<dyn EmbeddingAdapter>>,
     pub hardware: HardwareInfo,
     pub settings: SharedSettingsRepository,
     pub enabled: AtomicBool,
@@ -56,6 +58,7 @@ impl AiScheduler {
     pub fn new(
         queue: AiWorkQueue,
         ocr_adapter: Option<Arc<dyn OcrAdapter>>,
+        embedding_adapter: Option<Arc<dyn EmbeddingAdapter>>,
         hardware: HardwareInfo,
         settings: SharedSettingsRepository,
         initially_enabled: bool,
@@ -64,6 +67,7 @@ impl AiScheduler {
             inner: Arc::new(SchedulerInner {
                 queue,
                 ocr_adapter,
+                embedding_adapter,
                 hardware,
                 settings,
                 enabled: AtomicBool::new(initially_enabled),
@@ -134,14 +138,69 @@ impl AiScheduler {
         Ok(count)
     }
 
+    /// Embedding model id label (e.g. `"bge-small-en-v1.5"`) or
+    /// `"unsupported"` when no embedding adapter is wired.
+    pub fn embedding_model_label(&self) -> &'static str {
+        self.inner
+            .embedding_adapter
+            .as_ref()
+            .map(|adapter| adapter.model_id())
+            .unwrap_or("unsupported")
+    }
+
+    /// True when the embedding adapter exists *and* its model file is
+    /// already on-disk locally. Used by the AI Settings tab to flip
+    /// the "Download embedding model" button into a green check.
+    pub async fn embedding_is_ready(&self) -> bool {
+        match self.inner.embedding_adapter.as_ref() {
+            Some(adapter) => adapter.is_ready().await,
+            None => false,
+        }
+    }
+
+    /// Trigger embedding model download/preparation. Returns once the
+    /// adapter is ready to embed.
+    pub async fn prepare_embedding_model(&self) -> AppResult<()> {
+        let Some(adapter) = self.inner.embedding_adapter.as_ref() else {
+            return Err(crate::errors::app_error::AppError::Invalid(
+                "Embedding adapter not configured on this host.".into(),
+            ));
+        };
+        adapter.prepare().await
+    }
+
+    /// Enqueue an embedding job for a chunk. Idempotent via dedupe_key.
+    pub async fn enqueue_embed_chunk(
+        &self,
+        chunk_id: &str,
+        memory_id: &str,
+    ) -> AppResult<bool> {
+        let Some(adapter) = self.inner.embedding_adapter.as_ref() else {
+            return Ok(false);
+        };
+        let inserted = self
+            .inner
+            .queue
+            .enqueue_embed_chunk(chunk_id, memory_id, adapter.model_id())
+            .await?;
+        if inserted {
+            self.inner.notify.notify_one();
+        }
+        Ok(inserted)
+    }
+
     /// Stats for the AI status command.
     pub async fn status_snapshot(&self) -> AppResult<SchedulerStatus> {
-        let counts = self.inner.queue.counts_by_kind(WorkKind::Ocr).await?;
+        let ocr = self.inner.queue.counts_by_kind(WorkKind::Ocr).await?;
+        let embed = self.inner.queue.counts_by_kind(WorkKind::EmbedChunk).await?;
         Ok(SchedulerStatus {
             enabled: self.is_enabled(),
-            ocr_queued: counts.queued,
-            ocr_running: counts.running,
-            ocr_failed: counts.failed,
+            ocr_queued: ocr.queued,
+            ocr_running: ocr.running,
+            ocr_failed: ocr.failed,
+            embed_queued: embed.queued,
+            embed_running: embed.running,
+            embed_failed: embed.failed,
         })
     }
 
@@ -157,4 +216,7 @@ pub struct SchedulerStatus {
     pub ocr_queued: u64,
     pub ocr_running: u64,
     pub ocr_failed: u64,
+    pub embed_queued: u64,
+    pub embed_running: u64,
+    pub embed_failed: u64,
 }

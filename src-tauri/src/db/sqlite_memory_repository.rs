@@ -1,13 +1,16 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::types::Json;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
-    db::repositories::MemoryRepository,
+    db::repositories::{ChunkUpsert, EmbeddingCoverage, MemoryRepository},
     errors::app_error::{AppError, AppResult},
-    models::{LinkEnrichmentStatus, LinkEnrichmentUpdate, Memory, MemoryInput, MemorySourceType},
+    models::{
+        LinkEnrichmentStatus, LinkEnrichmentUpdate, Memory, MemoryChunkRow, MemoryInput,
+        MemorySourceType,
+    },
     services::link_utils::extract_domain,
 };
 
@@ -55,6 +58,8 @@ SELECT
   memories.ocr_processed_at,
   memories.ocr_engine,
   memories.ocr_error,
+  memories.embedding_model_version,
+  memories.embedding_generated_at,
   memories.created_at,
   memories.updated_at
 FROM memories
@@ -807,6 +812,194 @@ impl MemoryRepository for SqliteMemoryRepository {
         }
         let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
+    }
+
+    async fn list_chunks_for_memory(&self, memory_id: &str) -> AppResult<Vec<MemoryChunkRow>> {
+        let rows = sqlx::query_as::<_, MemoryChunkRow>(
+            r#"
+            SELECT id, memory_id, chunk_index, text, start_offset, end_offset,
+                   byte_size, token_estimate, content_hash, embedding_model,
+                   embedding_dim, embedding_vector, embedding_generated_at, created_at
+            FROM memory_chunks
+            WHERE memory_id = ?
+            ORDER BY chunk_index ASC
+            "#,
+        )
+        .bind(memory_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn replace_chunks_hash_aware(
+        &self,
+        memory_id: &str,
+        chunks: &[ChunkUpsert<'_>],
+    ) -> AppResult<Vec<String>> {
+        // Read existing chunks once and index by content_hash. Hash
+        // matches keep their existing chunk_id + embedding columns;
+        // hash misses are fresh inserts that need to be embedded.
+        let existing = self.list_chunks_for_memory(memory_id).await?;
+        let mut by_hash: std::collections::HashMap<String, MemoryChunkRow> =
+            existing.into_iter().map(|r| (r.content_hash.clone(), r)).collect();
+
+        let now = Utc::now().to_rfc3339();
+        let mut transaction = self.pool.begin().await?;
+        let mut needs_embedding: Vec<String> = Vec::new();
+        let mut keep_ids: Vec<String> = Vec::new();
+
+        for chunk in chunks {
+            if let Some(existing_row) = by_hash.remove(chunk.content_hash) {
+                // Same hash → reuse the row, just bump index/offsets in
+                // case content was rearranged. Keep existing embedding.
+                sqlx::query(
+                    r#"
+                    UPDATE memory_chunks
+                    SET chunk_index = ?,
+                        start_offset = ?,
+                        end_offset = ?,
+                        byte_size = ?,
+                        token_estimate = ?
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(chunk.chunk_index as i64)
+                .bind(chunk.start_offset as i64)
+                .bind(chunk.end_offset as i64)
+                .bind(chunk.byte_size as i64)
+                .bind(chunk.token_estimate as i64)
+                .bind(&existing_row.id)
+                .execute(&mut *transaction)
+                .await?;
+                if existing_row.embedding_vector.is_none() {
+                    needs_embedding.push(existing_row.id.clone());
+                }
+                keep_ids.push(existing_row.id);
+            } else {
+                // Novel hash → insert a fresh row with no embedding.
+                let id = Uuid::new_v4().to_string();
+                sqlx::query(
+                    r#"
+                    INSERT INTO memory_chunks
+                      (id, memory_id, chunk_index, text, start_offset, end_offset,
+                       byte_size, token_estimate, content_hash,
+                       embedding_model, embedding_dim, embedding_vector, embedding_generated_at,
+                       created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+                    "#,
+                )
+                .bind(&id)
+                .bind(memory_id)
+                .bind(chunk.chunk_index as i64)
+                .bind(chunk.text)
+                .bind(chunk.start_offset as i64)
+                .bind(chunk.end_offset as i64)
+                .bind(chunk.byte_size as i64)
+                .bind(chunk.token_estimate as i64)
+                .bind(chunk.content_hash)
+                .bind(&now)
+                .execute(&mut *transaction)
+                .await?;
+                needs_embedding.push(id.clone());
+                keep_ids.push(id);
+            }
+        }
+
+        // Anything left in `by_hash` is a chunk whose content vanished
+        // from the new version — delete.
+        for orphan in by_hash.values() {
+            sqlx::query("DELETE FROM memory_chunks WHERE id = ?")
+                .bind(&orphan.id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+
+        transaction.commit().await?;
+        let _ = keep_ids; // collected for potential future telemetry
+        Ok(needs_embedding)
+    }
+
+    async fn set_chunk_embedding(
+        &self,
+        chunk_id: &str,
+        model: &str,
+        dim: u32,
+        vector_bytes: &[u8],
+        generated_at: &str,
+    ) -> AppResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE memory_chunks
+            SET embedding_model = ?,
+                embedding_dim = ?,
+                embedding_vector = ?,
+                embedding_generated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(model)
+        .bind(dim as i64)
+        .bind(vector_bytes)
+        .bind(generated_at)
+        .bind(chunk_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Bubble the timestamp up to the parent memory so
+        // `embedding_coverage` and the AI settings progress readout
+        // can answer "when did this memory's embeddings last update?"
+        // without scanning every chunk.
+        sqlx::query(
+            r#"
+            UPDATE memories
+            SET embedding_model_version = ?,
+                embedding_generated_at = ?
+            WHERE id = (
+              SELECT memory_id FROM memory_chunks WHERE id = ?
+            )
+            "#,
+        )
+        .bind(model)
+        .bind(generated_at)
+        .bind(chunk_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_embedded_chunks(&self) -> AppResult<Vec<MemoryChunkRow>> {
+        let rows = sqlx::query_as::<_, MemoryChunkRow>(
+            r#"
+            SELECT id, memory_id, chunk_index, text, start_offset, end_offset,
+                   byte_size, token_estimate, content_hash, embedding_model,
+                   embedding_dim, embedding_vector, embedding_generated_at, created_at
+            FROM memory_chunks
+            WHERE embedding_vector IS NOT NULL
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+              (SELECT COUNT(*) FROM memories) AS total_memories,
+              (SELECT COUNT(DISTINCT memory_id) FROM memory_chunks) AS memories_with_chunks,
+              (SELECT COUNT(*) FROM memory_chunks) AS total_chunks,
+              (SELECT COUNT(*) FROM memory_chunks WHERE embedding_vector IS NOT NULL) AS embedded_chunks
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(EmbeddingCoverage {
+            total_memories: row.try_get::<i64, _>("total_memories")?.max(0) as u64,
+            memories_with_chunks: row.try_get::<i64, _>("memories_with_chunks")?.max(0) as u64,
+            total_chunks: row.try_get::<i64, _>("total_chunks")?.max(0) as u64,
+            embedded_chunks: row.try_get::<i64, _>("embedded_chunks")?.max(0) as u64,
+        })
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {

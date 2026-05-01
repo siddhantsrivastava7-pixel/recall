@@ -4,7 +4,10 @@ use async_trait::async_trait;
 
 use crate::{
     errors::app_error::AppResult,
-    models::{AppSettings, LicenseState, LinkEnrichmentUpdate, Memory, MemoryInput, Project},
+    models::{
+        AppSettings, LicenseState, LinkEnrichmentUpdate, Memory, MemoryChunkRow, MemoryInput,
+        Project,
+    },
 };
 
 #[async_trait]
@@ -75,6 +78,72 @@ pub trait MemoryRepository: Send + Sync {
     ) -> AppResult<u64>;
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn clear(&self) -> AppResult<()>;
+
+    // ─── v0.3.0: chunk + embedding operations ─────────────────────────
+
+    /// Read all chunk rows for a memory, ordered by `chunk_index`.
+    /// Used by re-chunk flows to compare incoming chunks against
+    /// existing rows by `content_hash`, and by `find_related` to load
+    /// the source memory's vectors.
+    async fn list_chunks_for_memory(&self, memory_id: &str) -> AppResult<Vec<MemoryChunkRow>>;
+
+    /// Replace a memory's chunks. Hash-aware: an incoming chunk whose
+    /// `content_hash` matches an existing chunk keeps its existing
+    /// `embedding_*` columns (avoiding a re-embed). Chunks that go
+    /// missing are deleted; novel chunks are inserted with
+    /// `embedding_generated_at = NULL` so the worker picks them up.
+    /// Returns the IDs of chunks that need fresh embeddings.
+    async fn replace_chunks_hash_aware(
+        &self,
+        memory_id: &str,
+        chunks: &[ChunkUpsert<'_>],
+    ) -> AppResult<Vec<String>>;
+
+    /// Persist an embedding on a chunk row. Called by the worker after
+    /// successful inference.
+    async fn set_chunk_embedding(
+        &self,
+        chunk_id: &str,
+        model: &str,
+        dim: u32,
+        vector_bytes: &[u8],
+        generated_at: &str,
+    ) -> AppResult<()>;
+
+    /// Read every chunk that has an embedding. Used by the brute-force
+    /// `find_related` cosine search. At sub-50k vectors this is fast
+    /// enough; we'll swap to `sqlite-vec` when a real user crosses the
+    /// threshold.
+    async fn list_embedded_chunks(&self) -> AppResult<Vec<MemoryChunkRow>>;
+
+    /// Aggregate embedding-coverage counts for the AI Settings tab:
+    /// how many memories have at least one chunk, how many of those
+    /// have all chunks embedded, etc.
+    async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage>;
+}
+
+/// Input shape for `replace_chunks_hash_aware`. Borrows the chunk
+/// fields rather than owning them so the chunker can hand its
+/// `Vec<Chunk>` directly without cloning text.
+#[derive(Debug, Clone)]
+pub struct ChunkUpsert<'a> {
+    pub chunk_index: usize,
+    pub text: &'a str,
+    pub start_offset: usize,
+    pub end_offset: usize,
+    pub byte_size: usize,
+    pub token_estimate: usize,
+    pub content_hash: &'a str,
+}
+
+/// Summary of embedding-coverage state — surfaced in AI Settings.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingCoverage {
+    pub total_memories: u64,
+    pub memories_with_chunks: u64,
+    pub total_chunks: u64,
+    pub embedded_chunks: u64,
 }
 
 #[async_trait]

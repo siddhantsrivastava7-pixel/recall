@@ -221,5 +221,76 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     .execute(pool)
     .await?;
 
+    // ─── v0.3.0: Memory chunks for embeddings + RAG ─────────────────────
+    //
+    // Each memory is split into one or more chunks at capture time
+    // (paragraph-aware char-budget chunker — see ai/embeddings/chunker.rs).
+    // Each chunk carries its text, character offsets within the parent
+    // memory, a content hash for deterministic re-embed invalidation, and
+    // its embedding vector as a BLOB (little-endian f32).
+    //
+    // Why chunks instead of one vector per memory:
+    //   1. RAG retrieval in Phase 3 returns top-K *chunks* so the LLM
+    //      sees just the relevant slices of long memories rather than
+    //      the whole 50KB article.
+    //   2. Re-embedding on edit becomes incremental — chunks whose text
+    //      didn't actually change keep their existing embeddings via
+    //      content_hash matching.
+    //   3. Citations resolve to character ranges (start_offset..end_offset)
+    //      so the UI can highlight exactly the cited passage.
+    //
+    // ON DELETE CASCADE: deleting a memory drops every chunk that
+    // referenced it — the worker never tries to embed an orphan, and the
+    // store stays consistent without an explicit cleanup job.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_chunks (
+          id                       TEXT PRIMARY KEY NOT NULL,
+          memory_id                TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+          chunk_index              INTEGER NOT NULL,
+          text                     TEXT NOT NULL,
+          start_offset             INTEGER NOT NULL,
+          end_offset               INTEGER NOT NULL,
+          byte_size                INTEGER NOT NULL,
+          token_estimate           INTEGER,
+          content_hash             TEXT NOT NULL,
+          embedding_model          TEXT,
+          embedding_dim            INTEGER,
+          embedding_vector         BLOB,
+          embedding_generated_at   TEXT,
+          created_at               TEXT NOT NULL,
+          UNIQUE(memory_id, chunk_index)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memory_chunks_memory
+        ON memory_chunks(memory_id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memory_chunks_unembedded
+        ON memory_chunks(embedding_generated_at)
+        WHERE embedding_generated_at IS NULL
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Optional: parent-memory column tracking the embedding state without
+    // a row-by-chunk join. `embedding_generated_at` on the parent is the
+    // most recent successful embed time across its chunks; useful for the
+    // AI Settings progress readout.
+    ensure_column(pool, "memories", "embedding_model_version", "TEXT").await?;
+    ensure_column(pool, "memories", "embedding_generated_at", "TEXT").await?;
+
     Ok(())
 }

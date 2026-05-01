@@ -9,8 +9,8 @@ mod state;
 
 use commands::{
     ai::{
-        ai_diagnose_clipboard_image, ai_set_enabled, ai_set_mode, ai_status,
-        ocr_rebuild_index, ocr_run_for_memory,
+        ai_diagnose_clipboard_image, ai_download_embedding_model, ai_set_enabled, ai_set_mode,
+        ai_status, find_related, ocr_rebuild_index, ocr_run_for_memory,
     },
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
@@ -149,6 +149,7 @@ fn start_ai_scheduler(
     runtime: &tokio::runtime::Runtime,
     settings: &crate::models::AppSettings,
 ) {
+    use ai::embeddings::fastembed_adapter::FastembedAdapter;
     use ai::ocr::default_adapter;
     use ai::scheduler::{queue::AiWorkQueue, worker, AiScheduler};
 
@@ -165,17 +166,25 @@ fn start_ai_scheduler(
 
     let hardware = ai::hardware::detect();
     let ocr_adapter = default_adapter();
+    // v0.3.0: embedding adapter. fastembed-rs handles its own model
+    // download lazily; we always install the adapter so the worker can
+    // claim embed jobs once the user opts in via the AI Settings tab.
+    let embedding_adapter: Option<std::sync::Arc<dyn ai::embeddings::EmbeddingAdapter>> =
+        Some(std::sync::Arc::new(FastembedAdapter::new(handle.clone())));
     let scheduler = AiScheduler::new(
         queue,
         ocr_adapter.clone(),
+        embedding_adapter.clone(),
         hardware.clone(),
         state.settings_repository.clone(),
         settings.ai_enabled,
     );
 
-    // Spawn workers only when there's an adapter to drive them. Without
-    // an adapter the scheduler is a read-only status surface.
-    if ocr_adapter.is_some() {
+    // Spawn workers when *either* adapter is available — the dispatcher
+    // decides per-job whether to run OCR or embed work. The shared
+    // worker pool means we don't statically partition concurrency
+    // between kinds.
+    if ocr_adapter.is_some() || embedding_adapter.is_some() {
         let max_jobs = hardware.tier.max_ocr_jobs();
         worker::spawn_workers(
             scheduler.inner(),
@@ -389,6 +398,8 @@ pub fn run() {
             ai_set_enabled,
             ai_set_mode,
             ai_diagnose_clipboard_image,
+            ai_download_embedding_model,
+            find_related,
             ocr_run_for_memory,
             ocr_rebuild_index,
             bootstrap_app,

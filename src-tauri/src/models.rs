@@ -137,6 +137,14 @@ pub struct Memory {
     pub ocr_engine: Option<String>,
     #[serde(default)]
     pub ocr_error: Option<String>,
+    /// Embedding model version that produced the most recent
+    /// successful embedding on any chunk of this memory. v0.3.0+.
+    #[serde(default)]
+    pub embedding_model_version: Option<String>,
+    /// Timestamp of the most recent successful embedding for any
+    /// chunk of this memory. v0.3.0+.
+    #[serde(default)]
+    pub embedding_generated_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -263,6 +271,27 @@ impl Default for AppSettings {
             ai_heavy_only_on_ac: true,
         }
     }
+}
+
+/// One chunk row from `memory_chunks`. v0.3.0+. The `embedding_vector`
+/// is the raw little-endian f32 BLOB; callers decode via
+/// `EmbeddingVector::from_bytes`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemoryChunkRow {
+    pub id: String,
+    pub memory_id: String,
+    pub chunk_index: i64,
+    pub text: String,
+    pub start_offset: i64,
+    pub end_offset: i64,
+    pub byte_size: i64,
+    pub token_estimate: Option<i64>,
+    pub content_hash: String,
+    pub embedding_model: Option<String>,
+    pub embedding_dim: Option<i64>,
+    pub embedding_vector: Option<Vec<u8>>,
+    pub embedding_generated_at: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

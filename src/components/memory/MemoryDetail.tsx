@@ -44,6 +44,7 @@ import { useContextStore } from "@/stores/contextStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { ScreenshotPreview, isScreenshotMemory } from "./ScreenshotPreview";
+import { RelatedMemories } from "./RelatedMemories";
 
 export function MemoryDetail({
   memory,
@@ -855,6 +856,21 @@ export function MemoryDetail({
             </button>
           )}
 
+          {/*
+            v0.3.0: semantic Related using chunk-level embeddings + MMR.
+            Renders nothing until embeddings are ready. The heuristic
+            fallback (above, `relatedMemories`) stays in place for users
+            with AI off so the panel doesn't become empty for them.
+          */}
+          <RelatedMemories
+            memory={currentMemory}
+            onOpenMemory={(id) => {
+              loadedMemoryIdRef.current = "";
+              openedMemoryIdRef.current = null;
+              setActiveMemoryId(id);
+            }}
+          />
+
           {relatedMemories.length > 0 && (
             <section style={{ marginTop: 34 }}>
               <div
@@ -866,7 +882,7 @@ export function MemoryDetail({
                   marginBottom: 12,
                 }}
               >
-                Related
+                You might also like
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
                 {relatedMemories.map((item) => (

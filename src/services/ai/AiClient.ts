@@ -50,4 +50,27 @@ export const aiClient = {
   /// memory.
   diagnoseClipboardImage: () =>
     invoke<ClipboardImageDiagnostic>("ai_diagnose_clipboard_image"),
+
+  /// v0.3.0: trigger embedding model download. Idempotent — returns
+  /// quickly when files are already on disk. The user clicks this
+  /// once, opting in to the ~30 MB pull from Hugging Face; afterwards
+  /// every embed call runs offline.
+  downloadEmbeddingModel: () => invoke<boolean>("ai_download_embedding_model"),
+
+  /// v0.3.0: return up to `limit` semantically-related memories for a
+  /// source memory. Server-side runs chunk-level cosine + MMR
+  /// diversity aggregation.
+  findRelated: (memoryId: string, limit?: number) =>
+    invoke<RelatedMemoryView[]>("find_related", { memoryId, limit }),
 };
+
+/// v0.3.0: result row from `find_related`. The chunk fields point at
+/// the best-matching slice within the parent memory so the UI can
+/// render an excerpt with offsets to highlight.
+export interface RelatedMemoryView {
+  memoryId: string;
+  score: number;
+  chunkText: string;
+  chunkStart: number;
+  chunkEnd: number;
+}

@@ -659,6 +659,8 @@ mod tests {
             ocr_processed_at: None,
             ocr_engine: None,
             ocr_error: None,
+            embedding_model_version: None,
+            embedding_generated_at: None,
             created_at: created_at.into(),
             updated_at: created_at.into(),
         }

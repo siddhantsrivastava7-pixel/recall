@@ -67,6 +67,11 @@ export interface Memory {
   ocrProcessedAt?: string | null;
   ocrEngine?: string | null;
   ocrError?: string | null;
+  // v0.3.0 — embedding state. `embeddingGeneratedAt` bumps when any of
+  // this memory's chunks gets a fresh embedding; `RelatedMemories`
+  // uses it as the dependency for re-querying related results.
+  embeddingModelVersion?: string | null;
+  embeddingGeneratedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,6 +143,17 @@ export interface SchedulerStatus {
   ocrQueued: number;
   ocrRunning: number;
   ocrFailed: number;
+  // v0.3.0
+  embedQueued: number;
+  embedRunning: number;
+  embedFailed: number;
+}
+
+export interface EmbeddingCoverage {
+  totalMemories: number;
+  memoriesWithChunks: number;
+  totalChunks: number;
+  embeddedChunks: number;
 }
 
 export interface AiStatusPayload {
@@ -145,6 +161,10 @@ export interface AiStatusPayload {
   hardware: HardwareInfo;
   ocrEngine: string;
   ocrAvailable: boolean;
+  // v0.3.0
+  embeddingModel: string;
+  embeddingReady: boolean;
+  embeddingCoverage: EmbeddingCoverage;
   queue: SchedulerStatus;
 }
 

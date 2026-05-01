@@ -4,9 +4,9 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 
 use crate::{
-    ai::scheduler::AiScheduler,
+    ai::{embeddings::chunker, scheduler::AiScheduler},
     db::{
-        repositories::SharedMemoryRepository,
+        repositories::{ChunkUpsert, SharedMemoryRepository},
         system_projects::{ensure_default_inbox_project, DEFAULT_INBOX_PROJECT_ID},
     },
     errors::app_error::{AppError, AppResult},
@@ -89,6 +89,87 @@ impl CaptureService {
         let _ = self.ai_scheduler.set(scheduler);
     }
 
+    /// Chunk + enqueue-embed hook. Called after `repository.create` and
+    /// `repository.update` returns so the save path is never blocked
+    /// by chunking or queue I/O. Hash-aware: an unchanged chunk keeps
+    /// its existing embedding, novel chunks become embed jobs.
+    fn maybe_chunk_and_embed(&self, memory: &Memory) {
+        let Some(scheduler) = self.ai_scheduler.get() else {
+            return;
+        };
+        if !scheduler.is_enabled() {
+            return;
+        }
+
+        // Skip the (currently) placeholder body for fresh screenshot
+        // memories — the OCR worker promotes content + re-runs this
+        // hook via a follow-up update once the real text lands. No
+        // sense embedding "Screenshot from clipboard (1010×455)..."
+        // verbatim; the related-memory results would be useless.
+        if memory.source_app.as_deref() == Some("screenshot")
+            && memory.content.starts_with("Screenshot from clipboard")
+            && memory.content.contains("OCR will fill in")
+        {
+            return;
+        }
+
+        let memory_id = memory.id.clone();
+        let content = memory.content.clone();
+        let scheduler = scheduler.clone();
+        let repository = self.repository.clone();
+        tauri::async_runtime::spawn(async move {
+            // 1. Run the chunker. Empty content → no chunks → nothing
+            // to do (the row stays unembedded; resurface logic skips
+            // it cleanly).
+            let chunks = chunker::chunk_text(&content);
+            if chunks.is_empty() {
+                return;
+            }
+
+            // 2. Hash-aware replace. Returns the IDs of chunks that
+            // need a fresh embedding — anything reused via hash match
+            // keeps its existing vector and is excluded from this list.
+            let upserts: Vec<ChunkUpsert<'_>> = chunks
+                .iter()
+                .enumerate()
+                .map(|(idx, c)| ChunkUpsert {
+                    chunk_index: idx,
+                    text: &c.text,
+                    start_offset: c.start_offset,
+                    end_offset: c.end_offset,
+                    byte_size: c.byte_size(),
+                    token_estimate: c.token_estimate(),
+                    content_hash: &c.content_hash,
+                })
+                .collect();
+
+            let needs_embedding = match repository
+                .replace_chunks_hash_aware(&memory_id, &upserts)
+                .await
+            {
+                Ok(ids) => ids,
+                Err(error) => {
+                    eprintln!(
+                        "[recall][capture] chunk replace failed for {memory_id}: {error}"
+                    );
+                    return;
+                }
+            };
+
+            // 3. Enqueue an embed job per novel chunk.
+            for chunk_id in needs_embedding {
+                if let Err(error) = scheduler
+                    .enqueue_embed_chunk(&chunk_id, &memory_id)
+                    .await
+                {
+                    eprintln!(
+                        "[recall][capture] embed enqueue failed for chunk {chunk_id}: {error}"
+                    );
+                }
+            }
+        });
+    }
+
     /// Post-save OCR hook. Called after `repository.create` returns so
     /// the save path is never blocked by adapter probing or queue I/O.
     /// All three PRD conditions are checked here:
@@ -161,6 +242,11 @@ impl CaptureService {
                     started_at.elapsed(),
                     &prepared.steps,
                 );
+                // v0.3.0: re-chunk + re-embed on edit. The hash-aware
+                // upsert keeps embeddings for chunks whose text didn't
+                // actually change, so a one-word edit triggers at most
+                // one re-embed.
+                self.maybe_chunk_and_embed(&memory);
                 Ok(memory)
             }
             Err(error) => {
@@ -230,6 +316,8 @@ impl CaptureService {
                 // committed; enqueueing OCR is best-effort and async so
                 // any latency here can't bleed into the user's capture.
                 self.maybe_enqueue_ocr(&memory);
+                // v0.3.0: chunk + enqueue-embed hook.
+                self.maybe_chunk_and_embed(&memory);
                 Ok(memory)
             }
             Err(error) => {

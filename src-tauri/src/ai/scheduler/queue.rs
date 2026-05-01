@@ -21,18 +21,21 @@ pub const MAX_ATTEMPTS: i64 = 3;
 /// jitter, plus a battery-saver throttle interval. 5 minutes is plenty.
 pub const STALE_RUNNING_AFTER_SECS: i64 = 300;
 
-/// Queue item kinds. Phase 1 only emits `Ocr`; Phase 2+ will add `Embed`
-/// and `Resurface` without schema changes.
+/// Queue item kinds. v0.2.x emits `Ocr`; v0.3.0 adds `EmbedChunk` (one
+/// job per chunk needing an embedding). Future phases extend this enum
+/// without schema changes — the table just stores it as a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkKind {
     Ocr,
+    EmbedChunk,
 }
 
 impl WorkKind {
     pub fn as_str(self) -> &'static str {
         match self {
             WorkKind::Ocr => "ocr",
+            WorkKind::EmbedChunk => "embed_chunk",
         }
     }
 }
@@ -58,12 +61,20 @@ pub struct ClaimedWork {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkPayload {
     Ocr(OcrPayload),
+    EmbedChunk(EmbedChunkPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrPayload {
     pub memory_id: String,
     pub engine: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedChunkPayload {
+    pub chunk_id: String,
+    pub memory_id: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -160,10 +171,53 @@ impl AiWorkQueue {
         Ok(result.rows_affected())
     }
 
+    /// Enqueue an embedding job for a specific chunk. dedupe_key is
+    /// `embed:<chunk_id>:<model>` so re-running the worker after a
+    /// crash never produces duplicates, and a model upgrade gets its
+    /// own dedupe space.
+    pub async fn enqueue_embed_chunk(
+        &self,
+        chunk_id: &str,
+        memory_id: &str,
+        model: &str,
+    ) -> AppResult<bool> {
+        let id = Uuid::new_v4().to_string();
+        let dedupe_key = format!("embed:{chunk_id}:{model}");
+        let payload = serde_json::to_string(&WorkPayload::EmbedChunk(EmbedChunkPayload {
+            chunk_id: chunk_id.to_string(),
+            memory_id: memory_id.to_string(),
+            model: model.to_string(),
+        }))?;
+        let scheduled_for = Utc::now().to_rfc3339();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO ai_work_queue
+              (id, kind, payload, dedupe_key, status, attempts, scheduled_for)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            ON CONFLICT(dedupe_key) DO NOTHING
+            "#,
+        )
+        .bind(&id)
+        .bind(WorkKind::EmbedChunk.as_str())
+        .bind(&payload)
+        .bind(&dedupe_key)
+        .bind(status::QUEUED)
+        .bind(&scheduled_for)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Atomically claim the next eligible queued (or retry-eligible failed)
-    /// item, mark it `running`, and return its decoded payload. Returns
-    /// `None` when nothing's available.
-    pub async fn claim_next(&self, kind: WorkKind) -> AppResult<Option<ClaimedWork>> {
+    /// item of *any* kind, mark it `running`, and return its decoded
+    /// payload. Returns `None` when nothing's available. The worker
+    /// dispatches by `WorkKind` after the claim — keeping the queue
+    /// claim kind-agnostic means a single worker pool serves all
+    /// AI work and we don't statically partition concurrency between
+    /// OCR vs embedding.
+    pub async fn claim_next(&self) -> AppResult<Option<ClaimedWork>> {
         let now = Utc::now().to_rfc3339();
         let row = sqlx::query(
             r#"
@@ -173,9 +227,8 @@ impl AiWorkQueue {
                 started_at = ?1
             WHERE id = (
               SELECT id FROM ai_work_queue
-              WHERE kind = ?2
-                AND status IN ('queued', 'failed')
-                AND attempts < ?3
+              WHERE status IN ('queued', 'failed')
+                AND attempts < ?2
                 AND (scheduled_for IS NULL OR scheduled_for <= ?1)
               ORDER BY scheduled_for ASC, id ASC
               LIMIT 1
@@ -184,7 +237,6 @@ impl AiWorkQueue {
             "#,
         )
         .bind(&now)
-        .bind(kind.as_str())
         .bind(MAX_ATTEMPTS)
         .fetch_optional(&self.pool)
         .await?;
@@ -198,6 +250,7 @@ impl AiWorkQueue {
         let payload: WorkPayload = serde_json::from_str(&payload_raw)?;
         let kind = match kind_str.as_str() {
             "ocr" => WorkKind::Ocr,
+            "embed_chunk" => WorkKind::EmbedChunk,
             other => {
                 return Err(crate::errors::app_error::AppError::Invalid(format!(
                     "Unknown ai_work_queue.kind: {other}"

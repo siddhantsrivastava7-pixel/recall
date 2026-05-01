@@ -1938,6 +1938,42 @@ mod tests {
             Ok(0)
         }
 
+        async fn list_chunks_for_memory(
+            &self,
+            _memory_id: &str,
+        ) -> AppResult<Vec<crate::models::MemoryChunkRow>> {
+            Ok(Vec::new())
+        }
+
+        async fn replace_chunks_hash_aware(
+            &self,
+            _memory_id: &str,
+            _chunks: &[crate::db::repositories::ChunkUpsert<'_>],
+        ) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn set_chunk_embedding(
+            &self,
+            _chunk_id: &str,
+            _model: &str,
+            _dim: u32,
+            _vector_bytes: &[u8],
+            _generated_at: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn list_embedded_chunks(&self) -> AppResult<Vec<crate::models::MemoryChunkRow>> {
+            Ok(Vec::new())
+        }
+
+        async fn embedding_coverage(
+            &self,
+        ) -> AppResult<crate::db::repositories::EmbeddingCoverage> {
+            Ok(Default::default())
+        }
+
         async fn delete(&self, _id: &str) -> AppResult<()> {
             Ok(())
         }
@@ -1991,6 +2027,8 @@ mod tests {
             ocr_processed_at: None,
             ocr_engine: None,
             ocr_error: None,
+            embedding_model_version: None,
+            embedding_generated_at: None,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         }

@@ -21,6 +21,8 @@ import {
   AlertCircle,
   CheckCircle,
   Clipboard,
+  Download,
+  Layers,
 } from "lucide-react";
 import { aiClient, type ClipboardImageDiagnostic } from "@/services/ai/AiClient";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -69,7 +71,9 @@ export function AiSettingsTab() {
   const { settings, updateSettings } = useSettingsStore();
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: "idle" });
-  const [busy, setBusy] = useState<"toggle" | "rebuild" | "diagnose" | null>(null);
+  const [busy, setBusy] = useState<
+    "toggle" | "rebuild" | "diagnose" | "downloadModel" | null
+  >(null);
   const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
   // Read once on mount and whenever the master flag flips so the queue
@@ -105,6 +109,29 @@ export function AiSettingsTab() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to toggle AI.";
+      setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDownloadEmbeddingModel = async () => {
+    setBusy("downloadModel");
+    setNotice({
+      kind: "info",
+      message: "Downloading the embedding model (~30 MB). This is a one-time setup.",
+    });
+    try {
+      await aiClient.downloadEmbeddingModel();
+      setNotice({
+        kind: "info",
+        message: "Embedding model is ready. Existing memories will start embedding in the background.",
+      });
+      const refreshed = await aiClient.status();
+      setStatus(refreshed);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to download embedding model.";
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -220,6 +247,74 @@ export function AiSettingsTab() {
           paddingTop: 24,
           borderTop: "1px solid rgba(255,255,255,0.05)",
           marginTop: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>
+          Embeddings
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 12,
+            maxWidth: 540,
+            lineHeight: 1.5,
+          }}
+        >
+          One-time download of a small (~30 MB) embedding model from Hugging Face.
+          Powers Related Memories on detail views, and (in a later release)
+          semantic search and Ask Recall. Once downloaded, every embedding runs
+          fully offline.
+        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            className="btn-ghost"
+            onClick={() => void handleDownloadEmbeddingModel()}
+            disabled={!enabled || busy === "downloadModel" || (status?.embeddingReady ?? false)}
+          >
+            <Download size={13} />
+            {busy === "downloadModel"
+              ? "Downloading…"
+              : status?.embeddingReady
+                ? "Model ready"
+                : "Download embedding model"}
+          </button>
+          {status ? (
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--text-muted)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Layers size={12} />
+              {status.embeddingCoverage.embeddedChunks.toLocaleString()} of{" "}
+              {status.embeddingCoverage.totalChunks.toLocaleString()} chunks embedded
+              {status.queue.embedQueued > 0
+                ? ` · ${status.queue.embedQueued} queued`
+                : ""}
+              {status.queue.embedRunning > 0
+                ? ` · ${status.queue.embedRunning} running`
+                : ""}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <div
+        style={{
+          paddingTop: 24,
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          marginTop: 24,
         }}
       >
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>

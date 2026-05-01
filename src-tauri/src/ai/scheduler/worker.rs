@@ -22,8 +22,9 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
+use crate::ai::embeddings::EmbeddingAdapter;
 use crate::ai::ocr::OcrAdapter;
-use crate::ai::scheduler::queue::{ClaimedWork, OcrPayload, WorkKind, WorkPayload};
+use crate::ai::scheduler::queue::{ClaimedWork, EmbedChunkPayload, OcrPayload, WorkPayload};
 use crate::ai::scheduler::{throttling, SchedulerInner};
 use crate::db::repositories::SharedMemoryRepository;
 use crate::errors::app_error::{AppError, AppResult};
@@ -87,7 +88,7 @@ async fn run_worker(
         }
 
         // 3. Claim next item (or park).
-        let claimed = match inner.queue.claim_next(WorkKind::Ocr).await {
+        let claimed = match inner.queue.claim_next().await {
             Ok(Some(item)) => item,
             Ok(None) => {
                 inner.notify.notified().await;
@@ -109,6 +110,9 @@ async fn run_worker(
         let attempts = claimed.attempts;
         let memory_id_for_status = match &claimed.payload {
             WorkPayload::Ocr(payload) => Some(payload.memory_id.clone()),
+            // Embed failures don't surface a user-visible status pill;
+            // the queue row holds the diagnostic state.
+            WorkPayload::EmbedChunk(_) => None,
         };
         match process_item(&inner, &memory_repo, &app, claimed).await {
             Ok(()) => {
@@ -150,7 +154,77 @@ async fn process_item(
 ) -> AppResult<()> {
     match item.payload {
         WorkPayload::Ocr(payload) => process_ocr(inner, memory_repo, app, payload).await,
+        WorkPayload::EmbedChunk(payload) => {
+            process_embed_chunk(inner, memory_repo, app, payload).await
+        }
     }
+}
+
+async fn process_embed_chunk(
+    inner: &SchedulerInner,
+    memory_repo: &SharedMemoryRepository,
+    app: &AppHandle,
+    payload: EmbedChunkPayload,
+) -> AppResult<()> {
+    let adapter: Arc<dyn EmbeddingAdapter> = inner
+        .embedding_adapter
+        .clone()
+        .ok_or_else(|| AppError::Invalid("Embedding adapter unavailable".into()))?;
+
+    // The queue row may have been written before the user downloaded
+    // the model; in that case we fail soft and the queue's retry
+    // policy + linear backoff picks it back up later. Don't trigger
+    // an implicit download from the worker — that's reserved for the
+    // explicit "Download embedding model" button so the user always
+    // chooses when bytes leave the network.
+    if !adapter.is_ready().await {
+        return Err(AppError::Invalid(
+            "Embedding model not yet downloaded. Click 'Download embedding model' in Settings → AI.".into(),
+        ));
+    }
+
+    // Read the chunk's text. If the row vanished between enqueue and
+    // claim (memory was deleted with ON DELETE CASCADE) we treat the
+    // job as a no-op success — there's nothing to embed.
+    let chunks = memory_repo.list_chunks_for_memory(&payload.memory_id).await?;
+    let target = chunks.iter().find(|c| c.id == payload.chunk_id);
+    let Some(target) = target else {
+        return Ok(());
+    };
+
+    // Skip if already embedded with the current model — covers the
+    // case where the queue stored a duplicate enqueue request that
+    // beat the dedupe key by milliseconds.
+    if target.embedding_vector.is_some()
+        && target.embedding_model.as_deref() == Some(adapter.model_id())
+    {
+        return Ok(());
+    }
+
+    let mut vectors = adapter.embed_batch(vec![target.text.clone()]).await?;
+    let vector = vectors
+        .pop()
+        .ok_or_else(|| AppError::Invalid("Embedding adapter returned empty vector".into()))?;
+    let bytes = vector.to_bytes();
+    let now = chrono::Utc::now().to_rfc3339();
+    memory_repo
+        .set_chunk_embedding(
+            &payload.chunk_id,
+            adapter.model_id(),
+            adapter.dim(),
+            &bytes,
+            &now,
+        )
+        .await?;
+
+    // Bubble up to UI: any open detail pane re-renders its Related
+    // section once the chunk it cares about is embedded.
+    let _ = app.emit(
+        "recall://memory-embedding-updated",
+        serde_json::json!({ "memoryId": payload.memory_id }),
+    );
+
+    Ok(())
 }
 
 async fn process_ocr(
@@ -221,6 +295,20 @@ async fn process_ocr(
                 payload.memory_id
             );
         }
+
+        // v0.3.0: chunk + enqueue embeddings against the OCR'd text.
+        // The capture-service hook for screenshots was a no-op (it
+        // skips placeholder content), so this is the moment the
+        // screenshot becomes embeddable. Hash-aware replace means
+        // we never re-embed unchanged chunks if OCR re-runs later.
+        if let Err(error) =
+            chunk_and_enqueue_embeds(inner, memory_repo, &payload.memory_id, text).await
+        {
+            eprintln!(
+                "[recall][ai-scheduler] post-OCR chunk-embed failed for {}: {error}",
+                payload.memory_id
+            );
+        }
     }
 
     // Notify the UI so any open detail panes refresh their search match
@@ -230,6 +318,66 @@ async fn process_ocr(
         serde_json::json!({ "memoryId": payload.memory_id }),
     );
 
+    Ok(())
+}
+
+/// Run the chunker against `content`, hash-aware replace into
+/// `memory_chunks`, and enqueue embed jobs for any novel chunk IDs.
+/// Used by `process_ocr` when OCR-promoted content lands, and
+/// available as a single shared helper if other code paths need to
+/// re-chunk a memory.
+async fn chunk_and_enqueue_embeds(
+    inner: &SchedulerInner,
+    memory_repo: &SharedMemoryRepository,
+    memory_id: &str,
+    content: &str,
+) -> AppResult<()> {
+    use crate::ai::embeddings::chunker;
+    use crate::db::repositories::ChunkUpsert;
+
+    let chunks = chunker::chunk_text(content);
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    let upserts: Vec<ChunkUpsert<'_>> = chunks
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| ChunkUpsert {
+            chunk_index: idx,
+            text: &c.text,
+            start_offset: c.start_offset,
+            end_offset: c.end_offset,
+            byte_size: c.byte_size(),
+            token_estimate: c.token_estimate(),
+            content_hash: &c.content_hash,
+        })
+        .collect();
+
+    let needs_embedding = memory_repo
+        .replace_chunks_hash_aware(memory_id, &upserts)
+        .await?;
+
+    // Enqueue an embed job per novel chunk via the scheduler. We go
+    // through the queue (rather than embedding inline) so the work
+    // respects the AI master toggle, throttling, retry policy, etc.
+    let queue = &inner.queue;
+    let model_id = inner
+        .embedding_adapter
+        .as_ref()
+        .map(|a| a.model_id())
+        .unwrap_or("unsupported");
+    if model_id == "unsupported" {
+        return Ok(());
+    }
+    for chunk_id in needs_embedding {
+        if queue
+            .enqueue_embed_chunk(&chunk_id, memory_id, model_id)
+            .await?
+        {
+            inner.notify.notify_one();
+        }
+    }
     Ok(())
 }
 
