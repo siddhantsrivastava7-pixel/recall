@@ -15,12 +15,6 @@ type LicenseStatus =
   | "network-error"
   | "failed";
 
-interface TrialLicenseRecord {
-  key: string;
-  activatedAt: string;
-  expiresAt: string;
-}
-
 interface LicenseStoreState {
   checked: boolean;
   status: LicenseStatus;
@@ -35,57 +29,40 @@ interface LicenseStoreState {
   clearLicense: () => Promise<void>;
 }
 
-const STORAGE_KEY = "recall.trialLicense";
-const TRIAL_DAYS = 7;
+// v0.3.1: source-of-truth shifts to the backend's `license_state`
+// SQLite row exclusively. The previous localStorage `recall.trialLicense`
+// cache caused two bugs:
+//
+//   1. activateKey wrote a 7-day-expiry trial record for *every*
+//      successful activation, including non-trial keys, so even paid
+//      licenses appeared "expired" 7 days after first activation.
+//   2. checkLicense prioritized localStorage over the backend, so a
+//      wiped WebView storage (which can happen across MSI upgrades)
+//      would force re-activation even though SQLite still had the
+//      license intact.
+//
+// We now mirror the backend's `LicenseState` directly. `is_trial` and
+// `expires_at` come from the row the Rust side wrote at activation time.
 
 const normalizeKey = (key: string) =>
   key.trim().replace(/\s+/g, "").toUpperCase();
 
-const trialExpiresAt = (activatedAt: Date) =>
-  new Date(activatedAt.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
 const isPast = (iso: string | null | undefined) =>
   Boolean(iso && new Date(iso).getTime() <= Date.now());
 
-const readStoredTrial = (): TrialLicenseRecord | null => {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw) as Partial<TrialLicenseRecord>;
-    if (!parsed.key || !parsed.activatedAt || !parsed.expiresAt) {
-      return null;
-    }
-
-    return {
-      key: parsed.key,
-      activatedAt: parsed.activatedAt,
-      expiresAt: parsed.expiresAt,
-    };
-  } catch {
-    return null;
+// One-time sweep of the legacy `recall.trialLicense` localStorage entry
+// from pre-0.3.1 builds. The previous flow stored a 7-day expiry record
+// here for *every* successful activation (including non-trial keys),
+// then prioritized it over the backend on subsequent launches —
+// causing perpetual "license expired" prompts after the first 7 days.
+// Removing it on first run after the upgrade flushes the bad cache.
+try {
+  if (typeof window !== "undefined" && window.localStorage) {
+    window.localStorage.removeItem("recall.trialLicense");
   }
-};
-
-const writeStoredTrial = (record: TrialLicenseRecord) => {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
-};
-
-const clearStoredTrial = () => {
-  window.localStorage.removeItem(STORAGE_KEY);
-};
-
-const backendTrialRecord = (license?: LicenseState | null): TrialLicenseRecord | null => {
-  if (!license?.isActivated || !license.isTrial || !license.licenseKey || !license.activatedAt || !license.expiresAt) {
-    return null;
-  }
-
-  return {
-    key: license.licenseKey,
-    activatedAt: license.activatedAt,
-    expiresAt: license.expiresAt,
-  };
-};
+} catch {
+  // No storage available; nothing to clean up anyway.
+}
 
 export const useLicenseStore = create<LicenseStoreState>((set) => ({
   checked: false,
@@ -121,7 +98,6 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
 
       if (validation.expired) {
         const error = "Trial expired.";
-        clearStoredTrial();
         set({
           status: "expired",
           error,
@@ -135,25 +111,20 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
         return { ok: false, error };
       }
 
-      const activatedAt = new Date();
-      const record = {
-        key,
-        activatedAt: activatedAt.toISOString(),
-        expiresAt: trialExpiresAt(activatedAt),
-      };
-
       const license = await tauriClient.activateLicense(key);
       useSettingsStore.setState({ license });
-      writeStoredTrial(record);
 
+      // Mirror the backend's row verbatim — is_trial and expires_at
+      // are decided server-side (well, Rust-side via LicenseService),
+      // so we don't second-guess them with our own 7-day default here.
       set({
         checked: true,
         status: "success",
-        isLicensed: true,
-        isTrial: true,
+        isLicensed: license.isActivated,
+        isTrial: license.isTrial,
         isExpired: false,
-        key,
-        expiresAt: record.expiresAt,
+        key: license.licenseKey,
+        expiresAt: license.expiresAt,
         error: null,
       });
 
@@ -175,73 +146,65 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
   },
 
   async checkLicense(backendLicense) {
-    const trial = readStoredTrial() ?? backendTrialRecord(backendLicense);
-    const backendIsFullLicense =
-      Boolean(backendLicense?.isActivated) && !backendLicense?.isTrial;
-
-    if (trial) {
-      if (isPast(trial.expiresAt)) {
-        if (backendLicense?.isActivated) {
-          const license = await tauriClient.deactivateLicense();
-          useSettingsStore.setState({ license });
-        }
-        set({
-          checked: true,
-          status: "expired",
-          isLicensed: false,
-          isTrial: true,
-          isExpired: true,
-          key: trial.key,
-          expiresAt: trial.expiresAt,
-          error: "Trial expired.",
-        });
-        return;
-      }
-
-      writeStoredTrial(trial);
+    // Backend (`license_state` row in SQLite) is the source of truth.
+    // No localStorage layer to fight with. If the row says activated,
+    // the user is activated.
+    if (!backendLicense?.isActivated) {
       set({
         checked: true,
-        status: "success",
-        isLicensed: true,
-        isTrial: true,
-        isExpired: false,
-        key: trial.key,
-        expiresAt: trial.expiresAt,
-        error: null,
-      });
-      return;
-    }
-
-    if (backendIsFullLicense) {
-      set({
-        checked: true,
-        status: "success",
-        isLicensed: true,
+        status: "empty",
+        isLicensed: false,
         isTrial: false,
         isExpired: false,
-        key: backendLicense?.licenseKey ?? null,
+        key: null,
         expiresAt: null,
         error: null,
       });
       return;
     }
 
+    // Trial rows carry an `expires_at`; check it. If past, deactivate
+    // and force re-activation. The Rust-side `get_state` does this
+    // same check on read, so we're belt-and-braces here — frontend
+    // stays consistent even if a stale cached row leaked through.
+    if (backendLicense.isTrial && isPast(backendLicense.expiresAt)) {
+      const license = await tauriClient.deactivateLicense();
+      useSettingsStore.setState({ license });
+      set({
+        checked: true,
+        status: "expired",
+        isLicensed: false,
+        isTrial: true,
+        isExpired: true,
+        key: backendLicense.licenseKey,
+        expiresAt: backendLicense.expiresAt,
+        error: "Trial expired.",
+      });
+      return;
+    }
+
     set({
       checked: true,
-      status: "empty",
-      isLicensed: false,
-      isTrial: false,
+      status: "success",
+      isLicensed: true,
+      isTrial: backendLicense.isTrial,
       isExpired: false,
-      key: null,
-      expiresAt: null,
+      key: backendLicense.licenseKey,
+      expiresAt: backendLicense.expiresAt,
       error: null,
     });
   },
 
   async clearLicense() {
-    clearStoredTrial();
     const license = await tauriClient.deactivateLicense();
     useSettingsStore.setState({ license });
+    // Best-effort sweep of any legacy localStorage trial record from
+    // pre-0.3.1 builds. If it's not there, removeItem is a no-op.
+    try {
+      window.localStorage.removeItem("recall.trialLicense");
+    } catch {
+      // Storage isn't available in some webview contexts; harmless.
+    }
     set({
       checked: true,
       status: "empty",
