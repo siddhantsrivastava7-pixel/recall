@@ -6,6 +6,7 @@ use std::{
 use sqlx::SqlitePool;
 
 use crate::{
+    ai::llm::AskRecallAdapter,
     ai::scheduler::AiScheduler,
     db::repositories::{
         SharedLicenseRepository, SharedMemoryRepository, SharedProjectRepository,
@@ -59,6 +60,11 @@ pub struct AppState {
     /// during the window between AppState construction and `setup()` —
     /// no clipboard watcher work runs in that window.
     screenshot_store_cell: OnceLock<ScreenshotStore>,
+    /// v0.4.0: Ask Recall LLM adapter. Installed alongside the AI
+    /// scheduler in `setup()` — same lazy-after-window-opens pattern
+    /// to keep first paint cheap. Tier-aware (1.5B/3B/7B Qwen2.5).
+    /// `None` when no LLM adapter is configured for this host.
+    llm_adapter_cell: OnceLock<Arc<dyn AskRecallAdapter>>,
     /// Capture service is exposed on AppState so the AI scheduler hook can
     /// re-use the existing post-save path. Held as Arc for cheap clones.
     pub capture_service: Arc<CaptureService>,
@@ -133,6 +139,7 @@ impl AppState {
             platform,
             ai_scheduler_cell: OnceLock::new(),
             screenshot_store_cell: OnceLock::new(),
+            llm_adapter_cell: OnceLock::new(),
             capture_service,
             init_error: None,
             startup_bookmark_sync_completed: AtomicBool::new(false),
@@ -168,5 +175,16 @@ impl AppState {
     /// Install the screenshot store. Idempotent.
     pub fn install_screenshot_store(&self, store: ScreenshotStore) {
         let _ = self.screenshot_store_cell.set(store);
+    }
+
+    /// v0.4.0: read the Ask Recall LLM adapter. `None` until
+    /// installed at startup, or forever on hosts where init failed.
+    pub fn llm_adapter(&self) -> Option<&Arc<dyn AskRecallAdapter>> {
+        self.llm_adapter_cell.get()
+    }
+
+    /// v0.4.0: install the Ask Recall LLM adapter. Idempotent.
+    pub fn install_llm_adapter(&self, adapter: Arc<dyn AskRecallAdapter>) {
+        let _ = self.llm_adapter_cell.set(adapter);
     }
 }

@@ -25,7 +25,12 @@ import {
   Download,
   Layers,
 } from "lucide-react";
-import { aiClient, type ClipboardImageDiagnostic } from "@/services/ai/AiClient";
+import {
+  aiClient,
+  type ClipboardImageDiagnostic,
+  type LlmDiagnosticPayload,
+  type LlmStatusPayload,
+} from "@/services/ai/AiClient";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { AiStatusPayload } from "@/domain/types";
 
@@ -105,8 +110,18 @@ export function AiSettingsTab() {
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
   const [notice, setNotice] = useState<Notice>({ kind: "idle" });
   const [busy, setBusy] = useState<
-    "toggle" | "rebuild" | "diagnose" | "downloadModel" | "embedAll" | null
+    | "toggle"
+    | "rebuild"
+    | "diagnose"
+    | "downloadModel"
+    | "embedAll"
+    | "downloadLlm"
+    | "unloadLlm"
+    | "diagnoseLlm"
+    | null
   >(null);
+  const [llmStatus, setLlmStatus] = useState<LlmStatusPayload | null>(null);
+  const [llmDiagnostic, setLlmDiagnostic] = useState<LlmDiagnosticPayload | null>(null);
   const [diagnostic, setDiagnostic] = useState<ClipboardImageDiagnostic | null>(null);
 
   // Live status: poll on a short tick so the chunk-embed coverage
@@ -208,6 +223,90 @@ export function AiSettingsTab() {
     } catch (error) {
       const message = describeError(error, "Failed to start embedding pass.");
       setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // v0.4.0a: pull initial LLM status on mount (and when tab is
+  // switched back to). Cheap — no model load, just disk-presence
+  // check + registry lookup.
+  useEffect(() => {
+    let cancelled = false;
+    aiClient
+      .llmStatus()
+      .then((s) => {
+        if (!cancelled) setLlmStatus(s);
+      })
+      .catch(() => {
+        // LLM adapter not configured on this host — leave llmStatus null,
+        // the UI hides the section.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleDownloadLlm = async () => {
+    setBusy("downloadLlm");
+    setNotice({
+      kind: "info",
+      message:
+        "Downloading the Ask Recall model — this can take a few minutes (1–4 GB depending on your tier). One-time setup; future runs are offline.",
+    });
+    try {
+      await aiClient.downloadLlm();
+      const fresh = await aiClient.llmStatus();
+      setLlmStatus(fresh);
+      setNotice({
+        kind: "info",
+        message:
+          "Ask Recall model is ready. Run the smoke test below to verify inference works on this machine.",
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message: describeError(error, "Failed to download Ask Recall model."),
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleUnloadLlm = async () => {
+    setBusy("unloadLlm");
+    try {
+      await aiClient.unloadLlm();
+      setNotice({
+        kind: "info",
+        message: "Model unloaded from RAM. Next question will reload it from disk.",
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message: describeError(error, "Failed to unload Ask Recall model."),
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDiagnoseLlm = async () => {
+    setBusy("diagnoseLlm");
+    setLlmDiagnostic(null);
+    try {
+      const result = await aiClient.diagnoseLlm();
+      setLlmDiagnostic(result);
+    } catch (error) {
+      setLlmDiagnostic({
+        ok: false,
+        modelId: llmStatus?.modelId ?? "",
+        prompt: "",
+        response: "",
+        tokensGenerated: 0,
+        latencyMs: 0,
+        message: describeError(error, "Smoke test failed."),
+      });
     } finally {
       setBusy(null);
     }
@@ -445,6 +544,143 @@ export function AiSettingsTab() {
           </div>
         ) : null}
       </div>
+
+      {llmStatus ? (
+        <div
+          style={{
+            paddingTop: 24,
+            borderTop: "1px solid rgba(255,255,255,0.05)",
+            marginTop: 24,
+          }}
+        >
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 6 }}>
+            Ask Recall (preview)
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginBottom: 12,
+              maxWidth: 600,
+              lineHeight: 1.5,
+            }}
+          >
+            One-time download of a local LLM that answers questions over your
+            saved memories. Picked for your tier:{" "}
+            <strong style={{ color: "var(--text-primary)" }}>{llmStatus.modelId}</strong>{" "}
+            ({(llmStatus.approxDownloadMb / 1024).toFixed(1)} GB download, ~
+            {(llmStatus.approxInferenceRamMb / 1024).toFixed(1)} GB RAM at use).
+            v0.4.0a is a smoke test — once you've downloaded the model, click "Run
+            smoke test" to verify inference works on this machine. The full Ask
+            Recall surface (question box on Home, retrieval + citations) lands
+            in v0.4.0c.
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              className="btn-ghost"
+              onClick={() => void handleDownloadLlm()}
+              disabled={!enabled || busy === "downloadLlm" || llmStatus.ready}
+            >
+              <Download size={13} />
+              {busy === "downloadLlm"
+                ? "Downloading…"
+                : llmStatus.ready
+                  ? "Model ready"
+                  : `Download Ask Recall model (~${Math.round(
+                      llmStatus.approxDownloadMb / 100,
+                    ) / 10} GB)`}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={() => void handleDiagnoseLlm()}
+              disabled={!enabled || !llmStatus.ready || busy === "diagnoseLlm"}
+              title={
+                !llmStatus.ready
+                  ? "Download the model first."
+                  : "Run a fixed prompt end-to-end to verify inference."
+              }
+            >
+              <Sparkles size={13} />
+              {busy === "diagnoseLlm" ? "Running…" : "Run smoke test"}
+            </button>
+            {llmStatus.ready ? (
+              <button
+                className="btn-ghost"
+                onClick={() => void handleUnloadLlm()}
+                disabled={busy === "unloadLlm"}
+                title="Drop loaded weights from RAM. Next question reloads from disk."
+              >
+                {busy === "unloadLlm" ? "Unloading…" : "Unload from RAM"}
+              </button>
+            ) : null}
+          </div>
+          {llmDiagnostic ? (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "12px 14px",
+                borderRadius: 10,
+                background: llmDiagnostic.ok
+                  ? "rgba(80,170,110,0.06)"
+                  : "rgba(220,170,90,0.06)",
+                border: `1px solid ${
+                  llmDiagnostic.ok
+                    ? "rgba(80,170,110,0.22)"
+                    : "rgba(220,170,90,0.22)"
+                }`,
+                fontSize: 12,
+                lineHeight: 1.5,
+                maxWidth: 720,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  color: llmDiagnostic.ok
+                    ? "rgb(122,200,140)"
+                    : "rgb(220,170,90)",
+                  marginBottom: 8,
+                  fontWeight: 600,
+                }}
+              >
+                {llmDiagnostic.ok ? (
+                  <CheckCircle size={12} />
+                ) : (
+                  <AlertCircle size={12} />
+                )}
+                {llmDiagnostic.message}
+              </div>
+              {llmDiagnostic.ok ? (
+                <>
+                  <div style={{ color: "var(--t-3)", marginBottom: 4 }}>
+                    Prompt: {llmDiagnostic.prompt}
+                  </div>
+                  <div
+                    style={{
+                      color: "var(--text-primary)",
+                      whiteSpace: "pre-wrap",
+                      background: "rgba(0,0,0,0.2)",
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                    }}
+                  >
+                    {llmDiagnostic.response || "(empty response)"}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         style={{

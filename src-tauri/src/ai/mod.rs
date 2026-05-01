@@ -24,5 +24,6 @@
 
 pub mod embeddings;
 pub mod hardware;
+pub mod llm;
 pub mod ocr;
 pub mod scheduler;

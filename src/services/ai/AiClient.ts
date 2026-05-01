@@ -69,6 +69,23 @@ export const aiClient = {
   findRelated: (memoryId: string, limit?: number) =>
     invoke<RelatedMemoryView[]>("find_related", { memoryId, limit }),
 
+  /// v0.4.0: read-only LLM model info for the user's hardware tier.
+  llmStatus: () => invoke<LlmStatusPayload>("ai_llm_status"),
+
+  /// v0.4.0: download the tier-aware Ask Recall model + tokenizer.
+  /// Idempotent. Network-bound (1–4 GB depending on tier) on first
+  /// call; instant if already on disk.
+  downloadLlm: () => invoke<boolean>("ai_download_llm"),
+
+  /// v0.4.0: drop loaded weights from RAM. Next generation will
+  /// lazily reload from disk.
+  unloadLlm: () => invoke<boolean>("ai_unload_llm"),
+
+  /// v0.4.0a: smoke test. Runs a fixed prompt end-to-end so we can
+  /// verify download + load + inference without building the full
+  /// Ask Recall pipeline first.
+  diagnoseLlm: () => invoke<LlmDiagnosticPayload>("ai_diagnose_llm"),
+
   /// v0.3.3: hybrid keyword + semantic search. Server-side embeds
   /// the query, runs cosine over active-model chunks (mean-centered),
   /// MMR-aggregates to memory level, then blends with a keyword score
@@ -92,6 +109,27 @@ export interface SemanticSearchHit {
   chunkText: string;
   chunkStart: number;
   chunkEnd: number;
+}
+
+/// v0.4.0: read-only LLM model info for the current hardware tier.
+export interface LlmStatusPayload {
+  modelId: string;
+  hfRepo: string;
+  approxDownloadMb: number;
+  approxInferenceRamMb: number;
+  contextWindowTokens: number;
+  ready: boolean;
+}
+
+/// v0.4.0a: smoke-test response.
+export interface LlmDiagnosticPayload {
+  ok: boolean;
+  modelId: string;
+  prompt: string;
+  response: string;
+  tokensGenerated: number;
+  latencyMs: number;
+  message: string;
 }
 
 /// v0.3.2: backfill summary returned by `embed_all_memories`.

@@ -26,6 +26,7 @@ use crate::{
     },
     ai::embeddings::EmbeddingVector,
     ai::hardware::HardwareInfo,
+    ai::llm::{registry as llm_registry, LlmGenerationRequest},
     ai::scheduler::SchedulerStatus,
     db::repositories::EmbeddingCoverage,
     errors::app_error::{AppError, AppResult},
@@ -702,4 +703,118 @@ pub async fn ai_diagnose_clipboard_image(
             byte_size: None,
         },
     })
+}
+
+// ─── v0.4.0: Ask Recall LLM commands ────────────────────────────────
+
+/// Read-only readout of the LLM model the user would get for their
+/// hardware tier. Used by AI Settings to render the Ask Recall
+/// section even before any download happens.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmStatusPayload {
+    pub model_id: String,
+    pub hf_repo: String,
+    pub approx_download_mb: u64,
+    pub approx_inference_ram_mb: u64,
+    pub context_window_tokens: u64,
+    /// True when model + tokenizer files are on disk and the
+    /// adapter can run inference without a network call.
+    pub ready: bool,
+}
+
+#[tauri::command]
+pub async fn ai_llm_status(state: State<'_, AppState>) -> AppResult<LlmStatusPayload> {
+    let adapter = state
+        .llm_adapter()
+        .ok_or_else(|| AppError::Invalid("LLM adapter not configured on this host.".into()))?;
+
+    let entry = llm_registry::entry_by_id(adapter.model_id())
+        .ok_or_else(|| AppError::Invalid("LLM model id not found in registry.".into()))?;
+
+    Ok(LlmStatusPayload {
+        model_id: adapter.model_id().to_string(),
+        hf_repo: adapter.hf_repo().to_string(),
+        approx_download_mb: entry.approx_download_mb,
+        approx_inference_ram_mb: entry.approx_inference_ram_mb,
+        context_window_tokens: entry.context_window_tokens as u64,
+        ready: adapter.is_ready().await,
+    })
+}
+
+/// Trigger the model + tokenizer download. Idempotent; returns
+/// quickly when files are already on disk.
+#[tauri::command]
+pub async fn ai_download_llm(state: State<'_, AppState>) -> AppResult<bool> {
+    let adapter = state
+        .llm_adapter()
+        .ok_or_else(|| AppError::Invalid("LLM adapter not configured on this host.".into()))?;
+    adapter.prepare().await?;
+    Ok(true)
+}
+
+/// Drop loaded weights from RAM. Next generation will lazily reload.
+#[tauri::command]
+pub async fn ai_unload_llm(state: State<'_, AppState>) -> AppResult<bool> {
+    let adapter = state
+        .llm_adapter()
+        .ok_or_else(|| AppError::Invalid("LLM adapter not configured on this host.".into()))?;
+    adapter.unload().await?;
+    Ok(true)
+}
+
+/// v0.4.0a smoke test. Runs a fixed prompt end-to-end through the
+/// adapter to verify download + load + inference all work on this
+/// host, before we build the full Ask Recall pipeline on top.
+/// Returns the generated text and timing so AI Settings can show
+/// "model returned 87 tokens in 4.2s — looking good."
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmDiagnosticPayload {
+    pub ok: bool,
+    pub model_id: String,
+    pub prompt: String,
+    pub response: String,
+    pub tokens_generated: u32,
+    pub latency_ms: u64,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn ai_diagnose_llm(state: State<'_, AppState>) -> AppResult<LlmDiagnosticPayload> {
+    let adapter = state
+        .llm_adapter()
+        .ok_or_else(|| AppError::Invalid("LLM adapter not configured on this host.".into()))?;
+    let model_id = adapter.model_id().to_string();
+
+    let prompt = "In one short sentence, what is Recall (the local-first memory app)?".to_string();
+    let request = LlmGenerationRequest {
+        prompt: prompt.clone(),
+        max_tokens: 80,
+        temperature: 0.0,
+    };
+
+    match adapter.generate(request).await {
+        Ok(resp) => Ok(LlmDiagnosticPayload {
+            ok: true,
+            model_id,
+            prompt,
+            response: resp.text,
+            tokens_generated: resp.tokens_generated,
+            latency_ms: resp.latency_ms,
+            message: format!(
+                "Model returned {} tokens in {}ms.",
+                resp.tokens_generated, resp.latency_ms
+            ),
+        }),
+        Err(error) => Ok(LlmDiagnosticPayload {
+            ok: false,
+            model_id,
+            prompt,
+            response: String::new(),
+            tokens_generated: 0,
+            latency_ms: 0,
+            message: error.to_string(),
+        }),
+    }
 }

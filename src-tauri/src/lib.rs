@@ -9,9 +9,10 @@ mod state;
 
 use commands::{
     ai::{
-        ai_diagnose_clipboard_image, ai_download_embedding_model, ai_set_enabled, ai_set_mode,
-        ai_status, embed_all_memories, find_related, ocr_rebuild_index, ocr_run_for_memory,
-        semantic_search,
+        ai_diagnose_clipboard_image, ai_diagnose_llm, ai_download_embedding_model,
+        ai_download_llm, ai_llm_status, ai_set_enabled, ai_set_mode, ai_status,
+        ai_unload_llm, embed_all_memories, find_related, ocr_rebuild_index,
+        ocr_run_for_memory, semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
@@ -151,6 +152,7 @@ fn start_ai_scheduler(
     settings: &crate::models::AppSettings,
 ) {
     use ai::embeddings::fastembed_adapter::FastembedAdapter;
+    use ai::llm::{qwen2_candle, registry as llm_registry};
     use ai::ocr::default_adapter;
     use ai::scheduler::{queue::AiWorkQueue, worker, AiScheduler};
 
@@ -207,6 +209,14 @@ fn start_ai_scheduler(
     // Install on capture_service so post-save OCR enqueue picks up
     // memories committed from this point onwards.
     state.capture_service.install_ai_scheduler(scheduler);
+
+    // v0.4.0: install the tier-aware Ask Recall LLM adapter. We
+    // always install one so commands can answer "is the model
+    // ready / which one would I get?" — actual download + load
+    // is opt-in via the AI Settings tab.
+    let llm_entry = llm_registry::entry_for_tier(hardware.tier);
+    let llm_adapter = qwen2_candle::boxed(handle.clone(), llm_entry);
+    state.install_llm_adapter(llm_adapter);
 }
 
 pub fn run() {
@@ -407,6 +417,10 @@ pub fn run() {
             ai_set_mode,
             ai_diagnose_clipboard_image,
             ai_download_embedding_model,
+            ai_download_llm,
+            ai_llm_status,
+            ai_unload_llm,
+            ai_diagnose_llm,
             embed_all_memories,
             find_related,
             semantic_search,
