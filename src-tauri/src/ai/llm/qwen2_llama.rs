@@ -54,13 +54,14 @@ use crate::errors::app_error::{AppError, AppResult};
 const CACHE_SUBDIR: &str = "models/llm";
 
 /// Context window in tokens. Qwen2.5-Instruct supports up to 32K
-/// natively but we cap at 4K — RAG context budget is ~1K tokens, the
-/// answer is bounded at 512, and a smaller `n_ctx` cuts the KV cache
-/// allocation (≈ `n_ctx * n_layers * n_kv_heads * head_dim * 2`
-/// bytes). On a 7B Q4_K_M model that's the difference between ~150 MB
-/// and ~1.2 GB of resident KV state. Bump if we ever feed full
-/// transcripts into Ask Recall.
-const CONTEXT_WINDOW_TOKENS: u32 = 4_096;
+/// natively. v0.5.0 set this at 4K to keep KV cache RAM small, but
+/// real RAG queries tokenized denser than the char/4 estimate
+/// (license keys, code, structured text) and overflowed at ~4300
+/// tokens. v0.5.1 bumps to 8K — Qwen2.5 7B GQA-4 KV cache costs
+/// ~57 KB/token so 8K = ~470 MB resident, irrelevant on Tier C
+/// (32GB+). Tier A (8GB) might want a smaller cap; revisit if a
+/// real user reports memory pressure.
+const CONTEXT_WINDOW_TOKENS: u32 = 8_192;
 
 /// Event payload for `recall://llm-download-progress`. Unchanged
 /// from v0.4.x — the Settings UI listens on this channel and
