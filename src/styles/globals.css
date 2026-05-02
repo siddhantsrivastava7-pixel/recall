@@ -1219,6 +1219,13 @@ html[data-recall-window="quick-save"] #root {
    server didn't return Content-Length. Slides a 30%-wide bar across
    so the user sees motion even without a denominator. */
 @keyframes slide-indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+/* v0.4.3 — Ask Recall streaming caret + spinner. The caret pulses while
+   tokens are arriving so the user has a visual confirmation that the
+   model is still generating, even on slow tier-A 1.5B inference. */
+@keyframes ask-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.cursor-blink { animation: ask-blink 1s steps(2) infinite; color: var(--t-3); margin-left: 2px; }
+@keyframes ask-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spin { animation: ask-spin 800ms linear infinite; }
 .fade-in { animation: fadeIn 350ms var(--ease-out) both; }
 .anim-rise { animation: rise 260ms ease-out forwards; }
 .anim-fadein { animation: fadein 220ms ease-out forwards; }

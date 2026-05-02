@@ -362,9 +362,42 @@ impl AskRecallAdapter for CandleQwen2Adapter {
         self.ensure_files_downloaded().await
     }
 
+    async fn generate_streaming(
+        &self,
+        request: LlmGenerationRequest,
+        on_token: Box<dyn Fn(String) + Send + Sync>,
+    ) -> AppResult<LlmGenerationResponse> {
+        self.generate_inner(request, Some(on_token)).await
+    }
+
     async fn generate(
         &self,
         request: LlmGenerationRequest,
+    ) -> AppResult<LlmGenerationResponse> {
+        self.generate_inner(request, None).await
+    }
+
+    async fn unload(&self) -> AppResult<()> {
+        let mut guard = self.state.lock().await;
+        *guard = None;
+        Ok(())
+    }
+}
+
+impl CandleQwen2Adapter {
+    /// Single internal generation path used by both batch and
+    /// streaming entry points. The streaming caller supplies an
+    /// `on_token` callback; batch passes None and we just decode
+    /// the final ids at the end.
+    ///
+    /// Per-token decoding is via incremental `tokenizer.decode`
+    /// over the running id list. We emit just the *new* substring
+    /// since the last decode so the UI receives a clean delta
+    /// rather than the full-and-growing answer on every event.
+    async fn generate_inner(
+        &self,
+        request: LlmGenerationRequest,
+        on_token: Option<Box<dyn Fn(String) + Send + Sync>>,
     ) -> AppResult<LlmGenerationResponse> {
         // Make sure files exist + load weights if not yet loaded.
         self.ensure_files_downloaded().await?;
@@ -411,6 +444,13 @@ impl AskRecallAdapter for CandleQwen2Adapter {
 
         let mut generated: Vec<u32> = Vec::with_capacity(max_tokens);
         let mut index_pos = 0usize;
+        // For streaming: track the last decoded length so we can emit
+        // just the *new* substring per token rather than the
+        // cumulative answer-so-far. Tokenizer decode of a single id
+        // is unreliable for sub-word tokens (BPE merges show up at
+        // boundary), so we incrementally decode the full id list and
+        // diff against what we already emitted.
+        let mut emitted_chars: usize = 0;
 
         // The generation loop CPU-binds for the duration; off-load
         // to a blocking thread so the runtime stays responsive.
@@ -469,6 +509,22 @@ impl AskRecallAdapter for CandleQwen2Adapter {
             }
             tokens.push(next_token);
             generated.push(next_token);
+
+            // Streaming: incrementally decode the id list, emit only
+            // the new chars since last emit. Skipping special tokens
+            // is critical here — emitting `<|im_end|>` to the UI
+            // would surface chat-template internals.
+            if let Some(callback) = on_token.as_ref() {
+                if let Ok(running) = tokenizer_ref.decode(&generated, true) {
+                    if running.len() > emitted_chars {
+                        let delta = running[emitted_chars..].to_string();
+                        if !delta.is_empty() {
+                            emitted_chars = running.len();
+                            callback(delta);
+                        }
+                    }
+                }
+            }
         }
 
         let text = tokenizer_ref
@@ -480,12 +536,6 @@ impl AskRecallAdapter for CandleQwen2Adapter {
             latency_ms: started_at.elapsed().as_millis() as u64,
             tokens_generated: generated.len() as u32,
         })
-    }
-
-    async fn unload(&self) -> AppResult<()> {
-        let mut guard = self.state.lock().await;
-        *guard = None;
-        Ok(())
     }
 }
 

@@ -90,6 +90,37 @@ pub trait AskRecallAdapter: Send + Sync {
         request: LlmGenerationRequest,
     ) -> AppResult<LlmGenerationResponse>;
 
+    /// v0.4.3: Streaming variant. Calls `on_token` for each token as
+    /// it's sampled, returning the same final response shape as
+    /// `generate` once generation completes (or hits `max_tokens` /
+    /// EOS).
+    ///
+    /// Default impl falls back to `generate` and emits a single
+    /// `on_token` callback with the full text — adapters that
+    /// genuinely stream (Qwen2 candle does) override.
+    ///
+    /// Why streaming matters: candle CPU inference on a 7B model
+    /// runs ~2.6 tok/s on Tier C. A 300-token answer takes ~115s.
+    /// Without streaming the user stares at a spinner; with
+    /// streaming they read along as the answer materializes.
+    async fn generate_streaming(
+        &self,
+        request: LlmGenerationRequest,
+        on_token: Box<dyn Fn(String) + Send + Sync>,
+    ) -> AppResult<LlmGenerationResponse> {
+        // Default impl falls back to the batch path and emits a
+        // single callback with the full text. Adapters that
+        // genuinely stream (CandleQwen2Adapter does) override.
+        // We use owned `String` rather than `&str` for the
+        // callback signature to keep the trait HRTB-free —
+        // `Box<dyn Fn(&str)>` requires HRTB plumbing that doesn't
+        // play nicely with async-trait, and the per-token alloc
+        // cost is irrelevant compared to the ~400ms forward pass.
+        let response = self.generate(request).await?;
+        on_token(response.text.clone());
+        Ok(response)
+    }
+
     /// Drop the loaded weights, freeing RAM. Next `generate` call
     /// will lazily reload. v0.4.0 wires this to a manual "Unload
     /// model" button in Settings; the idle reaper that calls this

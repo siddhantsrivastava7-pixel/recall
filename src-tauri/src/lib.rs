@@ -11,7 +11,7 @@ use commands::{
     ai::{
         ai_diagnose_clipboard_image, ai_diagnose_llm, ai_download_embedding_model,
         ai_download_llm, ai_llm_status, ai_set_enabled, ai_set_mode, ai_status,
-        ai_unload_llm, embed_all_memories, find_related, ocr_rebuild_index,
+        ai_unload_llm, ask_recall, embed_all_memories, find_related, ocr_rebuild_index,
         ocr_run_for_memory, semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
@@ -421,6 +421,7 @@ pub fn run() {
             ai_llm_status,
             ai_unload_llm,
             ai_diagnose_llm,
+            ask_recall,
             embed_all_memories,
             find_related,
             semantic_search,

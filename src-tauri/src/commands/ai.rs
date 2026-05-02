@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     ai::embeddings::similarity::{
@@ -817,4 +817,206 @@ pub async fn ai_diagnose_llm(state: State<'_, AppState>) -> AppResult<LlmDiagnos
             message: error.to_string(),
         }),
     }
+}
+
+// ─── v0.4.3: Ask Recall RAG pipeline ────────────────────────────────
+
+/// One memory cited in an Ask Recall answer. Resolves
+/// `[memory:<uuid>]` markers in the LLM output back to the underlying
+/// memory + the chunk that fed the retrieval (so the UI can highlight
+/// the cited passage on click).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecallCitation {
+    pub memory_id: String,
+    pub title: Option<String>,
+    pub chunk_text: String,
+    pub chunk_start: i64,
+    pub chunk_end: i64,
+}
+
+/// Final response from `ask_recall`. The `text` carries the full
+/// generated answer including in-line `[memory:<uuid>]` markers for
+/// the UI to render as clickable chips.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecallResponse {
+    pub question: String,
+    pub text: String,
+    pub citations: Vec<AskRecallCitation>,
+    pub tokens_generated: u32,
+    pub latency_ms: u64,
+    /// Number of chunks the LLM was given context for. 0 means
+    /// retrieval found nothing above the Strong-tier threshold —
+    /// the model is instructed to say so explicitly when this is
+    /// the case.
+    pub context_chunks: u32,
+}
+
+#[tauri::command]
+pub async fn ask_recall(
+    question: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AskRecallResponse> {
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Invalid("Question is required.".into()));
+    }
+
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+    if !scheduler.is_enabled() {
+        return Err(AppError::Invalid("Enable AI first to ask Recall.".into()));
+    }
+    let llm = state
+        .llm_adapter()
+        .ok_or_else(|| AppError::Invalid("LLM adapter not configured on this host.".into()))?
+        .clone();
+    if !llm.is_ready().await {
+        return Err(AppError::Invalid(
+            "Download the Ask Recall model in Settings → AI before asking.".into(),
+        ));
+    }
+
+    // 1. Embed the question via the active embedding adapter.
+    let model_label = scheduler.embedding_model_label();
+    if model_label == "unsupported" {
+        return Err(AppError::Invalid(
+            "Embedding adapter not configured on this host.".into(),
+        ));
+    }
+    let query_embedding = scheduler
+        .embed_query(trimmed)
+        .await?
+        .ok_or_else(|| AppError::Invalid("Embed query returned no vector.".into()))?;
+    let centroid = scheduler.corpus_centroid(&state.memory_repository).await?;
+    let query_vec = match centroid.as_deref() {
+        Some(c) => subtract_centroid(query_embedding.values, c),
+        None => query_embedding.values,
+    };
+
+    // 2. Brute-force cosine over active-model chunks. Strong-tier
+    //    only — RAG is unforgiving of weak retrieval, so we hard-floor
+    //    at 0.45 (centered cosine). Top-K = 8.
+    const STRONG_FLOOR: f32 = 0.45;
+    const TOP_K: usize = 8;
+    let chunks = state
+        .memory_repository
+        .list_embedded_chunks_for_model(model_label)
+        .await?;
+    let mut scored: Vec<(crate::models::MemoryChunkRow, f32)> = Vec::new();
+    for chunk in chunks {
+        let Some(bytes) = &chunk.embedding_vector else {
+            continue;
+        };
+        let Some(v) = EmbeddingVector::from_bytes(model_label, bytes) else {
+            continue;
+        };
+        let centered = match centroid.as_deref() {
+            Some(c) => subtract_centroid(v.values, c),
+            None => v.values,
+        };
+        let sim = cosine(&query_vec, &centered);
+        if sim < STRONG_FLOOR {
+            continue;
+        }
+        scored.push((chunk, sim));
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(TOP_K);
+
+    // 3. Build a context block from the top-K chunks + chat-template
+    //    prompt that instructs the LLM to cite via `[memory:<uuid>]`.
+    //    Token budget here is approximate (chars / 4) and intentionally
+    //    conservative — Qwen2.5 supports much larger contexts but we
+    //    bound the per-call memory + latency.
+    let mut context_block = String::new();
+    let mut context_chunks: Vec<&crate::models::MemoryChunkRow> = Vec::new();
+    let mut budget_chars = 12_000usize; // ~3K tokens
+    for (chunk, _sim) in &scored {
+        if chunk.text.len() + 64 > budget_chars {
+            break;
+        }
+        context_block.push_str(&format!(
+            "[memory:{}]\n{}\n\n",
+            chunk.memory_id, chunk.text
+        ));
+        budget_chars = budget_chars.saturating_sub(chunk.text.len() + 64);
+        context_chunks.push(chunk);
+    }
+    let context_chunks_count = context_chunks.len() as u32;
+
+    let prompt = if context_chunks.is_empty() {
+        format!(
+            "I have no relevant memories to ground an answer. Question: {}\n\nAnswer truthfully that the user has no saved memories about this topic; do not guess.",
+            trimmed
+        )
+    } else {
+        format!(
+            "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. If the memories don't contain the answer, say so explicitly.\n\nMemories:\n{}\nQuestion: {}",
+            context_block, trimmed
+        )
+    };
+
+    // 4. Stream tokens via Tauri events and accumulate the final text.
+    let app_clone = app.clone();
+    let started_at = std::time::Instant::now();
+    let on_token: Box<dyn Fn(String) + Send + Sync> = Box::new(move |delta: String| {
+        let _ = app_clone.emit(
+            "recall://ask-recall-token",
+            serde_json::json!({ "delta": delta }),
+        );
+    });
+    let request = LlmGenerationRequest {
+        prompt,
+        max_tokens: 512,
+        temperature: 0.0,
+    };
+    let response = llm.generate_streaming(request, on_token).await?;
+    let latency_ms = started_at.elapsed().as_millis() as u64;
+
+    // 5. Parse `[memory:<uuid>]` citations from the response.
+    let citation_re = regex::Regex::new(r"\[memory:([0-9a-fA-F\-]+)\]").unwrap();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut citations: Vec<AskRecallCitation> = Vec::new();
+    for cap in citation_re.captures_iter(&response.text) {
+        let memory_id = cap[1].to_string();
+        if !seen.insert(memory_id.clone()) {
+            continue;
+        }
+        // Find the chunk we fed for this memory_id (best-matching by
+        // ranking order).
+        let chunk = context_chunks
+            .iter()
+            .find(|c| c.memory_id == memory_id)
+            .map(|c| (*c).clone());
+        let memory = state.memory_repository.find(&memory_id).await?;
+        if let (Some(chunk), Some(memory)) = (chunk, memory) {
+            citations.push(AskRecallCitation {
+                memory_id: memory_id.clone(),
+                title: memory.title.clone(),
+                chunk_text: chunk.text.clone(),
+                chunk_start: chunk.start_offset,
+                chunk_end: chunk.end_offset,
+            });
+        }
+    }
+
+    // 6. Final completion event so the UI can flip out of streaming
+    //    state cleanly even if it missed a token in transit.
+    let _ = app.emit(
+        "recall://ask-recall-complete",
+        serde_json::json!({ "tokens": response.tokens_generated, "latencyMs": latency_ms }),
+    );
+
+    Ok(AskRecallResponse {
+        question: trimmed.to_string(),
+        text: response.text,
+        citations,
+        tokens_generated: response.tokens_generated,
+        latency_ms,
+        context_chunks: context_chunks_count,
+    })
 }

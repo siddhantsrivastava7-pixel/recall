@@ -15,6 +15,7 @@ import {
   Layers,
   Search,
   Settings,
+  Sparkles,
   X,
 } from "lucide-react";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -25,6 +26,7 @@ import { HomeBriefing } from "@/components/dashboard/HomeBriefing";
 import { MemoriesView } from "@/components/memory/MemoriesView";
 import { ProjectsView } from "@/components/memory/ProjectsView";
 import { SettingsView } from "@/components/settings/SettingsView";
+import { AskView } from "@/views/AskRecall/AskView";
 import { InstantCaptureToast } from "@/components/capture/InstantCaptureToast";
 import { RecallMark } from "@/components/system/RecallMark";
 import { ThemeToggle } from "@/components/system/ThemeToggle";
@@ -32,7 +34,7 @@ import { tauriClient } from "@/services/api/tauri-client";
 import { useRecallDataSyncEvents } from "@/hooks/useRecallDataSyncEvents";
 import { useResurfaceNotifications } from "@/hooks/useResurfaceNotifications";
 
-export type MainView = "dashboard" | "memories" | "projects" | "settings";
+export type MainView = "dashboard" | "memories" | "projects" | "ask" | "settings";
 
 export function MainWindow() {
   const [view, setView] = useState<MainView>("dashboard");
@@ -85,6 +87,7 @@ export function MainWindow() {
             {view === "dashboard" && <HomeBriefing setView={setView} />}
             {view === "memories" && <MemoriesView />}
             {view === "projects" && <ProjectsView setView={setView} />}
+            {view === "ask" && <AskView setView={setView} />}
             {view === "settings" && <SettingsView />}
           </div>
           {showUpdateBanner && availableVersion ? (
@@ -174,6 +177,12 @@ function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => 
           count={projectCount}
           active={view === "projects"}
           onClick={() => setView("projects")}
+        />
+        <NavRow
+          icon={<Sparkles size={15} strokeWidth={1.6} />}
+          label="Ask Recall"
+          active={view === "ask"}
+          onClick={() => setView("ask")}
         />
         <NavRow
           icon={<Search size={15} strokeWidth={1.6} />}

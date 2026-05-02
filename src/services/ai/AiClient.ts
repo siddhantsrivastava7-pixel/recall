@@ -93,6 +93,15 @@ export const aiClient = {
   /// — caller falls back to the TS-side keyword path.
   semanticSearch: (query: string, limit?: number) =>
     invoke<SemanticSearchHit[]>("semantic_search", { query, limit }),
+
+  /// v0.4.3: full Ask Recall RAG. Embeds the question, retrieves the
+  /// top Strong-tier chunks, builds a grounded prompt, streams tokens
+  /// via the `recall://ask-recall-token` event, and returns the
+  /// final answer + citations. The frontend listens to the streaming
+  /// events to render tokens as they arrive; the resolved promise is
+  /// the canonical "done" signal.
+  askRecall: (question: string) =>
+    invoke<AskRecallResponse>("ask_recall", { question }),
 };
 
 /// v0.3.3: blended search result row. The strength label uses the
@@ -150,6 +159,33 @@ export interface EmbedAllSummary {
   chunksCreated: number;
   chunksEnqueued: number;
   failedJobsReset: number;
+}
+
+/// v0.4.3: one memory cited in an Ask Recall answer. The backend
+/// dedupes by memory_id and only returns chunks it actually fed to
+/// the LLM, so every chip the UI renders points at a real, retrievable
+/// source — no fabrications.
+export interface AskRecallCitation {
+  memoryId: string;
+  title: string | null;
+  chunkText: string;
+  chunkStart: number;
+  chunkEnd: number;
+}
+
+/// v0.4.3: response shape from `ask_recall`. The `text` is the full
+/// generated answer, including in-line `[memory:<uuid>]` markers the
+/// frontend rewrites into clickable citation chips.
+export interface AskRecallResponse {
+  question: string;
+  text: string;
+  citations: AskRecallCitation[];
+  tokensGenerated: number;
+  latencyMs: number;
+  /// Number of chunks used as context. 0 means retrieval found
+  /// nothing above the Strong-tier threshold; the LLM is instructed
+  /// to say so explicitly in that case.
+  contextChunks: number;
 }
 
 /// v0.3.0: result row from `find_related`. The chunk fields point at
