@@ -539,6 +539,32 @@ pub async fn semantic_search(
     limit: Option<u32>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<SemanticSearchHit>> {
+    // Public surface — preserves v0.4.4 behavior with MMR diversity
+    // enabled (good for general search where the user doesn't want
+    // 5 near-duplicate results).
+    semantic_search_internal(&query, limit, true, &state).await
+}
+
+/// Internal helper that powers both the public `semantic_search`
+/// Tauri command and Ask Recall's retrieval path.
+///
+/// `mmr_enabled = true` (general search): MMR re-ranking penalizes
+/// candidates too similar to already-picked items. Avoids surfacing
+/// 5 copies of the same article when the user asks for "tauri builds".
+///
+/// `mmr_enabled = false` (Ask Recall): pure-relevance ranking.
+/// Diversity is the LLM's job, not the retriever's; for an
+/// enumeration question like "what license keys did I save", we
+/// want all matching memories even though they're near-identical.
+/// (v0.5.4: with MMR on, the 2nd and 3rd license-key memories were
+/// dropped below the top-K cutoff because their embeddings were
+/// near-clones of the 1st — wrong behavior for Ask Recall.)
+pub(crate) async fn semantic_search_internal(
+    query: &str,
+    limit: Option<u32>,
+    mmr_enabled: bool,
+    state: &State<'_, AppState>,
+) -> AppResult<Vec<SemanticSearchHit>> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -594,13 +620,17 @@ pub async fn semantic_search(
         });
     }
 
-    // 3. MMR-aggregate to memory level. Use a sentinel "src" id since
-    // there's no source memory to exclude — the query is the source.
-    let semantic_hits = aggregate_with_mmr(scored, &chunk_vectors, "::query::", top_n * 3);
+    // 3. Aggregate chunks → memories. With MMR for general search,
+    // pure relevance ranking for Ask Recall.
+    let semantic_hits = if mmr_enabled {
+        aggregate_with_mmr(scored, &chunk_vectors, "::query::", top_n * 3)
+    } else {
+        aggregate_by_relevance(scored, top_n * 3)
+    };
 
     // 4. Compute a keyword score per matched memory. We score a memory
     // by counting query tokens that appear in its title/content/note/
-    // source_app, then normalizing to [0, 1].
+    // source_app/topic_labels, then normalizing to [0, 1].
     let query_tokens = tokenize_query(trimmed);
     let mut blended: Vec<SemanticSearchHit> = Vec::with_capacity(semantic_hits.len());
     for hit in semantic_hits {
@@ -626,6 +656,46 @@ pub async fn semantic_search(
     blended.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     blended.truncate(top_n);
     Ok(blended)
+}
+
+/// Pure-relevance memory aggregation: group chunks by memory, take
+/// each memory's mean of top-K chunks as its score, sort, truncate.
+/// No diversity penalty — the caller (Ask Recall) wants enumeration
+/// of ALL relevant memories, even when they're near-duplicates.
+fn aggregate_by_relevance(
+    scored_chunks: Vec<ScoredChunk>,
+    top_n: usize,
+) -> Vec<RelatedMemoryHit> {
+    if top_n == 0 || scored_chunks.is_empty() {
+        return Vec::new();
+    }
+    const TOP_K_CHUNKS_PER_MEMORY: usize = 2;
+    let mut by_memory: HashMap<String, Vec<ScoredChunk>> = HashMap::new();
+    for chunk in scored_chunks {
+        by_memory.entry(chunk.memory_id.clone()).or_default().push(chunk);
+    }
+    let mut hits: Vec<RelatedMemoryHit> = by_memory
+        .into_iter()
+        .filter_map(|(memory_id, mut chunks)| {
+            if chunks.is_empty() {
+                return None;
+            }
+            chunks.sort_by(|a, b| {
+                b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let take = chunks.len().min(TOP_K_CHUNKS_PER_MEMORY);
+            let mean = chunks[..take].iter().map(|c| c.score).sum::<f32>() / take as f32;
+            let best_chunk = chunks.into_iter().next().unwrap();
+            Some(RelatedMemoryHit {
+                memory_id,
+                score: mean,
+                best_chunk,
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.truncate(top_n);
+    hits
 }
 
 fn tokenize_query(query: &str) -> Vec<String> {
@@ -973,7 +1043,11 @@ pub async fn ask_recall(
     const PROMPT_OVERHEAD: usize = 600;
     const PER_SOURCE_OVERHEAD: usize = 80;
     const TEMPORAL_BODY_CAP: usize = 280;
-    const SEMANTIC_TOP_K: u32 = 8;
+    // v0.5.4: bumped 8 → 12. With MMR disabled (see below) and the
+    // 8K-token context window from v0.5.1, we have prompt budget for
+    // more sources. 12 covers enumeration questions ("what license
+    // keys did I save") without overflowing the budget.
+    const SEMANTIC_TOP_K: u32 = 12;
     const TEMPORAL_TOP_N: usize = 30;
 
     let mut sources: Vec<ContextSource> = Vec::new();
@@ -1008,8 +1082,11 @@ pub async fn ask_recall(
             // Reuse semantic_search to score everything by relevance,
             // then intersect with the window. We pass a generous limit
             // because the intersection step throws away the bulk.
+            // v0.5.4: MMR off so enumeration questions ("what license
+            // keys did I save last week") don't drop near-duplicate
+            // matches.
             let hits =
-                semantic_search(semantic_query.clone(), Some(64), state.clone()).await?;
+                semantic_search_internal(&semantic_query, Some(64), false, &state).await?;
             let in_window_ids: std::collections::HashSet<&str> =
                 in_window.iter().map(|m| m.id.as_str()).collect();
             let mut ranked: Vec<String> = hits
@@ -1073,9 +1150,12 @@ pub async fn ask_recall(
             sources.len()
         );
     } else {
-        // Pure topical: defer entirely to the unified semantic_search.
+        // Pure topical: defer to the unified retrieval pipeline,
+        // but with MMR disabled — Ask Recall needs enumeration of
+        // relevant memories, not diversity. v0.5.4 fix for the
+        // "only 1 of 3 license keys surfaced" bug.
         let hits =
-            semantic_search(semantic_query.clone(), Some(SEMANTIC_TOP_K), state.clone()).await?;
+            semantic_search_internal(&semantic_query, Some(SEMANTIC_TOP_K), false, &state).await?;
         eprintln!(
             "[recall][ask-recall] semantic: hits={} top_score={:.3}",
             hits.len(),
