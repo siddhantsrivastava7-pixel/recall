@@ -10,8 +10,8 @@ mod state;
 use commands::{
     ai::{
         ai_diagnose_clipboard_image, ai_diagnose_llm, ai_download_embedding_model,
-        ai_download_llm, ai_llm_status, ai_set_enabled, ai_set_mode, ai_status,
-        ai_unload_llm, ask_recall, embed_all_memories, find_related,
+        ai_download_llm, ai_force_scrub, ai_llm_status, ai_set_enabled, ai_set_mode,
+        ai_status, ai_unload_llm, ask_recall, embed_all_memories, find_related,
         list_entities_for_memory, list_memories_by_entity, ocr_rebuild_index,
         ocr_run_for_memory, semantic_search,
     },
@@ -585,6 +585,7 @@ pub fn run() {
             ai_llm_status,
             ai_unload_llm,
             ai_diagnose_llm,
+            ai_force_scrub,
             ask_recall,
             list_entities_for_memory,
             list_memories_by_entity,

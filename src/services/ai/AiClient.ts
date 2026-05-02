@@ -102,7 +102,25 @@ export const aiClient = {
   /// the canonical "done" signal.
   askRecall: (question: string) =>
     invoke<AskRecallResponse>("ask_recall", { question }),
+
+  /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
+  /// stale auto-tagger tags + flag self-captures + re-extract entities)
+  /// regardless of the persisted "backfill done" flag, and returns a
+  /// counts payload. Surfaced as a "Re-scrub" button in AI Settings —
+  /// recovery path for users whose v0.5.7 auto-backfill silently
+  /// failed (we have no way to log to file on Windows GUI builds, so
+  /// silent failures are otherwise undetectable).
+  forceScrub: () => invoke<ScrubResult>("ai_force_scrub"),
 };
+
+export interface ScrubResult {
+  memoriesScanned: number;
+  tagRowsUpdated: number;
+  selfCapturesMarked: number;
+  entitiesExtracted: number;
+  errors: number;
+  elapsedMs: number;
+}
 
 /// v0.3.3: blended search result row. The strength label uses the
 /// semantic score only; ranking uses the blended score.

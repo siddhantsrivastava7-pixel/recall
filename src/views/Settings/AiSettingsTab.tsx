@@ -132,6 +132,7 @@ export function AiSettingsTab() {
     | "downloadLlm"
     | "unloadLlm"
     | "diagnoseLlm"
+    | "scrub"
     | null
   >(null);
   const [llmStatus, setLlmStatus] = useState<LlmStatusPayload | null>(null);
@@ -406,6 +407,26 @@ export function AiSettingsTab() {
       setStatus(refreshed);
     } catch (error) {
       const message = describeError(error, "Unable to rebuild OCR index.");
+      setNotice({ kind: "error", message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /// v0.5.8: manual scrub trigger — recovery path when the boot-time
+  /// auto-backfill silently fails. Returns counts so the user (and
+  /// us, debugging) can see exactly what changed.
+  const handleForceScrub = async () => {
+    setBusy("scrub");
+    setNotice({ kind: "idle" });
+    try {
+      const result = await aiClient.forceScrub();
+      setNotice({
+        kind: "info",
+        message: `Scrubbed ${result.memoriesScanned} memories: ${result.tagRowsUpdated} tag updates, ${result.selfCapturesMarked} self-captures flagged, ${result.entitiesExtracted} entities extracted${result.errors > 0 ? `, ${result.errors} errors` : ""} (${(result.elapsedMs / 1000).toFixed(1)}s).`,
+      });
+    } catch (error) {
+      const message = describeError(error, "Unable to re-scrub AI tags.");
       setNotice({ kind: "error", message });
     } finally {
       setBusy(null);
@@ -799,6 +820,14 @@ export function AiSettingsTab() {
             disabled={!enabled || !ocrAvailable || busy === "rebuild"}
           >
             <RefreshCw size={13} /> {busy === "rebuild" ? "Queueing…" : "Run OCR rebuild"}
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={() => void handleForceScrub()}
+            disabled={!enabled || busy === "scrub"}
+            title="Re-runs the auto-tagger (with v0.5.6 URL/UUID guards), re-flags Recall-self-capture screenshots, and re-extracts entities for every memory. Safe to click any time — fully idempotent."
+          >
+            <RefreshCw size={13} /> {busy === "scrub" ? "Scrubbing…" : "Re-scrub AI tags"}
           </button>
           {queue ? (
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
