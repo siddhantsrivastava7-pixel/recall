@@ -650,14 +650,34 @@ fn keyword_score(memory: &crate::models::Memory, query_tokens: &[String]) -> f32
     let note = memory.note.as_deref().unwrap_or("").to_lowercase();
     let source_app = memory.source_app.as_deref().unwrap_or("").to_lowercase();
     let summary = memory.summary_text.as_deref().unwrap_or("").to_lowercase();
+    // v0.5.3: include topic_labels (auto-tags from v0.3.7) in the
+    // keyword scan. Memories with opaque content like license keys,
+    // hashes, or URLs get tagged by the auto-tagger but their actual
+    // text doesn't contain the human phrase ("license key"). Without
+    // this, a query for "license key" scores 0 against a memory
+    // tagged `license-key` whose body is `RECALL-7K2P-XYZW-...`.
+    // Matched as title-strength because tags are explicit signals,
+    // not incidental substrings — they were applied because the
+    // memory IS one of these things.
+    let topic_labels: Vec<String> = memory
+        .topic_labels
+        .as_ref()
+        .map(|json| {
+            json.0
+                .iter()
+                .map(|s| s.to_lowercase().replace('-', " "))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut hits = 0_f32;
     for token in query_tokens {
         let in_title = title.contains(token);
+        let in_topic = topic_labels.iter().any(|t| t.contains(token));
         let in_others =
             content.contains(token) || note.contains(token) || summary.contains(token)
                 || source_app.contains(token);
-        if in_title {
+        if in_title || in_topic {
             hits += 1.0;
         } else if in_others {
             hits += 0.7;
@@ -860,6 +880,13 @@ pub struct AskRecallResponse {
 struct ContextSource {
     memory_id: String,
     title: Option<String>,
+    /// v0.5.3: auto-tags from v0.3.7's topic detector. Surfaced to
+    /// the LLM in the prompt header so opaque content (license
+    /// keys, hashes, URLs) carries its semantic frame. Without
+    /// this, a chunk like `RECALL-7K2P-XYZW-...` looks like noise
+    /// to the model even when it's the right answer to the user's
+    /// question.
+    topic_labels: Vec<String>,
     excerpt: String,
     /// Offsets of the excerpt within the parent memory body. For
     /// semantic hits these are the chunk's real offsets; for temporal
@@ -1024,9 +1051,15 @@ pub async fn ask_recall(
                 break;
             }
             budget_remaining -= need;
+            let topic_labels = memory
+                .topic_labels
+                .as_ref()
+                .map(|json| json.0.clone())
+                .unwrap_or_default();
             sources.push(ContextSource {
                 memory_id: memory.id.clone(),
                 title: memory.title.clone(),
+                topic_labels,
                 excerpt_start: 0,
                 excerpt_end: excerpt.chars().count() as i64,
                 excerpt,
@@ -1054,16 +1087,20 @@ pub async fn ask_recall(
                 break;
             }
             budget_remaining -= need;
-            // Need the title for the citation chip. One extra
-            // lookup per top-K hit is fine — bounded at 8.
-            let title = state
-                .memory_repository
-                .find(&hit.memory_id)
-                .await?
-                .and_then(|m| m.title);
+            // Need the title + topic_labels for the citation chip
+            // and prompt context. One extra lookup per top-K hit
+            // is fine — bounded at SEMANTIC_TOP_K = 8.
+            let memory = state.memory_repository.find(&hit.memory_id).await?;
+            let title = memory.as_ref().and_then(|m| m.title.clone());
+            let topic_labels = memory
+                .as_ref()
+                .and_then(|m| m.topic_labels.as_ref())
+                .map(|json| json.0.clone())
+                .unwrap_or_default();
             sources.push(ContextSource {
                 memory_id: hit.memory_id.clone(),
                 title,
+                topic_labels,
                 excerpt: hit.chunk_text,
                 excerpt_start: hit.chunk_start,
                 excerpt_end: hit.chunk_end,
@@ -1083,19 +1120,32 @@ pub async fn ask_recall(
     } else {
         let mut block = String::with_capacity(BUDGET_CHARS);
         for src in &sources {
+            // v0.5.3: surface auto-tags ("license-key", "url",
+            // "code-snippet", etc.) in the per-memory header so the
+            // LLM has the same semantic frame the ranker had. Without
+            // this, opaque content like `RECALL-7K2P-XYZW-...` is
+            // unrecognizable as a license key to the model.
+            let title_part = src
+                .title
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Untitled");
+            let tags_part = if src.topic_labels.is_empty() {
+                String::new()
+            } else {
+                format!(" · tags: {}", src.topic_labels.join(", "))
+            };
             block.push_str(&format!(
-                "[memory:{}] {}\n{}\n\n",
-                src.memory_id,
-                src.title.as_deref().unwrap_or("Untitled"),
-                src.excerpt
+                "[memory:{}] {}{}\n{}\n\n",
+                src.memory_id, title_part, tags_part, src.excerpt
             ));
         }
         let intro = match &temporal {
             Some((w, _)) => format!(
-                "The user is asking about their saved memories from {}. Use only the memories below; cite each fact with [memory:<id>] using the exact id shown. If the memories don't answer the question, say so.",
+                "The user is asking about their saved memories from {}. Use only the memories below; cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't answer the question, say so.",
                 w.label
             ),
-            None => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. If the memories don't contain the answer, say so explicitly.".to_string(),
+            None => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't contain the answer, say so explicitly.".to_string(),
         };
         format!("{}\n\nMemories:\n{}\nQuestion: {}", intro, block, trimmed)
     };
