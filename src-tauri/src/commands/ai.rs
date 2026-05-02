@@ -302,6 +302,20 @@ pub async fn embed_all_memories(state: State<'_, AppState>) -> AppResult<EmbedAl
             .await
             .unwrap_or_default();
 
+        // v0.5.6: also re-extract structured entities. Backfill is
+        // exactly the right moment to refresh entity rows alongside
+        // the embedding refresh — both use the same content as
+        // their input. We pass an empty projects slice for v0.5.6;
+        // v0.5.7 will plumb through projects so project-name
+        // detection works in the backfill path too.
+        let _ = crate::ai::entities::extract_and_persist(
+            &state.memory_repository,
+            &memory.id,
+            &memory.content,
+            &[],
+        )
+        .await;
+
         let mut chunks = chunker::chunk_text(&memory.content);
         if chunks.is_empty() {
             continue;
@@ -590,14 +604,33 @@ pub(crate) async fn semantic_search_internal(
         .await?;
     let query_vec = maybe_center(query_embedding.values, centroid.as_deref());
 
-    // 2. Cosine across active-model chunks.
+    // 2. Cosine across active-model chunks. Self-capture screenshots
+    //    (v0.5.6) are excluded — these are screenshots of Recall's
+    //    own UI that the user took, OCR'd into chunks, and would
+    //    otherwise pollute retrieval by surfacing previous answers
+    //    as "matches" for similar future questions.
     let all_chunks = state
         .memory_repository
         .list_embedded_chunks_for_model(model_label)
         .await?;
+    let mut self_capture_memory_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for memory in state.memory_repository.list().await? {
+        if memory
+            .ocr_engine
+            .as_deref()
+            .map(|e| e.contains("self-capture"))
+            .unwrap_or(false)
+        {
+            self_capture_memory_ids.insert(memory.id);
+        }
+    }
     let mut scored: Vec<ScoredChunk> = Vec::with_capacity(all_chunks.len());
     let mut chunk_vectors: HashMap<String, Vec<f32>> = HashMap::new();
     for chunk in &all_chunks {
+        if self_capture_memory_ids.contains(&chunk.memory_id) {
+            continue;
+        }
         let Some(bytes) = &chunk.embedding_vector else {
             continue;
         };
@@ -909,6 +942,39 @@ pub async fn ai_diagnose_llm(state: State<'_, AppState>) -> AppResult<LlmDiagnos
     }
 }
 
+// ─── v0.5.6: structured entities ──────────────────────────────────
+
+/// List structured entities (people, companies, products,
+/// projects, time ranges) extracted from a single memory.
+/// Memory-detail UI uses this to render entity chips below the
+/// content.
+#[tauri::command]
+pub async fn list_entities_for_memory(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::models::MemoryEntityRow>> {
+    state
+        .memory_repository
+        .list_entities_for_memory(&memory_id)
+        .await
+}
+
+/// List every memory whose entity rows include the given
+/// (entity_type, entity_value) pair. Used by entity-pivot
+/// retrieval surfaces — "show all memories about Anthropic"
+/// resolves to `list_memories_by_entity("company", "Anthropic")`.
+#[tauri::command]
+pub async fn list_memories_by_entity(
+    entity_type: String,
+    entity_value: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::models::Memory>> {
+    state
+        .memory_repository
+        .list_memories_by_entity(&entity_type, &entity_value)
+        .await
+}
+
 // ─── v0.4.3: Ask Recall RAG pipeline ────────────────────────────────
 
 /// One memory cited in an Ask Recall answer. Resolves
@@ -1102,6 +1168,19 @@ pub async fn ask_recall(
             .memory_repository
             .list_memories_by_topic_label(intent.tag)
             .await?;
+        // v0.5.6: drop self-captures (Recall UI screenshots) up
+        // front so they never enter the candidate set, even if
+        // the auto-tagger tagged them before the v0.5.6 scrub
+        // backfill ran.
+        let tagged: Vec<crate::models::Memory> = tagged
+            .into_iter()
+            .filter(|m| {
+                !m.ocr_engine
+                    .as_deref()
+                    .map(|e| e.contains("self-capture"))
+                    .unwrap_or(false)
+            })
+            .collect();
         eprintln!(
             "[recall][ask-recall] tag-pivot: tag={} hits={}",
             intent.tag,

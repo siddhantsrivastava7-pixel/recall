@@ -101,6 +101,9 @@ impl SettingsRepository for SqliteSettingsRepository {
                 "ai_enabled" => settings.ai_enabled = value == "true",
                 "ai_pause_on_battery" => settings.ai_pause_on_battery = value == "true",
                 "ai_heavy_only_on_ac" => settings.ai_heavy_only_on_ac = value == "true",
+                "ai_v0_5_6_backfill_done" => {
+                    settings.ai_v0_5_6_backfill_done = Some(value == "true")
+                }
                 _ => {}
             }
         }
@@ -198,6 +201,17 @@ impl SettingsRepository for SqliteSettingsRepository {
             sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
                 .bind(key)
                 .bind(if value { "true" } else { "false" })
+                .execute(&mut *transaction)
+                .await?;
+        }
+
+        // v0.5.6: backfill completion flag. Optional — only written
+        // once the backfill finishes; until then the row is absent
+        // and `get()` defaults to None which triggers the backfill.
+        if let Some(done) = settings.ai_v0_5_6_backfill_done {
+            sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+                .bind("ai_v0_5_6_backfill_done")
+                .bind(if done { "true" } else { "false" })
                 .execute(&mut *transaction)
                 .await?;
         }

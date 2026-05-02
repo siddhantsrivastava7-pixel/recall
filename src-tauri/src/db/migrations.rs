@@ -292,5 +292,51 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "embedding_model_version", "TEXT").await?;
     ensure_column(pool, "memories", "embedding_generated_at", "TEXT").await?;
 
+    // v0.5.6: structured-entity table. Pattern-based detectors extract
+    // people, companies, products, projects, places, and time ranges
+    // from memory content at chunk-creation time. Ask Recall uses
+    // these for entity-pivot retrieval ("what did I save about
+    // Anthropic"); the memory detail UI surfaces them as chips.
+    //
+    // ON DELETE CASCADE keeps entities tied to their memory's
+    // lifecycle. UNIQUE(memory_id, entity_type, entity_value)
+    // makes extraction idempotent — re-running the detector doesn't
+    // create duplicate rows. `confidence` is in [0.0, 1.0]; the
+    // ranker can later use it to rank/threshold matches.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_entities (
+          id            TEXT PRIMARY KEY NOT NULL,
+          memory_id     TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+          entity_type   TEXT NOT NULL,
+          entity_value  TEXT NOT NULL,
+          raw_match     TEXT NOT NULL,
+          confidence    REAL NOT NULL,
+          extracted_at  TEXT NOT NULL,
+          UNIQUE(memory_id, entity_type, entity_value)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memory_entities_lookup
+        ON memory_entities(entity_type, entity_value)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memory_entities_memory
+        ON memory_entities(memory_id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

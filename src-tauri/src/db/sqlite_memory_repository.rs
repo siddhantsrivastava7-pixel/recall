@@ -1071,6 +1071,78 @@ impl MemoryRepository for SqliteMemoryRepository {
             .unwrap_or_default())
     }
 
+    async fn replace_entities_for_memory(
+        &self,
+        memory_id: &str,
+        entities: &[crate::ai::entities::Entity],
+    ) -> AppResult<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM memory_entities WHERE memory_id = ?1")
+            .bind(memory_id)
+            .execute(&mut *tx)
+            .await?;
+        for entity in entities {
+            let id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO memory_entities
+                  (id, memory_id, entity_type, entity_value, raw_match, confidence, extracted_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "#,
+            )
+            .bind(&id)
+            .bind(memory_id)
+            .bind(entity.entity_type.as_str())
+            .bind(&entity.entity_value)
+            .bind(&entity.raw_match)
+            .bind(entity.confidence as f64)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn list_entities_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> AppResult<Vec<crate::models::MemoryEntityRow>> {
+        let rows = sqlx::query_as::<_, crate::models::MemoryEntityRow>(
+            r#"
+            SELECT id, memory_id, entity_type, entity_value, raw_match, confidence, extracted_at
+            FROM memory_entities
+            WHERE memory_id = ?1
+            ORDER BY confidence DESC, entity_type, entity_value
+            "#,
+        )
+        .bind(memory_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn list_memories_by_entity(
+        &self,
+        entity_type: &str,
+        entity_value: &str,
+    ) -> AppResult<Vec<Memory>> {
+        let records = sqlx::query_as::<_, Memory>(&format!(
+            "{MEMORY_SELECT} \
+             WHERE memories.id IN ( \
+                 SELECT memory_id FROM memory_entities \
+                 WHERE entity_type = ?1 AND entity_value = ?2 \
+             ) \
+             ORDER BY datetime(memories.created_at) DESC"
+        ))
+        .bind(entity_type)
+        .bind(entity_value)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
+    }
+
     async fn list_memories_by_topic_label(&self, tag: &str) -> AppResult<Vec<Memory>> {
         // topic_labels is a JSON array stored as TEXT. We use SQLite's
         // built-in `json_each` for exact-membership testing rather

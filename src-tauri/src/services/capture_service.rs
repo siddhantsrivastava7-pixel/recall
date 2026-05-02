@@ -142,6 +142,19 @@ impl CaptureService {
                 }
             };
 
+            // v0.5.6: extract structured entities at capture time
+            // alongside auto-tagging. Empty projects slice — v0.5.7
+            // will plumb the project repo through. Soft-fail
+            // because entity extraction is best-effort enrichment,
+            // never a path that should block the embedding work.
+            let _ = crate::ai::entities::extract_and_persist(
+                &repository,
+                &memory_id,
+                &content,
+                &[],
+            )
+            .await;
+
             // 2. Run the chunker. Empty content → no chunks → nothing
             // to do (the row stays unembedded; resurface logic skips
             // it cleanly).

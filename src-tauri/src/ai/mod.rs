@@ -24,6 +24,7 @@
 
 pub mod ask;
 pub mod embeddings;
+pub mod entities;
 pub mod hardware;
 pub mod llm;
 pub mod ocr;

@@ -250,6 +250,14 @@ pub struct AppSettings {
     /// model downloads) only runs while plugged into AC. Independent from
     /// `ai_pause_on_battery` — both defaults to `true`.
     pub ai_heavy_only_on_ac: bool,
+    /// v0.5.6: one-shot backfill that re-runs the auto-tagger
+    /// (with URL/UUID guards) and the new entity extractor against
+    /// every memory. `None` on first launch of v0.5.6 (triggers
+    /// the backfill); `Some(true)` afterwards. Stored on the
+    /// settings row so the flag survives restarts and never
+    /// re-runs on subsequent launches.
+    #[serde(default)]
+    pub ai_v0_5_6_backfill_done: Option<bool>,
 }
 
 impl Default for AppSettings {
@@ -269,6 +277,7 @@ impl Default for AppSettings {
             ai_enabled: false,
             ai_pause_on_battery: true,
             ai_heavy_only_on_ac: true,
+            ai_v0_5_6_backfill_done: None,
         }
     }
 }
@@ -292,6 +301,23 @@ pub struct MemoryChunkRow {
     pub embedding_vector: Option<Vec<u8>>,
     pub embedding_generated_at: Option<String>,
     pub created_at: String,
+}
+
+/// v0.5.6: row from `memory_entities` — one structured fact
+/// extracted from a memory's content. The same memory typically
+/// has several rows (one per detected person/company/product/etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntityRow {
+    pub id: String,
+    pub memory_id: String,
+    /// `"person" | "company" | "product" | "project" | "time-range"`.
+    pub entity_type: String,
+    /// Normalized display value (e.g. "Anthropic", "Q3 2024").
+    pub entity_value: String,
+    pub raw_match: String,
+    pub confidence: f64,
+    pub extracted_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

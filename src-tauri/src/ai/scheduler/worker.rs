@@ -283,16 +283,52 @@ async fn process_ocr(
     } else {
         Some(result.text.clone())
     };
+
+    // v0.5.6: detect screenshots of Recall's own Ask Recall UI. When
+    // the user screenshots an answer panel to share/save, OCR captures
+    // the answer text (which often contains license keys, names, etc.)
+    // and the auto-tagger then tags that screenshot under the same
+    // class as the memories the answer was about — polluting future
+    // tag-pivot retrieval. We detect by matching against telltale
+    // UI strings; 2+ hits = high-confidence self-capture, skip
+    // promotion + chunking + embedding.
+    //
+    // The OCR text is still saved (for transparency — user can see
+    // what was captured) but the row is marked so retrieval skips
+    // it. We use a sentinel ocr_engine value rather than a new
+    // column to avoid a schema migration for this v0.5.6 fix.
+    let is_self_capture = ocr_text
+        .as_deref()
+        .map(is_recall_self_capture)
+        .unwrap_or(false);
+    let recorded_engine = if is_self_capture {
+        format!("{}+self-capture", payload.engine)
+    } else {
+        payload.engine.clone()
+    };
+
     let now = Utc::now().to_rfc3339();
     memory_repo
         .set_ocr_status(
             &payload.memory_id,
             "done",
             ocr_text.as_deref(),
-            Some(&payload.engine),
+            Some(&recorded_engine),
             Some(&now),
         )
         .await?;
+
+    if is_self_capture {
+        eprintln!(
+            "[recall][ai-scheduler] skipping self-capture screenshot {} (matches Recall UI markers)",
+            payload.memory_id
+        );
+        let _ = app.emit(
+            "recall://memory-ocr-updated",
+            serde_json::json!({ "memoryId": payload.memory_id }),
+        );
+        return Ok(());
+    }
 
     // v0.2.3: promote the OCR text to be the memory's primary content.
     // Once we have searchable text, the placeholder body
@@ -360,11 +396,18 @@ async fn chunk_and_enqueue_embeds(
     // opaque-token tags, merge into topic_labels, then hash chunks
     // against the enriched text so a tag/title change invalidates
     // the cached vector.
+    //
+    // v0.5.6: also extract structured entities (people, companies,
+    // products, time ranges) from the same content. Empty projects
+    // slice — this layer doesn't have project repo access; v0.5.7
+    // will plumb that through. Soft-fail on entity errors so
+    // extraction never blocks the embed pipeline.
     let detected_tags = auto_tagger::detect_tags(content);
     let tags = memory_repo
         .merge_topic_labels(memory_id, &detected_tags)
         .await
         .unwrap_or_default();
+    let _ = crate::ai::entities::extract_and_persist(memory_repo, memory_id, content, &[]).await;
     let title = memory_repo
         .find(memory_id)
         .await?
@@ -429,6 +472,74 @@ async fn chunk_and_enqueue_embeds(
         }
     }
     Ok(())
+}
+
+/// v0.5.6: heuristic detector for screenshots of Recall's own Ask
+/// Recall UI. Without this filter, every time the user takes a
+/// screenshot of an answer panel (to share, to review later, to
+/// debug), Recall captures + OCRs the screenshot, and the auto-
+/// tagger sees the answer text — which usually contains the same
+/// kind of structured tokens (license keys, names, companies) the
+/// answer was about — and tags the screenshot under those classes.
+/// The next tag-pivot retrieval then surfaces the screenshot as a
+/// "match" alongside the real memories. Recursive contamination.
+///
+/// We require ≥2 distinct UI-marker hits to fire — single-marker
+/// matches risk false positives on legitimate notes that happen
+/// to mention "Ask Recall" in conversation. Two independent
+/// markers in the same OCR scan is statistically unmistakable.
+fn is_recall_self_capture(ocr_text: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "ASK RECALL",
+        "Ask your memories",
+        "Single-shot Q&A",
+        "Single-shot QSA", // common OCR mis-read of `Q&A`
+        "memories that backed",
+        "Runs fully on-device",
+        "memories cited",
+        "Enter to ask",
+        "Streaming answer",
+        "[memory:",
+    ];
+    let mut hits = 0;
+    for marker in MARKERS {
+        if ocr_text.contains(marker) {
+            hits += 1;
+            if hits >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod self_capture_tests {
+    use super::*;
+
+    #[test]
+    fn detects_typical_askview_screenshot() {
+        let text = "ASK RECALL\nAsk your memories.\nSingle-shot Q&A grounded in your saved \
+                    content — citations link back to the memories that backed each claim. \
+                    Runs fully on-device.\nlicense keys i saved?\n⌘ + Enter to ask\nANSWER\n\
+                    RC-TRIAL-0FAF-886C\nRC-TRIAL-6267-7B42\nRC-TRIAL-5102-65C6 [1]\n\
+                    SOURCES (12 MATCHING \"license-key\")\n12 memories cited · 130 tokens · 27.7s";
+        assert!(is_recall_self_capture(text));
+    }
+
+    #[test]
+    fn does_not_flag_legitimate_note_mentioning_recall_once() {
+        let text = "Met with the team about Recall today. We discussed pricing.";
+        assert!(!is_recall_self_capture(text));
+    }
+
+    #[test]
+    fn requires_two_distinct_markers() {
+        // Single marker in isolation could be a real note someone
+        // wrote about the Ask Recall feature — don't auto-skip.
+        let text = "I love the new Ask Recall feature.";
+        assert!(!is_recall_self_capture(text));
+    }
 }
 
 /// Pick a sensible title from OCR-recognized text. We use the first

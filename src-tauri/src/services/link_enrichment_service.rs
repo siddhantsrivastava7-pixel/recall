@@ -1999,6 +1999,29 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn replace_entities_for_memory(
+            &self,
+            _memory_id: &str,
+            _entities: &[crate::ai::entities::Entity],
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn list_entities_for_memory(
+            &self,
+            _memory_id: &str,
+        ) -> AppResult<Vec<crate::models::MemoryEntityRow>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_memories_by_entity(
+            &self,
+            _entity_type: &str,
+            _entity_value: &str,
+        ) -> AppResult<Vec<crate::models::Memory>> {
+            Ok(Vec::new())
+        }
+
         async fn embedding_coverage(
             &self,
         ) -> AppResult<crate::db::repositories::EmbeddingCoverage> {

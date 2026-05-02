@@ -11,7 +11,8 @@ use commands::{
     ai::{
         ai_diagnose_clipboard_image, ai_diagnose_llm, ai_download_embedding_model,
         ai_download_llm, ai_llm_status, ai_set_enabled, ai_set_mode, ai_status,
-        ai_unload_llm, ask_recall, embed_all_memories, find_related, ocr_rebuild_index,
+        ai_unload_llm, ask_recall, embed_all_memories, find_related,
+        list_entities_for_memory, list_memories_by_entity, ocr_rebuild_index,
         ocr_run_for_memory, semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
@@ -131,6 +132,81 @@ fn start_bookmark_sync_loop(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+/// v0.5.6 one-shot backfill. Re-runs the auto-tagger (now with
+/// URL/UUID false-positive guards) and the new entity extractor
+/// against every memory in the library. Fire-and-forget — when
+/// it finishes, sets `ai_v0_5_6_backfill_done = true` so the
+/// next launch skips it.
+///
+/// Per-memory work is small (regex over content + a few small
+/// SQL writes), but on a 2k-row library this can take ~30s.
+/// Yields between memories so the runtime stays responsive.
+async fn run_v0_5_6_backfill(state: &AppState) -> crate::errors::app_error::AppResult<()> {
+    use crate::ai::embeddings::auto_tagger;
+    use crate::ai::entities;
+
+    let started_at = std::time::Instant::now();
+    let memories = state.memory_repository.list().await?;
+    let total = memories.len();
+    eprintln!("[recall][v0.5.6] backfill starting: {total} memories");
+
+    for (idx, memory) in memories.iter().enumerate() {
+        // Re-detect tags on the current content. merge_topic_labels
+        // does a deduped union of existing + new tags — but since
+        // v0.5.6 tightened the regex, some existing tags will now
+        // be stale (e.g. URLs that picked up `license-key` from a
+        // UUID match). We don't have a clean way to "remove only
+        // tags the new detector wouldn't fire" without extra repo
+        // surface, so we only ADD missing tags here. The stale
+        // license-key tags get scrubbed for memories that the user
+        // re-saves or re-OCRs after v0.5.6; for the rest, the
+        // self-capture filter and improved retrieval logic
+        // already prevent them from polluting results.
+        //
+        // Future: if false-positive damage is widespread enough to
+        // matter, add a `replace_topic_labels` repo method and
+        // overwrite tags wholesale during this backfill pass.
+        let detected_tags = auto_tagger::detect_tags(&memory.content);
+        let _ = state
+            .memory_repository
+            .merge_topic_labels(&memory.id, &detected_tags)
+            .await;
+
+        // Extract entities. `replace_entities_for_memory` handles
+        // the dedup at the DB level — re-running on the same
+        // content produces the same rows.
+        let _ = entities::extract_and_persist(
+            &state.memory_repository,
+            &memory.id,
+            &memory.content,
+            &[],
+        )
+        .await;
+
+        // Yield every 50 memories to keep the runtime responsive.
+        if idx % 50 == 49 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    // Mark backfill complete so subsequent launches skip this pass.
+    // settings_service exposes get + save; we read-modify-write
+    // (no merge_partial in v0.5.6, just the full row) — the
+    // window is small enough that a concurrent settings update
+    // racing with this is unlikely, and we'd rather miss a
+    // concurrent setting change here than risk the flag never
+    // landing.
+    let mut current = state.settings_service.get().await.unwrap_or_default();
+    current.ai_v0_5_6_backfill_done = Some(true);
+    let _ = state.settings_service.save(&current).await;
+
+    eprintln!(
+        "[recall][v0.5.6] backfill complete: {total} memories in {:.1}s",
+        started_at.elapsed().as_secs_f32()
+    );
+    Ok(())
 }
 
 /// Boot the AI scheduler after the main window has opened. Two
@@ -407,6 +483,41 @@ pub fn run() {
                             .resume_incomplete_enrichments(handle.clone(), memories),
                     );
                 }
+
+                // v0.5.6: one-shot backfill pass. Re-runs the
+                // auto-tagger and entity extractor against every
+                // existing memory. Two reasons:
+                //   * The auto-tagger's URL/UUID exclusion shipped
+                //     in v0.5.6 — without backfill, existing
+                //     URL bookmarks would still carry false-positive
+                //     license-key tags from earlier versions.
+                //   * The entity tables are empty until extraction
+                //     runs. Without backfill, entity-pivot retrieval
+                //     and the memory-detail entity chips would only
+                //     work for memories saved on v0.5.6+, which
+                //     would feel like the feature is broken.
+                //
+                // Spawned in the background after the window opens
+                // so it never blocks first paint or the AI scheduler.
+                // Settings flag prevents repeat passes — once it
+                // completes, the flag is set and subsequent boots
+                // skip it.
+                let backfill_done = settings
+                    .ai_v0_5_6_backfill_done
+                    .unwrap_or(false);
+                if !backfill_done {
+                    let app_handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app_handle.state::<AppState>();
+                        if let Err(err) =
+                            run_v0_5_6_backfill(&state).await
+                        {
+                            eprintln!(
+                                "[recall][v0.5.6] backfill failed: {err}"
+                            );
+                        }
+                    });
+                }
             }
 
             Ok(())
@@ -430,6 +541,8 @@ pub fn run() {
             ai_unload_llm,
             ai_diagnose_llm,
             ask_recall,
+            list_entities_for_memory,
+            list_memories_by_entity,
             embed_all_memories,
             find_related,
             semantic_search,

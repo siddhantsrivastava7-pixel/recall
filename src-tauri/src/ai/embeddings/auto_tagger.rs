@@ -35,13 +35,30 @@ pub fn detect_tags(content: &str) -> Vec<&'static str> {
 
     let mut tags = Vec::new();
 
-    if license_key_re().is_match(trimmed) {
+    // v0.5.6: gather URL spans first so we can skip license-key
+    // detection inside them. URLs frequently contain UUID-like
+    // segments (Amazon product IDs, S3 keys, OAuth state) whose
+    // shape happens to match the license-key regex's structure
+    // but which aren't license keys at all. Without this filter,
+    // a single bookmark to amazon.com/stores/page/A2B974BA-C68F-...
+    // tags as `license-key` and pollutes the tag-pivot retrieval
+    // for "what license keys did I save".
+    let url_spans: Vec<(usize, usize)> = url_re()
+        .find_iter(trimmed)
+        .map(|m| (m.start(), m.end()))
+        .collect();
+    let in_url = |pos: usize| url_spans.iter().any(|(s, e)| pos >= *s && pos < *e);
+
+    if license_key_re()
+        .find_iter(trimmed)
+        .any(|m| !in_url(m.start()) && looks_like_real_license_key(m.as_str()))
+    {
         tags.push("license-key");
     }
     if email_re().is_match(trimmed) {
         tags.push("email");
     }
-    if url_re().is_match(trimmed) {
+    if !url_spans.is_empty() {
         tags.push("url");
     }
     if phone_re().is_match(trimmed) {
@@ -58,6 +75,26 @@ pub fn detect_tags(content: &str) -> Vec<&'static str> {
     }
 
     tags
+}
+
+/// v0.5.6: post-regex validator for license-key matches. The base
+/// pattern allows any alphanumeric blocks, which means UUIDs
+/// (8-4-4-4-12 pure hex) match it through their middle segments
+/// (`C68F-4742-A7E4` is a valid sub-match of the regex). UUIDs are
+/// the dominant false-positive source from URLs and bookmark
+/// metadata — we filter them out by requiring at least one non-hex
+/// letter (G–Z, ignoring case) somewhere in the matched string.
+///
+/// Real license keys almost always contain at least one non-hex
+/// letter — issuers pick from the full alphabet to maximize the key
+/// space. The user's "RC-TRIAL-..." keys all contain T/I/L/R, all
+/// of which are non-hex. UUIDs are constrained to 0-9 + A-F by
+/// definition. The check is case-insensitive so lowercase keys
+/// (rare but possible) still pass.
+fn looks_like_real_license_key(matched: &str) -> bool {
+    matched
+        .chars()
+        .any(|c| matches!(c, 'g'..='z' | 'G'..='Z'))
 }
 
 /// License-key shape: 2–5 uppercase alphanumeric chars, then 2–4
@@ -206,6 +243,48 @@ mod tests {
             "false positive on hyphenated word: {:?}",
             tags
         );
+    }
+
+    #[test]
+    fn does_not_tag_uuid_inside_url() {
+        // v0.5.6: Amazon product URL with a UUID-shaped path segment.
+        // Pre-fix this got tagged license-key because the substring
+        // C68F-4742-A7E4 matches the regex (4 hex + 2 dash-blocks).
+        let tags = detect_tags(
+            "https://www.amazon.in/stores/page/A2B974BA-C68F-4742-A7E4-C68631167C1C?ingress=0",
+        );
+        assert!(tags.contains(&"url"), "should still tag URL: {:?}", tags);
+        assert!(
+            !tags.contains(&"license-key"),
+            "false positive on UUID inside URL: {:?}",
+            tags
+        );
+    }
+
+    #[test]
+    fn does_not_tag_bare_uuid() {
+        // UUIDs by themselves (no URL wrapper) are also rejected
+        // because they're pure hex — no real letters G-Z. License
+        // keys almost always include letters outside the hex range.
+        let tags = detect_tags("550E8400-E29B-41D4-A716-446655440000");
+        assert!(
+            !tags.contains(&"license-key"),
+            "false positive on pure-hex UUID: {:?}",
+            tags
+        );
+    }
+
+    #[test]
+    fn still_tags_license_key_alongside_url() {
+        // A memory containing BOTH a real license key and a URL
+        // should still get tagged license-key. The URL filter only
+        // suppresses matches that fall WITHIN url substrings, not
+        // matches in surrounding prose.
+        let tags = detect_tags(
+            "Your activation key is RC-TRIAL-5102-65C6 — see https://recall.app/keys",
+        );
+        assert!(tags.contains(&"license-key"), "missed real key: {:?}", tags);
+        assert!(tags.contains(&"url"), "missed URL: {:?}", tags);
     }
 
     #[test]

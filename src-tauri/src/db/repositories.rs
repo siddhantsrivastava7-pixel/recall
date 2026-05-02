@@ -173,6 +173,36 @@ pub trait MemoryRepository: Send + Sync {
     /// Ordered newest-first by `created_at`.
     async fn list_memories_by_topic_label(&self, tag: &str) -> AppResult<Vec<Memory>>;
 
+    // ─── v0.5.6: structured entities ─────────────────────────────────
+
+    /// Replace the entity rows for a memory with `entities`.
+    /// Idempotent: deletes existing rows for this memory, then
+    /// inserts the new set in one transaction. Called after each
+    /// chunk_and_enqueue_embeds run, so re-extraction (e.g. content
+    /// edited, backfill triggered) doesn't accumulate stale rows.
+    async fn replace_entities_for_memory(
+        &self,
+        memory_id: &str,
+        entities: &[crate::ai::entities::Entity],
+    ) -> AppResult<()>;
+
+    /// Read all entity rows for a memory. Used by the memory
+    /// detail view to render entity chips.
+    async fn list_entities_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> AppResult<Vec<crate::models::MemoryEntityRow>>;
+
+    /// List every memory that has an entity row matching the given
+    /// `(entity_type, entity_value)` pair. Used by entity-pivot
+    /// retrieval (v0.5.7) — "what did I save about Anthropic"
+    /// resolves to `list_memories_by_entity("company", "Anthropic")`.
+    async fn list_memories_by_entity(
+        &self,
+        entity_type: &str,
+        entity_value: &str,
+    ) -> AppResult<Vec<Memory>>;
+
     /// Aggregate embedding-coverage counts for the AI Settings tab:
     /// how many memories have at least one chunk, how many of those
     /// have all chunks embedded, etc.
