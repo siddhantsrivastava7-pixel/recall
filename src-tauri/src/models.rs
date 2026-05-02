@@ -258,6 +258,14 @@ pub struct AppSettings {
     /// re-runs on subsequent launches.
     #[serde(default)]
     pub ai_v0_5_6_backfill_done: Option<bool>,
+    /// v0.5.7: independent flag for the corrected backfill that
+    /// uses replace_auto_tagger_tags (removes stale tags) and
+    /// runs is_recall_self_capture against existing memories'
+    /// ocr_text. v0.5.6's pass had two bugs that left
+    /// contamination in place; this flag forces a fresh run on
+    /// upgrade even when v0.5.6's flag is already set.
+    #[serde(default)]
+    pub ai_v0_5_7_backfill_done: Option<bool>,
 }
 
 impl Default for AppSettings {
@@ -278,6 +286,7 @@ impl Default for AppSettings {
             ai_pause_on_battery: true,
             ai_heavy_only_on_ac: true,
             ai_v0_5_6_backfill_done: None,
+            ai_v0_5_7_backfill_done: None,
         }
     }
 }

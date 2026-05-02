@@ -23,6 +23,20 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+/// v0.5.7: every tag value the auto-tagger may emit. Used by the
+/// backfill path to know which existing tags to scrub before
+/// re-running detection — without this list, false positives from
+/// earlier (looser) regexes would never be removed.
+pub const MANAGED_TAGS: &[&str] = &[
+    "license-key",
+    "email",
+    "url",
+    "phone-number",
+    "ip-address",
+    "code-snippet",
+    "hash",
+];
+
 /// Pattern detectors run in order; each returns `Some(tag)` when its
 /// pattern matches, `None` otherwise. Multiple detectors can fire on
 /// the same memory — a captured Discord message containing a URL and

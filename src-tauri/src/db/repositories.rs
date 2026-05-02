@@ -159,6 +159,26 @@ pub trait MemoryRepository: Send + Sync {
     /// enriched embedding text alongside the title.
     async fn topic_labels_for_memory(&self, memory_id: &str) -> AppResult<Vec<String>>;
 
+    /// v0.5.7: Replace only the auto-tagger-managed tags on a
+    /// memory with `fresh_tags`, preserving any tags applied by
+    /// other sources (link enrichment, classifier, manual user
+    /// tagging). `managed_tags` is the set of tag values the
+    /// auto-tagger owns — anything in topic_labels that's also
+    /// in this set gets dropped, then `fresh_tags` is added.
+    ///
+    /// Why a separate method instead of a generic "replace all":
+    /// `merge_topic_labels` (the v0.3.7 default) only adds, never
+    /// removes — so when the auto-tagger's regex tightens (as in
+    /// v0.5.6's URL/UUID guard), false positives from earlier
+    /// versions stay forever. This method is the v0.5.7 backfill
+    /// path's fix for the resulting stale-tag contamination.
+    async fn replace_auto_tagger_tags(
+        &self,
+        memory_id: &str,
+        managed_tags: &[&str],
+        fresh_tags: &[&str],
+    ) -> AppResult<Vec<String>>;
+
     /// v0.5.5: list every memory whose `topic_labels` JSON array
     /// contains the given tag. Used by Ask Recall's tag-pivot
     /// retrieval — when the query semantically matches a known

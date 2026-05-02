@@ -134,49 +134,92 @@ fn start_bookmark_sync_loop(app: tauri::AppHandle) {
     });
 }
 
-/// v0.5.6 one-shot backfill. Re-runs the auto-tagger (now with
-/// URL/UUID false-positive guards) and the new entity extractor
-/// against every memory in the library. Fire-and-forget — when
-/// it finishes, sets `ai_v0_5_6_backfill_done = true` so the
-/// next launch skips it.
+/// v0.5.7 one-shot backfill. Supersedes v0.5.6's first-launch pass.
+/// Three jobs per memory:
+///   * `replace_auto_tagger_tags` to scrub stale auto-tagger tags
+///     (e.g. `license-key` falsely applied by v0.5.5's looser
+///     regex to URLs containing UUID-shaped segments). v0.5.6's
+///     backfill used `merge_topic_labels` which never removes,
+///     so the contamination persisted — this is the fix.
+///   * Re-run `is_recall_self_capture` against any memory's
+///     `ocr_text`; if it now hits, flip `ocr_engine` to the
+///     `+self-capture` suffix so retrieval skips it. v0.5.6's
+///     filter only ran inside `process_ocr` for newly-OCR'd
+///     screenshots, leaving existing screenshots in the library
+///     unmarked.
+///   * Re-extract structured entities (idempotent — UNIQUE
+///     constraint dedups; safe to run repeatedly).
 ///
-/// Per-memory work is small (regex over content + a few small
-/// SQL writes), but on a 2k-row library this can take ~30s.
-/// Yields between memories so the runtime stays responsive.
-async fn run_v0_5_6_backfill(state: &AppState) -> crate::errors::app_error::AppResult<()> {
+/// Independent flag so it runs even when v0.5.6 backfill is
+/// already marked done.
+async fn run_v0_5_7_backfill(state: &AppState) -> crate::errors::app_error::AppResult<()> {
     use crate::ai::embeddings::auto_tagger;
     use crate::ai::entities;
+    use crate::ai::scheduler::worker;
 
     let started_at = std::time::Instant::now();
     let memories = state.memory_repository.list().await?;
     let total = memories.len();
-    eprintln!("[recall][v0.5.6] backfill starting: {total} memories");
+    eprintln!("[recall][v0.5.7] backfill starting: {total} memories");
+
+    let mut tags_changed = 0usize;
+    let mut self_captures_marked = 0usize;
 
     for (idx, memory) in memories.iter().enumerate() {
-        // Re-detect tags on the current content. merge_topic_labels
-        // does a deduped union of existing + new tags — but since
-        // v0.5.6 tightened the regex, some existing tags will now
-        // be stale (e.g. URLs that picked up `license-key` from a
-        // UUID match). We don't have a clean way to "remove only
-        // tags the new detector wouldn't fire" without extra repo
-        // surface, so we only ADD missing tags here. The stale
-        // license-key tags get scrubbed for memories that the user
-        // re-saves or re-OCRs after v0.5.6; for the rest, the
-        // self-capture filter and improved retrieval logic
-        // already prevent them from polluting results.
-        //
-        // Future: if false-positive damage is widespread enough to
-        // matter, add a `replace_topic_labels` repo method and
-        // overwrite tags wholesale during this backfill pass.
+        // 1. Replace the auto-tagger-managed tags wholesale.
+        //    `replace_auto_tagger_tags` removes any tag in
+        //    MANAGED_TAGS, then adds the freshly detected set.
+        //    Other-source tags (link enrichment, classifier) stay.
         let detected_tags = auto_tagger::detect_tags(&memory.content);
-        let _ = state
+        match state
             .memory_repository
-            .merge_topic_labels(&memory.id, &detected_tags)
-            .await;
+            .replace_auto_tagger_tags(&memory.id, auto_tagger::MANAGED_TAGS, &detected_tags)
+            .await
+        {
+            Ok(_) => tags_changed += 1,
+            Err(err) => eprintln!(
+                "[recall][v0.5.7] replace_auto_tagger_tags failed for {}: {err}",
+                memory.id
+            ),
+        }
 
-        // Extract entities. `replace_entities_for_memory` handles
-        // the dedup at the DB level — re-running on the same
-        // content produces the same rows.
+        // 2. Self-capture check against existing OCR text. We
+        //    only need to update memories whose ocr_engine
+        //    hasn't already been flagged.
+        if let Some(ocr_text) = memory.ocr_text.as_deref() {
+            let already_flagged = memory
+                .ocr_engine
+                .as_deref()
+                .map(|e| e.contains("self-capture"))
+                .unwrap_or(false);
+            if !already_flagged && worker::is_recall_self_capture_text(ocr_text) {
+                let new_engine = format!(
+                    "{}+self-capture",
+                    memory.ocr_engine.as_deref().unwrap_or("unknown")
+                );
+                if let Err(err) = state
+                    .memory_repository
+                    .set_ocr_status(
+                        &memory.id,
+                        memory.ocr_status.as_deref().unwrap_or("done"),
+                        Some(ocr_text),
+                        Some(&new_engine),
+                        memory.ocr_processed_at.as_deref(),
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "[recall][v0.5.7] self-capture mark failed for {}: {err}",
+                        memory.id
+                    );
+                } else {
+                    self_captures_marked += 1;
+                }
+            }
+        }
+
+        // 3. Refresh extracted entities. Idempotent — same content
+        //    + same detectors = same rows.
         let _ = entities::extract_and_persist(
             &state.memory_repository,
             &memory.id,
@@ -185,25 +228,21 @@ async fn run_v0_5_6_backfill(state: &AppState) -> crate::errors::app_error::AppR
         )
         .await;
 
-        // Yield every 50 memories to keep the runtime responsive.
         if idx % 50 == 49 {
             tokio::task::yield_now().await;
         }
     }
 
-    // Mark backfill complete so subsequent launches skip this pass.
-    // settings_service exposes get + save; we read-modify-write
-    // (no merge_partial in v0.5.6, just the full row) — the
-    // window is small enough that a concurrent settings update
-    // racing with this is unlikely, and we'd rather miss a
-    // concurrent setting change here than risk the flag never
-    // landing.
     let mut current = state.settings_service.get().await.unwrap_or_default();
+    current.ai_v0_5_7_backfill_done = Some(true);
+    // Also mark v0.5.6 done in case we hit a fresh install where
+    // both flags are unset — no point running v0.5.6's logic
+    // afterwards since v0.5.7's pass strictly subsumes it.
     current.ai_v0_5_6_backfill_done = Some(true);
     let _ = state.settings_service.save(&current).await;
 
     eprintln!(
-        "[recall][v0.5.6] backfill complete: {total} memories in {:.1}s",
+        "[recall][v0.5.7] backfill complete: {total} memories scanned, {tags_changed} tag rows touched, {self_captures_marked} self-captures marked, in {:.1}s",
         started_at.elapsed().as_secs_f32()
     );
     Ok(())
@@ -502,18 +541,24 @@ pub fn run() {
                 // Settings flag prevents repeat passes — once it
                 // completes, the flag is set and subsequent boots
                 // skip it.
-                let backfill_done = settings
-                    .ai_v0_5_6_backfill_done
+                // v0.5.7: independent backfill flag because the
+                // v0.5.6 pass had two bugs (tag-merge couldn't
+                // remove stale entries, self-capture filter never
+                // ran on existing memories). Memories that already
+                // saw v0.5.6 backfill still need the v0.5.7 pass
+                // to scrub the contamination v0.5.6 left behind.
+                let v57_done = settings
+                    .ai_v0_5_7_backfill_done
                     .unwrap_or(false);
-                if !backfill_done {
+                if !v57_done {
                     let app_handle = handle.clone();
                     tauri::async_runtime::spawn(async move {
                         let state = app_handle.state::<AppState>();
                         if let Err(err) =
-                            run_v0_5_6_backfill(&state).await
+                            run_v0_5_7_backfill(&state).await
                         {
                             eprintln!(
-                                "[recall][v0.5.6] backfill failed: {err}"
+                                "[recall][v0.5.7] backfill failed: {err}"
                             );
                         }
                     });

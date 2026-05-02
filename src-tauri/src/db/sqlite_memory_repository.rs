@@ -1071,6 +1071,48 @@ impl MemoryRepository for SqliteMemoryRepository {
             .unwrap_or_default())
     }
 
+    async fn replace_auto_tagger_tags(
+        &self,
+        memory_id: &str,
+        managed_tags: &[&str],
+        fresh_tags: &[&str],
+    ) -> AppResult<Vec<String>> {
+        let existing = self.topic_labels_for_memory(memory_id).await?;
+        // Drop every tag the auto-tagger owns; keep everything else.
+        let managed_set: std::collections::HashSet<&str> =
+            managed_tags.iter().copied().collect();
+        let mut next: Vec<String> = existing
+            .iter()
+            .filter(|t| !managed_set.contains(t.as_str()))
+            .cloned()
+            .collect();
+        // Re-add the freshly detected ones (deduped).
+        for tag in fresh_tags {
+            let tag_str = tag.to_string();
+            if !next.contains(&tag_str) {
+                next.push(tag_str);
+            }
+        }
+        if next == existing {
+            return Ok(existing);
+        }
+        let json_value = Json(&next);
+        sqlx::query(
+            r#"
+            UPDATE memories
+            SET topic_labels = ?1,
+                updated_at = ?2
+            WHERE id = ?3
+            "#,
+        )
+        .bind(json_value)
+        .bind(Utc::now().to_rfc3339())
+        .bind(memory_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(next)
+    }
+
     async fn replace_entities_for_memory(
         &self,
         memory_id: &str,

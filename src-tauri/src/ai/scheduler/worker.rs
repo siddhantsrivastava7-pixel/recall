@@ -488,6 +488,17 @@ async fn chunk_and_enqueue_embeds(
 /// matches risk false positives on legitimate notes that happen
 /// to mention "Ask Recall" in conversation. Two independent
 /// markers in the same OCR scan is statistically unmistakable.
+/// v0.5.7: public alias for the same heuristic. The backfill path
+/// in lib.rs needs to scan existing memories' ocr_text for the
+/// self-capture markers, so the predicate has to be reachable
+/// outside this module. Kept under a separate symbol name so the
+/// internal `is_recall_self_capture` callsite (used by process_ocr)
+/// doesn't suddenly look like it's calling something exported
+/// for arbitrary use.
+pub fn is_recall_self_capture_text(ocr_text: &str) -> bool {
+    is_recall_self_capture(ocr_text)
+}
+
 fn is_recall_self_capture(ocr_text: &str) -> bool {
     const MARKERS: &[&str] = &[
         "ASK RECALL",

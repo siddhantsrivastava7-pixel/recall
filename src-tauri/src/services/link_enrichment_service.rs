@@ -1992,6 +1992,15 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn replace_auto_tagger_tags(
+            &self,
+            _memory_id: &str,
+            _managed_tags: &[&str],
+            _fresh_tags: &[&str],
+        ) -> AppResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
         async fn list_memories_by_topic_label(
             &self,
             _tag: &str,
