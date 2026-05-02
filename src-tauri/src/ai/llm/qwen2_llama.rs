@@ -475,6 +475,13 @@ impl LlamaQwen2Adapter {
                     .map_err(|err| AppError::Invalid(format!("decode failed: {err}")))?;
             }
 
+            // `ctx` borrows `model`, so we must drop it before
+            // moving `model` out into the return tuple. Without
+            // this explicit drop, rustc's drop-order rule keeps
+            // ctx alive until the end of the closure scope and the
+            // borrow checker (correctly) refuses the move.
+            drop(ctx);
+
             Ok((
                 LlmGenerationResponse {
                     text: answer.trim().to_string(),
