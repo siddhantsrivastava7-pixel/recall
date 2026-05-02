@@ -382,14 +382,30 @@ impl LlamaQwen2Adapter {
             // Context: reuses model weights but holds the KV cache
             // for one call. Fresh context per generation keeps
             // semantics simple — no accidental cross-call state.
+            //
+            // v0.5.2 — n_batch must be at least as large as the
+            // largest single batch we submit. Default is 2048,
+            // which truncates / aborts when we feed a 4K-token
+            // RAG prompt as one batch. Setting n_batch == n_ctx
+            // means any prompt that fits the context fits the
+            // batch. n_ubatch (micro-batch for actual compute) we
+            // leave at 512 — that's a memory/speed knob inside the
+            // batch, not a hard limit on what we submit.
             let n_threads = num_cpus::get_physical().max(1) as i32;
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS))
+                .with_n_batch(CONTEXT_WINDOW_TOKENS)
+                .with_n_ubatch(512)
                 .with_n_threads(n_threads)
                 .with_n_threads_batch(n_threads);
+            eprintln!(
+                "[recall][llm] creating context: n_ctx={} n_batch={} threads={}",
+                CONTEXT_WINDOW_TOKENS, CONTEXT_WINDOW_TOKENS, n_threads
+            );
             let mut ctx = model
                 .new_context(&backend, ctx_params)
                 .map_err(|err| AppError::Invalid(format!("ctx creation failed: {err}")))?;
+            eprintln!("[recall][llm] context created");
 
             // Tokenize. AddBos::Always mirrors what Qwen2.5 chat
             // expects. Tokenizer special-token handling is built
@@ -397,6 +413,7 @@ impl LlamaQwen2Adapter {
             let tokens: Vec<LlamaToken> = model
                 .str_to_token(&formatted, AddBos::Always)
                 .map_err(|err| AppError::Invalid(format!("tokenize failed: {err}")))?;
+            eprintln!("[recall][llm] tokenized: {} prompt tokens", tokens.len());
             if tokens.len() as u32 >= CONTEXT_WINDOW_TOKENS {
                 return Err(AppError::Invalid(format!(
                     "Prompt is too long: {} tokens, context window is {}",
@@ -405,19 +422,48 @@ impl LlamaQwen2Adapter {
                 )));
             }
 
-            // Prefill: feed the entire prompt as one batched decode.
-            // This is the speedup over candle — llama.cpp's SIMD
-            // prefill kernels process the prompt at 50–150 tok/s
-            // vs ~2.6 tok/s on candle CPU.
-            let mut batch = LlamaBatch::new(tokens.len().max(512), 1);
-            for (i, token) in tokens.iter().enumerate() {
-                let is_last = i == tokens.len() - 1;
-                batch
-                    .add(*token, i as i32, &[0], is_last)
-                    .map_err(|err| AppError::Invalid(format!("batch add failed: {err}")))?;
+            // Prefill: feed the prompt in chunks of at most
+            // `prefill_chunk` tokens per decode call. Submitting a
+            // 4K-token batch in one call hits llama.cpp's internal
+            // assertion limits and aborts the process (no
+            // recoverable error). Chunking keeps each decode safe.
+            //
+            // We reuse a single LlamaBatch across both the prefill
+            // chunks AND the per-token generation loop below. After
+            // the loop ends, `batch` still holds the LAST prefill
+            // chunk's tokens — the generation sampler needs that to
+            // know which logit position to read for the first
+            // sampled token (`batch.n_tokens() - 1`).
+            //
+            // SIMD prefill speed on tier-C 7B Q4_K_M is 50–150 tok/s
+            // (vs ~2.6 tok/s on candle CPU).
+            let prefill_chunk: usize = 512;
+            let mut batch = LlamaBatch::new(prefill_chunk, 1);
+            let mut prefill_pos: usize = 0;
+            while prefill_pos < tokens.len() {
+                let end = (prefill_pos + prefill_chunk).min(tokens.len());
+                let is_last_chunk = end == tokens.len();
+                batch.clear();
+                for (offset, token) in tokens[prefill_pos..end].iter().enumerate() {
+                    let abs_pos = prefill_pos + offset;
+                    let is_last = is_last_chunk && offset == (end - prefill_pos - 1);
+                    batch
+                        .add(*token, abs_pos as i32, &[0], is_last)
+                        .map_err(|err| AppError::Invalid(format!("batch add failed: {err}")))?;
+                }
+                eprintln!(
+                    "[recall][llm] prefill chunk {}..{} ({} tokens){}",
+                    prefill_pos,
+                    end,
+                    end - prefill_pos,
+                    if is_last_chunk { " [last]" } else { "" }
+                );
+                ctx.decode(&mut batch).map_err(|err| {
+                    AppError::Invalid(format!("prefill decode failed at {prefill_pos}: {err}"))
+                })?;
+                prefill_pos = end;
             }
-            ctx.decode(&mut batch)
-                .map_err(|err| AppError::Invalid(format!("prefill decode failed: {err}")))?;
+            eprintln!("[recall][llm] prefill complete, starting generation");
 
             // Sampler: greedy when temperature == 0 (default for v0.4.x
             // and v0.5.0 — reproducibility matters more than diversity
@@ -431,14 +477,24 @@ impl LlamaQwen2Adapter {
             let mut generated_tokens: Vec<LlamaToken> = Vec::with_capacity(max_tokens as usize);
             let mut emitted_chars: usize = 0;
             let mut answer = String::new();
-            let mut n_cur = batch.n_tokens();
+            // After prefill, the next token's KV-cache position is
+            // exactly `tokens.len()` (we filled positions 0..len).
+            let mut n_cur = tokens.len() as i32;
+            eprintln!(
+                "[recall][llm] starting generation: n_cur={} max_tokens={}",
+                n_cur, max_tokens
+            );
 
-            for _ in 0..max_tokens {
-                // Sample from the logits of the last token in the
-                // most recent decode batch.
+            for step in 0..max_tokens {
+                // Sample from the logits of the last logit-bearing
+                // token in the most recent decode batch. On the
+                // first step that's the last prefill chunk's last
+                // token; on subsequent steps it's the single newly
+                // decoded token.
                 let token = sampler.sample(&ctx, batch.n_tokens() - 1);
                 sampler.accept(token);
                 if model.is_eog_token(token) {
+                    eprintln!("[recall][llm] EOS reached at step {step}");
                     break;
                 }
 
