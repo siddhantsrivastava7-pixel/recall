@@ -65,6 +65,15 @@ jobs:
   build-macos:
     name: Build macOS arm64 updater artifact
     runs-on: macos-latest
+    # v0.5.0: deployment target lives at the job level so every step
+    # — cargo build, cc-rs sub-invocations, cmake's own compiler
+    # spawn for llama-cpp-sys-2 — sees the same value. Setting it
+    # only on the build step missed the cmake path on iter 2 / 3.
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      CMAKE_OSX_DEPLOYMENT_TARGET: "11.0"
+      CXXFLAGS: "-mmacosx-version-min=11.0"
+      CFLAGS: "-mmacosx-version-min=11.0"
 
     steps:
       - name: Checkout
@@ -96,12 +105,6 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # llama.cpp uses std::filesystem::path which is only
-          # available from macOS 10.15. Tauri's default deployment
-          # target is older, causing C++ compile errors. Bump to
-          # 11.0 — covers all Apple Silicon hardware (Big Sur was
-          # the first release on M1) and a wide range of Intel Macs.
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: npm run tauri:build -- --bundles app
 
       - name: Upload macOS updater artifacts
