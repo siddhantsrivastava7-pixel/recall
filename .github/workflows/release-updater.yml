@@ -34,24 +34,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # v0.5.0: llama-cpp-2 needs libclang at build time for bindgen
-      # to parse llama.cpp's C++ headers. choco's `llvm` package
-      # ships the Windows libclang binary; pinning the version keeps
-      # builds reproducible. The cache shaves the ~5 min install off
-      # subsequent runs (LLVM is ~600 MB extracted).
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\Program Files\LLVM
-          key: llvm-windows-19.1.7
-
-      - name: Install LLVM (Windows)
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          choco install llvm --version=19.1.7 -y --no-progress
-
+      # to parse llama.cpp's C++ headers. windows-latest already
+      # ships LLVM 20.x at the standard `C:\Program Files\LLVM`
+      # path, so we just point bindgen at it — no install step
+      # needed. (Earlier attempt at choco-installing 19.1.7 failed
+      # because chocolatey refuses to downgrade.)
       - name: Set LIBCLANG_PATH
         shell: bash
         run: |
@@ -92,10 +79,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # v0.5.0: macOS runners have system clang (Apple's fork) that
-      # bindgen finds via xcrun, but pinning to brew's llvm gives us
-      # the same toolchain across runners and matches the Windows
-      # build's libclang version. brew on macos-latest is preinstalled.
+      # v0.5.0: macOS runners have system clang via Xcode that
+      # bindgen finds without help. brew install of llvm@19 below
+      # gives us a known-good libclang for bindgen and matches the
+      # Windows build's behavior.
       - name: Install LLVM (macOS)
         run: |
           brew install llvm@19
@@ -109,6 +96,12 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # llama.cpp uses std::filesystem::path which is only
+          # available from macOS 10.15. Tauri's default deployment
+          # target is older, causing C++ compile errors. Bump to
+          # 11.0 — covers all Apple Silicon hardware (Big Sur was
+          # the first release on M1) and a wide range of Intel Macs.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: npm run tauri:build -- --bundles app
 
       - name: Upload macOS updater artifacts
