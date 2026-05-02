@@ -1033,14 +1033,33 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
     let mut errors: u32 = 0;
 
     for memory in &memories {
-        let detected_tags = auto_tagger::detect_tags(&memory.content);
+        // v0.5.10: detect self-capture FIRST so we can suppress
+        // auto-tagging on those memories. Otherwise the auto-
+        // tagger sees OCR'd Ask Recall UI text containing
+        // license-key-shape strings ("RC-TRIAL-..." in the
+        // answer panel) and re-tags the screenshot — defeating
+        // the self-capture filter we already have at retrieval.
+        let already_flagged = memory
+            .ocr_engine
+            .as_deref()
+            .map(|e| e.contains("self-capture"))
+            .unwrap_or(false);
+        let detected_self_capture_now = !already_flagged
+            && memory
+                .ocr_text
+                .as_deref()
+                .map(worker::is_recall_self_capture_text)
+                .unwrap_or(false);
+        let is_self_capture = already_flagged || detected_self_capture_now;
 
-        // v0.5.9: re-apply fresh detected tags. After the bulk
-        // purge, topic_labels has zero managed-tag values. We
-        // call replace_auto_tagger_tags here primarily to ADD
-        // the freshly detected tags (URL, email, etc.) for
-        // memories that legitimately have those — bulk purge
-        // already removed any stale ones.
+        // Auto-tagger detection: empty for self-captures so they
+        // don't carry license-key tags from OCR'd UI content.
+        let detected_tags: Vec<&'static str> = if is_self_capture {
+            Vec::new()
+        } else {
+            auto_tagger::detect_tags(&memory.content)
+        };
+
         match state
             .memory_repository
             .replace_auto_tagger_tags(&memory.id, auto_tagger::MANAGED_TAGS, &detected_tags)
@@ -1059,14 +1078,9 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
             }
         }
 
-        // 2. Self-capture re-flag for existing OCR'd memories.
+        // 2. Self-capture re-flag for newly-detected self-captures.
         if let Some(ocr_text) = memory.ocr_text.as_deref() {
-            let already_flagged = memory
-                .ocr_engine
-                .as_deref()
-                .map(|e| e.contains("self-capture"))
-                .unwrap_or(false);
-            if !already_flagged && worker::is_recall_self_capture_text(ocr_text) {
+            if detected_self_capture_now {
                 let new_engine = format!(
                     "{}+self-capture",
                     memory.ocr_engine.as_deref().unwrap_or("unknown")
@@ -1538,11 +1552,24 @@ pub async fn ask_recall(
             in_window.len(),
             sources.len()
         );
+    } else if tag.is_some() && tag_pivoted_ids.len() >= 2 {
+        // v0.5.10: tag intent fired AND tag-pivot returned ≥2
+        // memories. Skip semantic padding — for an enumeration
+        // question like "what license keys did I save?", random
+        // semantic matches (URLs, command-line outputs whose
+        // embeddings happen to score high) just clutter the
+        // sources panel. Tag-pivot already covered the answer.
+        // We only fall through to semantic when tag-pivot is
+        // empty/sparse, which suggests the user's question
+        // wasn't really tag enumeration despite the phrasing.
+        eprintln!(
+            "[recall][ask-recall] semantic: skipped (tag intent + {} tag-pivot hits)",
+            tag_pivoted_ids.len()
+        );
     } else {
-        // Pure topical: defer to the unified retrieval pipeline,
-        // but with MMR disabled — Ask Recall needs enumeration of
-        // relevant memories, not diversity. v0.5.4 fix for the
-        // "only 1 of 3 license keys surfaced" bug.
+        // Pure topical (or sparse tag-pivot): defer to the unified
+        // retrieval pipeline. MMR disabled — Ask Recall needs
+        // enumeration of relevant memories, not diversity.
         let hits =
             semantic_search_internal(&semantic_query, Some(SEMANTIC_TOP_K), false, &state).await?;
         eprintln!(

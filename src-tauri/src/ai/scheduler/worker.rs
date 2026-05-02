@@ -500,36 +500,52 @@ pub fn is_recall_self_capture_text(ocr_text: &str) -> bool {
 }
 
 fn is_recall_self_capture(ocr_text: &str) -> bool {
-    // Markers cover both AskRecall page screenshots (the original
-    // v0.5.6 case) and memory-detail page screenshots (added in
-    // v0.5.9 after the user surfaced an OCR'd memory-detail card
-    // contaminating tag-pivot retrieval). Hit threshold stays at
-    // 2 to keep false-positives near zero — single mentions of
-    // any one marker can legitimately appear in user notes.
-    const MARKERS: &[&str] = &[
+    // v0.5.10: split into STRONG markers (1 hit suffices) and
+    // WEAK markers (need 2). Strong markers are sequences that
+    // can only meaningfully appear in screenshots of Recall's
+    // own UI — legitimate user notes don't contain "[memory:"
+    // or `SOURCES (12 MATCHING `. The weak set covers softer
+    // signals where a single hit could happen in normal prose.
+    //
+    // v0.5.9's flat threshold of 2 missed the screenshot-of-
+    // sources-panel case where only "Enter to ask" matched and
+    // every other AskRecall marker was off-screen. The strong
+    // set fixes that: "SOURCES (" alone is enough.
+    const STRONG_MARKERS: &[&str] = &[
+        "[memory:",          // citation marker — UI-internal
+        "SOURCES (",         // sources panel header (uppercase)
+        " MATCHING \"",      // sources panel tag label format
+        " MATCHING '",       // alt quote variant
+        " MATCHING •",       // OCR mis-read of straight quote
+        "Single-shot Q&A",   // page subtitle (specific phrasing)
+        "Single-shot QSA",   // OCR mis-read of `Q&A`
+        "Runs fully on-device", // page subtitle continuation
+        "memories that backed", // page subtitle continuation
+    ];
+    const WEAK_MARKERS: &[&str] = &[
         // AskRecall surface
         "ASK RECALL",
         "Ask your memories",
-        "Single-shot Q&A",
-        "Single-shot QSA", // OCR mis-read of `Q&A`
-        "memories that backed",
-        "Runs fully on-device",
         "memories cited",
         "Enter to ask",
         "Streaming answer",
-        "[memory:",
-        // Memory-detail surface (v0.5.9)
+        // Memory-detail surface
         "MEMORY\n",
         "Open source",
         "Bring back",
         "Add a note",
-        "Bookmaks", // typo'd source-app value visible in user's screenshot
+        "Bookmaks", // typo'd source-app value
     ];
-    let mut hits = 0;
-    for marker in MARKERS {
+    for marker in STRONG_MARKERS {
         if ocr_text.contains(marker) {
-            hits += 1;
-            if hits >= 2 {
+            return true;
+        }
+    }
+    let mut weak_hits = 0;
+    for marker in WEAK_MARKERS {
+        if ocr_text.contains(marker) {
+            weak_hits += 1;
+            if weak_hits >= 2 {
                 return true;
             }
         }
