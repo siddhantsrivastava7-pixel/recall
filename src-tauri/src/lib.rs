@@ -152,7 +152,7 @@ fn start_ai_scheduler(
     settings: &crate::models::AppSettings,
 ) {
     use ai::embeddings::fastembed_adapter::FastembedAdapter;
-    use ai::llm::{qwen2_candle, registry as llm_registry};
+    use ai::llm::{qwen2_llama, registry as llm_registry};
     use ai::ocr::default_adapter;
     use ai::scheduler::{queue::AiWorkQueue, worker, AiScheduler};
 
@@ -215,8 +215,16 @@ fn start_ai_scheduler(
     // ready / which one would I get?" — actual download + load
     // is opt-in via the AI Settings tab.
     let llm_entry = llm_registry::entry_for_tier(hardware.tier);
-    let llm_adapter = qwen2_candle::boxed(handle.clone(), llm_entry);
-    state.install_llm_adapter(llm_adapter);
+    // v0.5.0: boxed() now returns AppResult because llama.cpp's
+    // backend init can fail on unsupported CPUs. We log + skip
+    // installation rather than panic — the rest of the AI subsystem
+    // (OCR, embeddings) keeps working without Ask Recall.
+    match qwen2_llama::boxed(handle.clone(), llm_entry) {
+        Ok(adapter) => state.install_llm_adapter(adapter),
+        Err(err) => {
+            eprintln!("[recall][ai-scheduler] LLM adapter init failed: {err}");
+        }
+    }
 }
 
 pub fn run() {

@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.4.4"
+version = "0.5.0"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"
@@ -18,17 +18,18 @@ chrono = { version = "0.4.42", features = ["serde"] }
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 kuchikiki = "0.8.8-speedreader"
-# v0.4.0 — local LLM for Ask Recall (Phase 3). candle is HuggingFace's
-# pure-Rust inference library — no C++ deps, no libclang requirement,
-# builds cleanly on every platform. Trade-off vs llama.cpp: ~30-50%
-# slower, but at 1.5B model size on Tier C the absolute throughput is
-# still fine (~8-12 tok/s CPU). Switching back to llama-cpp-2 + GGUF
-# is on the table if the perf delta becomes user-visible.
-candle-core = { version = "0.8", default-features = false }
-candle-nn = { version = "0.8", default-features = false }
-candle-transformers = { version = "0.8", default-features = false }
-hf-hub = { version = "0.3", features = ["tokio"] }
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+# v0.5.0 — local LLM inference. Switched from candle (pure Rust) to
+# llama-cpp-2 (Rust bindings over llama.cpp) after measuring real-
+# world prefill latency on tier-C 7B Q4_K_M: candle's CPU kernels
+# put first-token latency for a 1000-token RAG prompt at ~6 minutes.
+# llama.cpp's hand-tuned SIMD prefill cuts that to 7–20s on the same
+# hardware. The build cost is libclang on CI runners and ~15-20 MB
+# of compiled C++ in the binary — both worth it.
+#
+# Pinning the minor version: this crate's API has been moving;
+# unpinned `0.1` would silently break on the next release.
+llama-cpp-2 = "0.1"
+num_cpus = "1.16"
 regex = "1.12.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }

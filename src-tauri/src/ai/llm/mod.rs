@@ -13,7 +13,7 @@
 //! No sidecar, no streaming, no multi-turn — those land in v0.4.1+.
 //! v0.4.0 is "single-shot Q&A with citations" only.
 
-pub mod qwen2_candle;
+pub mod qwen2_llama;
 pub mod registry;
 
 use async_trait::async_trait;

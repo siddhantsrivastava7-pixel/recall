@@ -33,6 +33,30 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # v0.5.0: llama-cpp-2 needs libclang at build time for bindgen
+      # to parse llama.cpp's C++ headers. choco's `llvm` package
+      # ships the Windows libclang binary; pinning the version keeps
+      # builds reproducible. The cache shaves the ~5 min install off
+      # subsequent runs (LLVM is ~600 MB extracted).
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\Program Files\LLVM
+          key: llvm-windows-19.1.7
+
+      - name: Install LLVM (Windows)
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          choco install llvm --version=19.1.7 -y --no-progress
+
+      - name: Set LIBCLANG_PATH
+        shell: bash
+        run: |
+          echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -67,6 +91,16 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # v0.5.0: macOS runners have system clang (Apple's fork) that
+      # bindgen finds via xcrun, but pinning to brew's llvm gives us
+      # the same toolchain across runners and matches the Windows
+      # build's libclang version. brew on macos-latest is preinstalled.
+      - name: Install LLVM (macOS)
+        run: |
+          brew install llvm@19
+          echo "LIBCLANG_PATH=$(brew --prefix llvm@19)/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$(brew --prefix llvm@19)/lib:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Install frontend dependencies
         run: npm ci
