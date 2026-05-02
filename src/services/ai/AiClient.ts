@@ -120,6 +120,12 @@ export interface ScrubResult {
   entitiesExtracted: number;
   errors: number;
   elapsedMs: number;
+  /// v0.5.9: rows touched by the brute-force SQL purge.
+  bulkPurgeRowsAffected: number;
+  /// v0.5.9: per-managed-tag count BEFORE the scrub.
+  beforeCounts: Record<string, number>;
+  /// v0.5.9: per-managed-tag count AFTER the scrub.
+  afterCounts: Record<string, number>;
 }
 
 /// v0.3.3: blended search result row. The strength label uses the

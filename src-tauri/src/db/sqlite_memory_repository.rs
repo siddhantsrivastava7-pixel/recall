@@ -1113,6 +1113,71 @@ impl MemoryRepository for SqliteMemoryRepository {
         Ok(next)
     }
 
+    async fn purge_managed_topic_labels(&self, managed_tags: &[&str]) -> AppResult<u64> {
+        if managed_tags.is_empty() {
+            return Ok(0);
+        }
+        // Build the SQL `IN (...)` clause and the json_each filter.
+        // Bind each tag so SQLite handles quoting; we just inline
+        // the placeholder count.
+        let placeholders: Vec<String> = (1..=managed_tags.len())
+            .map(|i| format!("?{}", i))
+            .collect();
+        let in_list = placeholders.join(", ");
+        let sql = format!(
+            r#"
+            UPDATE memories
+            SET topic_labels = (
+                SELECT IFNULL(json_group_array(value), json('[]'))
+                FROM json_each(memories.topic_labels)
+                WHERE value NOT IN ({in_list})
+            ),
+            updated_at = ?{updated_idx}
+            WHERE topic_labels IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM json_each(memories.topic_labels)
+                  WHERE value IN ({in_list_2})
+              )
+            "#,
+            in_list = in_list,
+            // updated_at uses the next placeholder after the IN list
+            updated_idx = managed_tags.len() + 1,
+            // Reuse the same IN-list params with a different placeholder
+            // range. SQLite re-evaluates parameters per occurrence so
+            // we can repeat ?1..?N as needed; we just need to make
+            // sure the two clauses use the same bind values in the
+            // same order.
+            in_list_2 = (1..=managed_tags.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        let mut q = sqlx::query(&sql);
+        for tag in managed_tags {
+            q = q.bind(*tag);
+        }
+        q = q.bind(Utc::now().to_rfc3339());
+        let result = q.execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn count_memories_by_topic_label(&self, tag: &str) -> AppResult<u64> {
+        let row: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM memories
+            WHERE topic_labels IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM json_each(memories.topic_labels)
+                  WHERE value = ?1
+              )
+            "#,
+        )
+        .bind(tag)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0.max(0) as u64)
+    }
+
     async fn replace_entities_for_memory(
         &self,
         memory_id: &str,

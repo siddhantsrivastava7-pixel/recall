@@ -416,14 +416,41 @@ export function AiSettingsTab() {
   /// v0.5.8: manual scrub trigger — recovery path when the boot-time
   /// auto-backfill silently fails. Returns counts so the user (and
   /// us, debugging) can see exactly what changed.
+  /// v0.5.9: extended to render before/after counts per managed
+  /// tag, plus the brute-force SQL bulk-purge counter, so the
+  /// audit unambiguously shows whether stale tags actually
+  /// disappeared from the DB.
   const handleForceScrub = async () => {
     setBusy("scrub");
     setNotice({ kind: "idle" });
     try {
       const result = await aiClient.forceScrub();
+      // Build a delta line per managed tag where the before/after
+      // numbers differ. Surfaces cases like "license-key 12 → 0"
+      // distinctly from cases like "url 47 → 47" (no change because
+      // those URLs legitimately have URLs in their content).
+      const tagOrder = [
+        "license-key",
+        "url",
+        "email",
+        "phone-number",
+        "ip-address",
+        "code-snippet",
+        "hash",
+      ];
+      const deltas = tagOrder
+        .map((tag) => {
+          const before = result.beforeCounts[tag] ?? 0;
+          const after = result.afterCounts[tag] ?? 0;
+          if (before === 0 && after === 0) return null;
+          const arrow = before === after ? "=" : "→";
+          return `${tag}: ${before} ${arrow} ${after}`;
+        })
+        .filter((line): line is string => line !== null);
+      const auditLine = deltas.length > 0 ? ` Tags: ${deltas.join("; ")}.` : "";
       setNotice({
         kind: "info",
-        message: `Scrubbed ${result.memoriesScanned} memories: ${result.tagRowsUpdated} tag updates, ${result.selfCapturesMarked} self-captures flagged, ${result.entitiesExtracted} entities extracted${result.errors > 0 ? `, ${result.errors} errors` : ""} (${(result.elapsedMs / 1000).toFixed(1)}s).`,
+        message: `Scrubbed ${result.memoriesScanned} memories: ${result.bulkPurgeRowsAffected} rows bulk-purged, ${result.selfCapturesMarked} self-captures flagged, ${result.entitiesExtracted} entities extracted${result.errors > 0 ? `, ${result.errors} errors` : ""} (${(result.elapsedMs / 1000).toFixed(1)}s).${auditLine}`,
       });
     } catch (error) {
       const message = describeError(error, "Unable to re-scrub AI tags.");

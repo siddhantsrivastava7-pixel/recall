@@ -179,6 +179,29 @@ pub trait MemoryRepository: Send + Sync {
         fresh_tags: &[&str],
     ) -> AppResult<Vec<String>>;
 
+    /// v0.5.9: brute-force purge of every value in `managed_tags`
+    /// from the `topic_labels` JSON array of EVERY memory, in a
+    /// single SQL pass. Bypasses the per-memory `replace_auto_tagger_tags`
+    /// path entirely — useful when the per-memory pipeline silently
+    /// no-ops (which v0.5.8 surfaced — scrub claimed 1262/1262
+    /// successful calls but `license-key` tags persisted in the DB
+    /// for ~12 memories anyway, root cause not yet identified).
+    ///
+    /// Uses SQLite's `json_each` + `json_group_array` to construct
+    /// the new array filtered to non-managed values. Idempotent:
+    /// running twice produces the same result.
+    ///
+    /// Returns the number of rows touched (memories that had at
+    /// least one managed tag and got their `topic_labels` rewritten).
+    async fn purge_managed_topic_labels(&self, managed_tags: &[&str]) -> AppResult<u64>;
+
+    /// v0.5.9: count of memories whose `topic_labels` JSON array
+    /// contains the exact `tag` value. Used by the scrub audit
+    /// to report before/after numbers per managed tag — gives
+    /// definitive visibility into whether scrubbing actually
+    /// removed entries from the DB or just thought it did.
+    async fn count_memories_by_topic_label(&self, tag: &str) -> AppResult<u64>;
+
     /// v0.5.5: list every memory whose `topic_labels` JSON array
     /// contains the given tag. Used by Ask Recall's tag-pivot
     /// retrieval — when the query semantically matches a known

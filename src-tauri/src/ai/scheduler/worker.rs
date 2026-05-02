@@ -500,17 +500,30 @@ pub fn is_recall_self_capture_text(ocr_text: &str) -> bool {
 }
 
 fn is_recall_self_capture(ocr_text: &str) -> bool {
+    // Markers cover both AskRecall page screenshots (the original
+    // v0.5.6 case) and memory-detail page screenshots (added in
+    // v0.5.9 after the user surfaced an OCR'd memory-detail card
+    // contaminating tag-pivot retrieval). Hit threshold stays at
+    // 2 to keep false-positives near zero — single mentions of
+    // any one marker can legitimately appear in user notes.
     const MARKERS: &[&str] = &[
+        // AskRecall surface
         "ASK RECALL",
         "Ask your memories",
         "Single-shot Q&A",
-        "Single-shot QSA", // common OCR mis-read of `Q&A`
+        "Single-shot QSA", // OCR mis-read of `Q&A`
         "memories that backed",
         "Runs fully on-device",
         "memories cited",
         "Enter to ask",
         "Streaming answer",
         "[memory:",
+        // Memory-detail surface (v0.5.9)
+        "MEMORY\n",
+        "Open source",
+        "Bring back",
+        "Add a note",
+        "Bookmaks", // typo'd source-app value visible in user's screenshot
     ];
     let mut hits = 0;
     for marker in MARKERS {

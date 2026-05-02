@@ -2001,6 +2001,20 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn purge_managed_topic_labels(
+            &self,
+            _managed_tags: &[&str],
+        ) -> AppResult<u64> {
+            Ok(0)
+        }
+
+        async fn count_memories_by_topic_label(
+            &self,
+            _tag: &str,
+        ) -> AppResult<u64> {
+            Ok(0)
+        }
+
         async fn list_memories_by_topic_label(
             &self,
             _tag: &str,

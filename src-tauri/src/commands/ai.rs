@@ -944,29 +944,31 @@ pub async fn ai_diagnose_llm(state: State<'_, AppState>) -> AppResult<LlmDiagnos
 
 // ─── v0.5.8: manual scrub for diagnostics + recovery ─────────────
 
-/// Result of `ai_force_scrub`. Exposed to the UI so the user can
-/// see exactly what the v0.5.7 backfill changed when invoked
-/// manually — we shipped v0.5.7's auto-backfill silently and it
-/// either didn't run or didn't remove stale tags, and there was
-/// no visibility either way. This command + the button surface in
-/// AI Settings give a deterministic recovery path.
+/// Result of `ai_force_scrub`. v0.5.9 expands this to include
+/// per-tag before/after counts so the UI can show definitive
+/// "is the scrub doing anything" diagnostics — v0.5.8's report
+/// said 1262/1262 successful but 12 license-key tags persisted
+/// in the DB, which the bare counter couldn't surface.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrubResult {
     pub memories_scanned: u32,
-    /// Memories where `replace_auto_tagger_tags` actually changed
-    /// the row (existing tags were stale and got removed, or new
-    /// tags were added). Equal-to-existing rows don't count.
     pub tag_rows_updated: u32,
-    /// Memories whose `ocr_text` matched the self-capture markers
-    /// and had `ocr_engine` flipped to `+self-capture`.
     pub self_captures_marked: u32,
-    /// Memories where entity extraction added at least one row.
     pub entities_extracted: u32,
-    /// Errors swallowed during the scrub. Logged for telemetry; the
-    /// scrub continues past per-memory errors.
     pub errors: u32,
     pub elapsed_ms: u64,
+    /// v0.5.9: bulk-SQL purge counter — number of memory rows
+    /// whose `topic_labels` array was actually rewritten by the
+    /// brute-force `purge_managed_topic_labels` pass. Distinct
+    /// from `tag_rows_updated` (which counts per-memory replace
+    /// calls regardless of whether they wrote).
+    pub bulk_purge_rows_affected: u64,
+    /// Per-managed-tag count BEFORE the scrub — tags currently
+    /// applied across the library. Tag string → count.
+    pub before_counts: HashMap<String, u32>,
+    /// Per-managed-tag count AFTER the scrub.
+    pub after_counts: HashMap<String, u32>,
 }
 
 /// Force-run the v0.5.7 backfill regardless of the persisted flag.
@@ -987,6 +989,41 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
     use crate::ai::scheduler::worker;
 
     let started_at = std::time::Instant::now();
+
+    // ─── 0. BEFORE audit ─────────────────────────────────────────
+    // Count how many memories carry each managed tag right now.
+    // Exposed in the result so the user can see definitively
+    // whether the scrub removed entries from the DB.
+    let mut before_counts: HashMap<String, u32> = HashMap::new();
+    for tag in auto_tagger::MANAGED_TAGS {
+        let n = state
+            .memory_repository
+            .count_memories_by_topic_label(tag)
+            .await
+            .unwrap_or(0);
+        before_counts.insert((*tag).to_string(), n as u32);
+    }
+
+    // ─── 1. Bulk SQL purge ───────────────────────────────────────
+    // Single UPDATE that strips every managed tag from every
+    // memory's `topic_labels` array. Bypasses the per-memory
+    // replace_auto_tagger_tags path entirely so any subtle
+    // serde/sqlx issue with that path can't prevent the scrub.
+    // Idempotent — running twice produces the same end state.
+    let bulk_purge_rows_affected = state
+        .memory_repository
+        .purge_managed_topic_labels(auto_tagger::MANAGED_TAGS)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("[recall][force-scrub] bulk purge failed: {err}");
+            0
+        });
+
+    // After bulk purge, every memory's topic_labels has zero
+    // managed-tag values. The per-memory loop below re-adds the
+    // freshly-detected ones so URL/email/etc. tags are properly
+    // applied for content that legitimately has them.
+
     let memories = state.memory_repository.list().await?;
     let total = memories.len() as u32;
 
@@ -998,19 +1035,18 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
     for memory in &memories {
         let detected_tags = auto_tagger::detect_tags(&memory.content);
 
-        // 1. Scrub stale auto-tagger tags + apply fresh detection.
+        // v0.5.9: re-apply fresh detected tags. After the bulk
+        // purge, topic_labels has zero managed-tag values. We
+        // call replace_auto_tagger_tags here primarily to ADD
+        // the freshly detected tags (URL, email, etc.) for
+        // memories that legitimately have those — bulk purge
+        // already removed any stale ones.
         match state
             .memory_repository
             .replace_auto_tagger_tags(&memory.id, auto_tagger::MANAGED_TAGS, &detected_tags)
             .await
         {
             Ok(next_tags) => {
-                // The repo method short-circuits when `next ==
-                // existing` and returns the unchanged list, but
-                // we can't tell the difference here — count any
-                // successful call as a row "scanned." A future
-                // refinement could return `(changed, tags)` to
-                // get a cleaner counter.
                 let _ = next_tags;
                 tag_rows_updated += 1;
             }
@@ -1081,10 +1117,23 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
     current.ai_v0_5_6_backfill_done = Some(true);
     let _ = state.settings_service.save(&current).await;
 
+    // ─── AFTER audit ─────────────────────────────────────────────
+    let mut after_counts: HashMap<String, u32> = HashMap::new();
+    for tag in auto_tagger::MANAGED_TAGS {
+        let n = state
+            .memory_repository
+            .count_memories_by_topic_label(tag)
+            .await
+            .unwrap_or(0);
+        after_counts.insert((*tag).to_string(), n as u32);
+    }
+
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     eprintln!(
-        "[recall][force-scrub] complete: scanned={total} tag_rows={tag_rows_updated} self_captures={self_captures_marked} entities={entities_extracted} errors={errors} elapsed_ms={elapsed_ms}"
+        "[recall][force-scrub] complete: scanned={total} tag_rows={tag_rows_updated} bulk_purge={bulk_purge_rows_affected} self_captures={self_captures_marked} entities={entities_extracted} errors={errors} elapsed_ms={elapsed_ms}"
     );
+    eprintln!("[recall][force-scrub] before: {before_counts:?}");
+    eprintln!("[recall][force-scrub] after:  {after_counts:?}");
 
     Ok(ScrubResult {
         memories_scanned: total,
@@ -1093,6 +1142,9 @@ pub async fn ai_force_scrub(state: State<'_, AppState>) -> AppResult<ScrubResult
         entities_extracted,
         errors,
         elapsed_ms,
+        bulk_purge_rows_affected,
+        before_counts,
+        after_counts,
     })
 }
 
