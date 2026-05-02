@@ -1992,6 +1992,13 @@ mod tests {
             Ok(Vec::new())
         }
 
+        async fn list_memories_by_topic_label(
+            &self,
+            _tag: &str,
+        ) -> AppResult<Vec<crate::models::Memory>> {
+            Ok(Vec::new())
+        }
+
         async fn embedding_coverage(
             &self,
         ) -> AppResult<crate::db::repositories::EmbeddingCoverage> {

@@ -159,6 +159,20 @@ pub trait MemoryRepository: Send + Sync {
     /// enriched embedding text alongside the title.
     async fn topic_labels_for_memory(&self, memory_id: &str) -> AppResult<Vec<String>>;
 
+    /// v0.5.5: list every memory whose `topic_labels` JSON array
+    /// contains the given tag. Used by Ask Recall's tag-pivot
+    /// retrieval — when the query semantically matches a known
+    /// auto-tag class (e.g. "license keys" → `license-key`), we
+    /// pull every memory with that tag directly rather than
+    /// relying on cosine similarity, which can't reliably rank 3
+    /// near-identical opaque alphanumeric strings against each
+    /// other.
+    ///
+    /// The match is exact on the tag string (post-`detect_tags`
+    /// normalization). Memories with no `topic_labels` are excluded.
+    /// Ordered newest-first by `created_at`.
+    async fn list_memories_by_topic_label(&self, tag: &str) -> AppResult<Vec<Memory>>;
+
     /// Aggregate embedding-coverage counts for the AI Settings tab:
     /// how many memories have at least one chunk, how many of those
     /// have all chunks embedded, etc.

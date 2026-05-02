@@ -176,16 +176,28 @@ export interface AskRecallCitation {
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full
 /// generated answer, including in-line `[memory:<uuid>]` markers the
 /// frontend rewrites into clickable citation chips.
+///
+/// v0.5.5: `retrievedSources` lists every memory we fed the LLM as
+/// context — distinct from `citations` which is what the LLM
+/// actually emitted citation markers for. For tag-pivot enumeration
+/// queries the LLM may hedge and cite only one of N matches; the
+/// UI renders all retrievedSources as cards so the user sees every
+/// match. `tagIntent` carries the auto-tag class that triggered
+/// pivot retrieval (null for general queries).
 export interface AskRecallResponse {
   question: string;
   text: string;
   citations: AskRecallCitation[];
+  retrievedSources: AskRecallCitation[];
   tokensGenerated: number;
   latencyMs: number;
   /// Number of chunks used as context. 0 means retrieval found
   /// nothing above the Strong-tier threshold; the LLM is instructed
   /// to say so explicitly in that case.
   contextChunks: number;
+  /// v0.5.5: e.g. "license-key", "url", "phone-number". `null`
+  /// when no tag-intent was detected.
+  tagIntent: string | null;
 }
 
 /// v0.3.0: result row from `find_related`. The chunk fields point at

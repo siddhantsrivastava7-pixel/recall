@@ -276,62 +276,83 @@ export function AskView({ setView }: AskViewProps) {
             {streaming ? <span className="cursor-blink">▍</span> : null}
           </div>
 
-          {response && response.citations.length > 0 ? (
-            <div style={{ marginTop: 14 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--t-4)",
-                  textTransform: "uppercase",
-                  letterSpacing: 0.6,
-                  marginBottom: 8,
-                }}
-              >
-                Sources ({response.citations.length})
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                }}
-              >
-                {response.citations.map((c) => (
-                  <button
-                    key={c.memoryId}
-                    type="button"
-                    onClick={() => openMemory(c.memoryId)}
-                    style={{
-                      textAlign: "left",
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "none",
-                      background: "var(--panel)",
-                      boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
-                      cursor: "pointer",
-                      color: "var(--t-1)",
-                    }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-                      {c.title || "Untitled memory"}
-                    </div>
-                    <div
+          {/* v0.5.5: render retrievedSources (every memory we fed
+              the LLM) rather than only citations (what the LLM
+              chose to cite). For tag-pivot enumeration the model
+              may hedge and only cite one — but the user wants to
+              see all retrieved candidates.
+
+              Falls back to citations when retrievedSources is
+              missing (older backend) so the UI degrades gracefully
+              if the user is on a cached frontend pointing at a
+              fresh backend or vice versa during update. */}
+          {(() => {
+            const sources =
+              (response?.retrievedSources?.length ?? 0) > 0
+                ? response!.retrievedSources
+                : response?.citations ?? [];
+            if (sources.length === 0) return null;
+            const tagLabel = response?.tagIntent
+              ? ` matching "${response.tagIntent}"`
+              : "";
+            return (
+              <div style={{ marginTop: 14 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--t-4)",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.6,
+                    marginBottom: 8,
+                  }}
+                >
+                  Sources ({sources.length}
+                  {tagLabel})
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  {sources.map((c) => (
+                    <button
+                      key={c.memoryId}
+                      type="button"
+                      onClick={() => openMemory(c.memoryId)}
                       style={{
-                        fontSize: 11,
-                        color: "var(--t-3)",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 3,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
+                        textAlign: "left",
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        border: "none",
+                        background: "var(--panel)",
+                        boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
+                        cursor: "pointer",
+                        color: "var(--t-1)",
                       }}
                     >
-                      {c.chunkText}
-                    </div>
-                  </button>
-                ))}
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+                        {c.title || "Untitled memory"}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--t-3)",
+                          display: "-webkit-box",
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: "vertical",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {c.chunkText}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
+            );
+          })()}
 
           {response && completionMeta ? (
             <div

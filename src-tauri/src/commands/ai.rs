@@ -934,6 +934,15 @@ pub struct AskRecallResponse {
     pub question: String,
     pub text: String,
     pub citations: Vec<AskRecallCitation>,
+    /// v0.5.5: every memory we fed the LLM as context, surfaced
+    /// to the UI regardless of whether the model emitted a citation
+    /// marker for it. For tag-pivot enumeration queries ("what
+    /// license keys did I save"), the LLM may hedge and only cite
+    /// one — but the user wants to see all retrieved candidates,
+    /// not just the LLM's pick. The frontend renders these as
+    /// source cards in addition to (or in place of) the citation
+    /// chips.
+    pub retrieved_sources: Vec<AskRecallCitation>,
     pub tokens_generated: u32,
     pub latency_ms: u64,
     /// Number of chunks the LLM was given context for. 0 means
@@ -941,6 +950,11 @@ pub struct AskRecallResponse {
     /// the model is instructed to say so explicitly when this is
     /// the case.
     pub context_chunks: u32,
+    /// v0.5.5: the auto-tag class this query pivoted on, if any
+    /// (e.g. "license-key", "url"). `None` for general queries.
+    /// Used by the UI to label the sources panel ("3 license keys
+    /// found") and by analytics to track tag-intent hit rate.
+    pub tag_intent: Option<String>,
 }
 
 /// One source the LLM was given context for. Used internally to build
@@ -984,7 +998,7 @@ pub async fn ask_recall(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AskRecallResponse> {
-    use crate::ai::ask::temporal;
+    use crate::ai::ask::{tag_intent, temporal};
 
     let trimmed = question.trim();
     if trimmed.is_empty() {
@@ -1009,26 +1023,38 @@ pub async fn ask_recall(
 
     // ─── 1. Route by intent ──────────────────────────────────────────
     //
-    // Temporal-only ("summarize my week") → date-range pull, skip
-    // embedding entirely. Topical-only ("did I save a license key?")
-    // → reuse the unified `semantic_search` pipeline which the rest
-    // of the app already trusts. Mixed ("license keys last week")
-    // → semantic ranks against the residual, then we filter to the
-    // temporal window.
+    // Three signals, in order:
+    //   * tag intent (v0.5.5): query references a known auto-tag class
+    //     ("license keys", "URLs", "phone numbers", etc.). When matched,
+    //     we pull every memory with that tag directly via SQL — no
+    //     cosine threshold, no MMR — so enumeration questions surface
+    //     ALL members of the class. Cosine-only retrieval can't reliably
+    //     rank 3 near-identical opaque alphanumeric strings against each
+    //     other, which is why this path exists.
+    //   * temporal intent: "summarize my week" → date-range pull
+    //   * semantic ranking: everything else, the unified pipeline
+    //
+    // Tag intent and temporal are independent — a query like "what URLs
+    // did I save last week" gets tag-pivoted first, then narrowed by
+    // the temporal window. Pure prose queries fall through to semantic.
+    let tag = tag_intent::detect(trimmed);
     let temporal = temporal::detect(trimmed);
     let semantic_query: String = match &temporal {
         Some((_, residual)) if !residual.is_empty() => residual.clone(),
         Some(_) => String::new(), // pure temporal — no semantic ranking
         None => trimmed.to_string(),
     };
-    let route = match (&temporal, semantic_query.is_empty()) {
-        (Some(_), true) => "temporal_only",
-        (Some(_), false) => "temporal_plus_semantic",
-        (None, _) => "semantic_only",
+    let route = match (&tag, &temporal, semantic_query.is_empty()) {
+        (Some(_), Some(_), _) => "tag_plus_temporal",
+        (Some(_), None, _) => "tag_pivot",
+        (None, Some(_), true) => "temporal_only",
+        (None, Some(_), false) => "temporal_plus_semantic",
+        (None, None, _) => "semantic_only",
     };
     eprintln!(
-        "[recall][ask-recall] route={} temporal={:?} residual='{}'",
+        "[recall][ask-recall] route={} tag={:?} temporal={:?} residual='{}'",
         route,
+        tag.as_ref().map(|t| t.tag),
         temporal.as_ref().map(|(w, _)| w.label),
         semantic_query
     );
@@ -1052,6 +1078,78 @@ pub async fn ask_recall(
 
     let mut sources: Vec<ContextSource> = Vec::new();
     let mut budget_remaining = BUDGET_CHARS.saturating_sub(PROMPT_OVERHEAD);
+
+    // ─── 2a. Tag-pivot pre-pass ─────────────────────────────────────
+    //
+    // When tag intent is detected, we pull every memory carrying that
+    // auto-tag and pack it into the context FIRST. This guarantees
+    // enumeration queries surface every member of the class, not
+    // just the one or two that happen to embed near the query phrase.
+    //
+    // The semantic path still runs after this (filling remaining
+    // top-K slots with non-tagged candidates) so a query like "what
+    // license keys did I save and where" still gets surrounding prose
+    // context alongside the literal keys. For pure enumeration
+    // questions, the tagged set fully populates the context.
+    //
+    // Memory IDs already added by tag-pivot are tracked in
+    // `tag_pivoted_ids` so the temporal/semantic paths can skip them
+    // (avoid duplicate context blocks).
+    let mut tag_pivoted_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    if let Some(intent) = &tag {
+        let tagged = state
+            .memory_repository
+            .list_memories_by_topic_label(intent.tag)
+            .await?;
+        eprintln!(
+            "[recall][ask-recall] tag-pivot: tag={} hits={}",
+            intent.tag,
+            tagged.len()
+        );
+        // Apply temporal window filter when both intents fired.
+        let filtered: Vec<&crate::models::Memory> = match &temporal {
+            Some((window, _)) => tagged
+                .iter()
+                .filter(|m| {
+                    m.created_at.as_str() >= window.start_iso.as_str()
+                        && m.created_at.as_str() <= window.end_iso.as_str()
+                })
+                .collect(),
+            None => tagged.iter().collect(),
+        };
+        for memory in filtered.iter().take(SEMANTIC_TOP_K as usize) {
+            // For tag-pivot, the entire content is the answer (it's
+            // typed-content like a license key) — feed it whole, not
+            // chunked. Truncate to TEMPORAL_BODY_CAP to keep budget
+            // bounded.
+            let raw_body = memory
+                .extracted_text
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&memory.content);
+            let excerpt = truncate_for_context(raw_body, TEMPORAL_BODY_CAP);
+            let need = excerpt.len() + PER_SOURCE_OVERHEAD;
+            if need > budget_remaining {
+                break;
+            }
+            budget_remaining -= need;
+            let topic_labels = memory
+                .topic_labels
+                .as_ref()
+                .map(|json| json.0.clone())
+                .unwrap_or_default();
+            tag_pivoted_ids.insert(memory.id.clone());
+            sources.push(ContextSource {
+                memory_id: memory.id.clone(),
+                title: memory.title.clone(),
+                topic_labels,
+                excerpt_start: 0,
+                excerpt_end: excerpt.chars().count() as i64,
+                excerpt,
+            });
+        }
+    }
 
     if let Some((window, _)) = &temporal {
         // Pull every memory in the window from the repo. For mixed
@@ -1112,6 +1210,12 @@ pub async fn ask_recall(
         let by_id: HashMap<&str, &crate::models::Memory> =
             in_window.iter().map(|m| (m.id.as_str(), *m)).collect();
         for id in &ordered_ids {
+            // Skip memories already added by the tag-pivot pre-pass —
+            // duplicating a chunk in the prompt wastes budget without
+            // adding signal for the LLM.
+            if tag_pivoted_ids.contains(id) {
+                continue;
+            }
             let Some(memory) = by_id.get(id.as_str()) else {
                 continue;
             };
@@ -1162,6 +1266,12 @@ pub async fn ask_recall(
             hits.first().map(|h| h.score).unwrap_or(0.0)
         );
         for hit in hits {
+            // Tag-pivot pre-pass already added the strongest tagged
+            // matches; skip duplicates so the semantic path fills
+            // remaining budget with fresh context.
+            if tag_pivoted_ids.contains(&hit.memory_id) {
+                continue;
+            }
             let need = hit.chunk_text.len() + PER_SOURCE_OVERHEAD;
             if need > budget_remaining {
                 break;
@@ -1169,7 +1279,7 @@ pub async fn ask_recall(
             budget_remaining -= need;
             // Need the title + topic_labels for the citation chip
             // and prompt context. One extra lookup per top-K hit
-            // is fine — bounded at SEMANTIC_TOP_K = 8.
+            // is fine — bounded at SEMANTIC_TOP_K = 12.
             let memory = state.memory_repository.find(&hit.memory_id).await?;
             let title = memory.as_ref().and_then(|m| m.title.clone());
             let topic_labels = memory
@@ -1220,12 +1330,32 @@ pub async fn ask_recall(
                 src.memory_id, title_part, tags_part, src.excerpt
             ));
         }
-        let intro = match &temporal {
-            Some((w, _)) => format!(
+        // v0.5.5: separate intros per route. The tag-pivot intro is
+        // imperative — when the user asks for an enumerable class
+        // ("license keys", "URLs"), they want the actual values
+        // listed, not hedge-language. Qwen 7B at Q4_K_M reads
+        // opaque alphanumerics as low-confidence by default and
+        // wraps them in qualifiers ("might be a license key") —
+        // a directive prompt overrides that conservative bias.
+        let intro = match (&tag, &temporal) {
+            (Some(intent), Some(w)) => format!(
+                "The user is asking for ALL {} from their saved memories from {}. Each memory below tagged with `{}` IS a {} — list every one with its exact body content, one per line. Cite each with [memory:<id>] using the exact id shown. Do not hedge. Do not say 'might be' or 'not explicitly stated'. The tag is authoritative.",
+                intent.label,
+                w.0.label,
+                intent.tag,
+                intent.label.trim_end_matches('s')
+            ),
+            (Some(intent), None) => format!(
+                "The user is asking for ALL {} from their saved memories. Each memory below tagged with `{}` IS a {} — list every one with its exact body content, one per line. Cite each with [memory:<id>] using the exact id shown. Do not hedge. Do not say 'might be' or 'not explicitly stated'. The tag is authoritative.",
+                intent.label,
+                intent.tag,
+                intent.label.trim_end_matches('s')
+            ),
+            (None, Some((w, _))) => format!(
                 "The user is asking about their saved memories from {}. Use only the memories below; cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't answer the question, say so.",
                 w.label
             ),
-            None => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't contain the answer, say so explicitly.".to_string(),
+            (None, None) => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't contain the answer, say so explicitly.".to_string(),
         };
         format!("{}\n\nMemories:\n{}\nQuestion: {}", intro, block, trimmed)
     };
@@ -1275,22 +1405,44 @@ pub async fn ask_recall(
         });
     }
 
+    // v0.5.5: build `retrieved_sources` from every memory we fed
+    // the LLM, regardless of whether the model emitted a citation
+    // marker for it. For tag-pivot enumeration the LLM may hedge
+    // and only cite one — but the user wants to see all retrieved
+    // candidates, so the UI renders these as source cards.
+    let retrieved_sources: Vec<AskRecallCitation> = sources
+        .iter()
+        .map(|src| AskRecallCitation {
+            memory_id: src.memory_id.clone(),
+            title: src.title.clone(),
+            chunk_text: src.excerpt.clone(),
+            chunk_start: src.excerpt_start,
+            chunk_end: src.excerpt_end,
+        })
+        .collect();
+
     let _ = app.emit(
         "recall://ask-recall-complete",
         serde_json::json!({ "tokens": response.tokens_generated, "latencyMs": latency_ms }),
     );
 
     eprintln!(
-        "[recall][ask-recall] done: tokens={} latency_ms={} citations={} context_chunks={}",
-        response.tokens_generated, latency_ms, citations.len(), context_chunks_count
+        "[recall][ask-recall] done: tokens={} latency_ms={} citations={} retrieved={} context_chunks={}",
+        response.tokens_generated,
+        latency_ms,
+        citations.len(),
+        retrieved_sources.len(),
+        context_chunks_count
     );
 
     Ok(AskRecallResponse {
         question: trimmed.to_string(),
         text: response.text,
         citations,
+        retrieved_sources,
         tokens_generated: response.tokens_generated,
         latency_ms,
         context_chunks: context_chunks_count,
+        tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
     })
 }

@@ -1071,6 +1071,28 @@ impl MemoryRepository for SqliteMemoryRepository {
             .unwrap_or_default())
     }
 
+    async fn list_memories_by_topic_label(&self, tag: &str) -> AppResult<Vec<Memory>> {
+        // topic_labels is a JSON array stored as TEXT. We use SQLite's
+        // built-in `json_each` for exact-membership testing rather
+        // than a LIKE pattern (which would false-match "license-key"
+        // against a hypothetical "license-key-old" or "lic" against
+        // "license-key"). NULL topic_labels rows get implicitly
+        // excluded by json_each returning no rows for them.
+        let records = sqlx::query_as::<_, Memory>(&format!(
+            "{MEMORY_SELECT} \
+             WHERE memories.topic_labels IS NOT NULL \
+               AND EXISTS ( \
+                 SELECT 1 FROM json_each(memories.topic_labels) \
+                 WHERE json_each.value = ?1 \
+               ) \
+             ORDER BY datetime(memories.created_at) DESC"
+        ))
+        .bind(tag)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
+    }
+
     async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage> {
         // `embedded_chunks_active_model` is left at 0 here; the
         // command layer fills it in by calling

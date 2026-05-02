@@ -23,4 +23,5 @@
 //! week") run both: temporal narrows the candidate set, semantic
 //! ranks within it.
 
+pub mod tag_intent;
 pub mod temporal;
