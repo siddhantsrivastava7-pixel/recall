@@ -853,12 +853,42 @@ pub struct AskRecallResponse {
     pub context_chunks: u32,
 }
 
+/// One source the LLM was given context for. Used internally to build
+/// the citation map after generation completes — temporal queries
+/// cite full memories (no chunk offsets), semantic queries cite the
+/// specific chunk we ranked highest.
+struct ContextSource {
+    memory_id: String,
+    title: Option<String>,
+    excerpt: String,
+    /// Offsets of the excerpt within the parent memory body. For
+    /// semantic hits these are the chunk's real offsets; for temporal
+    /// hits they're 0..len(excerpt) since we feed the truncated body
+    /// directly.
+    excerpt_start: i64,
+    excerpt_end: i64,
+}
+
+/// Truncate body text for a temporal context block. Keeps the lead
+/// (most title-like prose lives at the top) and adds an ellipsis when
+/// we cut. Conservative cap so 30 memories fit in the ~12K-char budget.
+fn truncate_for_context(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.trim().to_string()
+    } else {
+        let cut: String = text.chars().take(max_chars).collect();
+        format!("{}…", cut.trim_end())
+    }
+}
+
 #[tauri::command]
 pub async fn ask_recall(
     question: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AskRecallResponse> {
+    use crate::ai::ask::temporal;
+
     let trimmed = question.trim();
     if trimmed.is_empty() {
         return Err(AppError::Invalid("Question is required.".into()));
@@ -880,87 +910,197 @@ pub async fn ask_recall(
         ));
     }
 
-    // 1. Embed the question via the active embedding adapter.
-    let model_label = scheduler.embedding_model_label();
-    if model_label == "unsupported" {
-        return Err(AppError::Invalid(
-            "Embedding adapter not configured on this host.".into(),
-        ));
-    }
-    let query_embedding = scheduler
-        .embed_query(trimmed)
-        .await?
-        .ok_or_else(|| AppError::Invalid("Embed query returned no vector.".into()))?;
-    let centroid = scheduler.corpus_centroid(&state.memory_repository).await?;
-    let query_vec = match centroid.as_deref() {
-        Some(c) => subtract_centroid(query_embedding.values, c),
-        None => query_embedding.values,
+    // ─── 1. Route by intent ──────────────────────────────────────────
+    //
+    // Temporal-only ("summarize my week") → date-range pull, skip
+    // embedding entirely. Topical-only ("did I save a license key?")
+    // → reuse the unified `semantic_search` pipeline which the rest
+    // of the app already trusts. Mixed ("license keys last week")
+    // → semantic ranks against the residual, then we filter to the
+    // temporal window.
+    let temporal = temporal::detect(trimmed);
+    let semantic_query: String = match &temporal {
+        Some((_, residual)) if !residual.is_empty() => residual.clone(),
+        Some(_) => String::new(), // pure temporal — no semantic ranking
+        None => trimmed.to_string(),
     };
+    let route = match (&temporal, semantic_query.is_empty()) {
+        (Some(_), true) => "temporal_only",
+        (Some(_), false) => "temporal_plus_semantic",
+        (None, _) => "semantic_only",
+    };
+    eprintln!(
+        "[recall][ask-recall] route={} temporal={:?} residual='{}'",
+        route,
+        temporal.as_ref().map(|(w, _)| w.label),
+        semantic_query
+    );
 
-    // 2. Brute-force cosine over active-model chunks. Strong-tier
-    //    only — RAG is unforgiving of weak retrieval, so we hard-floor
-    //    at 0.45 (centered cosine). Top-K = 8.
-    const STRONG_FLOOR: f32 = 0.45;
-    const TOP_K: usize = 8;
-    let chunks = state
-        .memory_repository
-        .list_embedded_chunks_for_model(model_label)
-        .await?;
-    let mut scored: Vec<(crate::models::MemoryChunkRow, f32)> = Vec::new();
-    for chunk in chunks {
-        let Some(bytes) = &chunk.embedding_vector else {
-            continue;
+    // ─── 2. Build candidate sources ──────────────────────────────────
+    //
+    // Budget: ~12K chars (~3K tokens). Reserve ~600 chars for the
+    // system prompt + question; per-source overhead (header + blank
+    // line) is ~80 chars; per-source body cap is 280 chars for
+    // temporal queries, full chunk text for semantic.
+    const BUDGET_CHARS: usize = 12_000;
+    const PROMPT_OVERHEAD: usize = 600;
+    const PER_SOURCE_OVERHEAD: usize = 80;
+    const TEMPORAL_BODY_CAP: usize = 280;
+    const SEMANTIC_TOP_K: u32 = 8;
+    const TEMPORAL_TOP_N: usize = 30;
+
+    let mut sources: Vec<ContextSource> = Vec::new();
+    let mut budget_remaining = BUDGET_CHARS.saturating_sub(PROMPT_OVERHEAD);
+
+    if let Some((window, _)) = &temporal {
+        // Pull every memory in the window from the repo. For mixed
+        // queries we still pull by date range first — semantic
+        // ranking happens within the window below.
+        let all = state.memory_repository.list().await?;
+        let mut in_window: Vec<&crate::models::Memory> = all
+            .iter()
+            .filter(|m| {
+                m.created_at.as_str() >= window.start_iso.as_str()
+                    && m.created_at.as_str() <= window.end_iso.as_str()
+            })
+            .collect();
+        // Newest first — for "summarize my week" recency matters more
+        // than insertion order.
+        in_window.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Mixed: re-rank within the window using semantic_search,
+        // then pick the top-K by score. For temporal-only, just take
+        // the most recent up to TEMPORAL_TOP_N.
+        let ordered_ids: Vec<String> = if semantic_query.is_empty() {
+            in_window
+                .iter()
+                .take(TEMPORAL_TOP_N)
+                .map(|m| m.id.clone())
+                .collect()
+        } else {
+            // Reuse semantic_search to score everything by relevance,
+            // then intersect with the window. We pass a generous limit
+            // because the intersection step throws away the bulk.
+            let hits =
+                semantic_search(semantic_query.clone(), Some(64), state.clone()).await?;
+            let in_window_ids: std::collections::HashSet<&str> =
+                in_window.iter().map(|m| m.id.as_str()).collect();
+            let mut ranked: Vec<String> = hits
+                .into_iter()
+                .filter(|h| in_window_ids.contains(h.memory_id.as_str()))
+                .map(|h| h.memory_id)
+                .collect();
+            // If semantic returned nothing in-window (e.g. the
+            // residual is too generic), fall back to recency so the
+            // user still gets *something* date-bound.
+            if ranked.is_empty() {
+                ranked = in_window
+                    .iter()
+                    .take(TEMPORAL_TOP_N)
+                    .map(|m| m.id.clone())
+                    .collect();
+            } else {
+                ranked.truncate(TEMPORAL_TOP_N);
+            }
+            ranked
         };
-        let Some(v) = EmbeddingVector::from_bytes(model_label, bytes) else {
-            continue;
-        };
-        let centered = match centroid.as_deref() {
-            Some(c) => subtract_centroid(v.values, c),
-            None => v.values,
-        };
-        let sim = cosine(&query_vec, &centered);
-        if sim < STRONG_FLOOR {
-            continue;
+
+        let by_id: HashMap<&str, &crate::models::Memory> =
+            in_window.iter().map(|m| (m.id.as_str(), *m)).collect();
+        for id in &ordered_ids {
+            let Some(memory) = by_id.get(id.as_str()) else {
+                continue;
+            };
+            // Body source preference: extracted_text > content > note.
+            // Title is shown in the header so we don't repeat it.
+            let raw_body = memory
+                .extracted_text
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&memory.content);
+            let excerpt = truncate_for_context(raw_body, TEMPORAL_BODY_CAP);
+            let need = excerpt.len() + PER_SOURCE_OVERHEAD;
+            if need > budget_remaining {
+                break;
+            }
+            budget_remaining -= need;
+            sources.push(ContextSource {
+                memory_id: memory.id.clone(),
+                title: memory.title.clone(),
+                excerpt_start: 0,
+                excerpt_end: excerpt.chars().count() as i64,
+                excerpt,
+            });
         }
-        scored.push((chunk, sim));
-    }
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(TOP_K);
-
-    // 3. Build a context block from the top-K chunks + chat-template
-    //    prompt that instructs the LLM to cite via `[memory:<uuid>]`.
-    //    Token budget here is approximate (chars / 4) and intentionally
-    //    conservative — Qwen2.5 supports much larger contexts but we
-    //    bound the per-call memory + latency.
-    let mut context_block = String::new();
-    let mut context_chunks: Vec<&crate::models::MemoryChunkRow> = Vec::new();
-    let mut budget_chars = 12_000usize; // ~3K tokens
-    for (chunk, _sim) in &scored {
-        if chunk.text.len() + 64 > budget_chars {
-            break;
+        eprintln!(
+            "[recall][ask-recall] temporal: window=[{}..{}] candidates={} packed={}",
+            window.start_iso,
+            window.end_iso,
+            in_window.len(),
+            sources.len()
+        );
+    } else {
+        // Pure topical: defer entirely to the unified semantic_search.
+        let hits =
+            semantic_search(semantic_query.clone(), Some(SEMANTIC_TOP_K), state.clone()).await?;
+        eprintln!(
+            "[recall][ask-recall] semantic: hits={} top_score={:.3}",
+            hits.len(),
+            hits.first().map(|h| h.score).unwrap_or(0.0)
+        );
+        for hit in hits {
+            let need = hit.chunk_text.len() + PER_SOURCE_OVERHEAD;
+            if need > budget_remaining {
+                break;
+            }
+            budget_remaining -= need;
+            // Need the title for the citation chip. One extra
+            // lookup per top-K hit is fine — bounded at 8.
+            let title = state
+                .memory_repository
+                .find(&hit.memory_id)
+                .await?
+                .and_then(|m| m.title);
+            sources.push(ContextSource {
+                memory_id: hit.memory_id.clone(),
+                title,
+                excerpt: hit.chunk_text,
+                excerpt_start: hit.chunk_start,
+                excerpt_end: hit.chunk_end,
+            });
         }
-        context_block.push_str(&format!(
-            "[memory:{}]\n{}\n\n",
-            chunk.memory_id, chunk.text
-        ));
-        budget_chars = budget_chars.saturating_sub(chunk.text.len() + 64);
-        context_chunks.push(chunk);
     }
-    let context_chunks_count = context_chunks.len() as u32;
 
-    let prompt = if context_chunks.is_empty() {
+    // ─── 3. Build the prompt ────────────────────────────────────────
+    let context_chunks_count = sources.len() as u32;
+    let prompt = if sources.is_empty() {
+        // No-context branch: explicitly forbid citations so the LLM
+        // doesn't hallucinate `[memory:0]` markers (v0.4.3 bug).
         format!(
-            "I have no relevant memories to ground an answer. Question: {}\n\nAnswer truthfully that the user has no saved memories about this topic; do not guess.",
+            "There are no saved memories that match this question. Answer with one short sentence stating that you have no saved memories about this topic. Do not guess. Do not write any [memory:...] markers — there is nothing to cite.\n\nQuestion: {}",
             trimmed
         )
     } else {
-        format!(
-            "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. If the memories don't contain the answer, say so explicitly.\n\nMemories:\n{}\nQuestion: {}",
-            context_block, trimmed
-        )
+        let mut block = String::with_capacity(BUDGET_CHARS);
+        for src in &sources {
+            block.push_str(&format!(
+                "[memory:{}] {}\n{}\n\n",
+                src.memory_id,
+                src.title.as_deref().unwrap_or("Untitled"),
+                src.excerpt
+            ));
+        }
+        let intro = match &temporal {
+            Some((w, _)) => format!(
+                "The user is asking about their saved memories from {}. Use only the memories below; cite each fact with [memory:<id>] using the exact id shown. If the memories don't answer the question, say so.",
+                w.label
+            ),
+            None => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. If the memories don't contain the answer, say so explicitly.".to_string(),
+        };
+        format!("{}\n\nMemories:\n{}\nQuestion: {}", intro, block, trimmed)
     };
 
-    // 4. Stream tokens via Tauri events and accumulate the final text.
+    // ─── 4. Stream + parse ──────────────────────────────────────────
     let app_clone = app.clone();
     let started_at = std::time::Instant::now();
     let on_token: Box<dyn Fn(String) + Send + Sync> = Box::new(move |delta: String| {
@@ -977,8 +1117,13 @@ pub async fn ask_recall(
     let response = llm.generate_streaming(request, on_token).await?;
     let latency_ms = started_at.elapsed().as_millis() as u64;
 
-    // 5. Parse `[memory:<uuid>]` citations from the response.
+    // Citations: dedupe by memory_id, resolve back to the source we
+    // fed (so the chip's preview is the exact excerpt the LLM saw).
+    // We restrict to memory_ids that actually appeared in `sources` —
+    // anything else is a hallucinated marker and gets dropped.
     let citation_re = regex::Regex::new(r"\[memory:([0-9a-fA-F\-]+)\]").unwrap();
+    let by_id: HashMap<&str, &ContextSource> =
+        sources.iter().map(|s| (s.memory_id.as_str(), s)).collect();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut citations: Vec<AskRecallCitation> = Vec::new();
     for cap in citation_re.captures_iter(&response.text) {
@@ -986,29 +1131,28 @@ pub async fn ask_recall(
         if !seen.insert(memory_id.clone()) {
             continue;
         }
-        // Find the chunk we fed for this memory_id (best-matching by
-        // ranking order).
-        let chunk = context_chunks
-            .iter()
-            .find(|c| c.memory_id == memory_id)
-            .map(|c| (*c).clone());
-        let memory = state.memory_repository.find(&memory_id).await?;
-        if let (Some(chunk), Some(memory)) = (chunk, memory) {
-            citations.push(AskRecallCitation {
-                memory_id: memory_id.clone(),
-                title: memory.title.clone(),
-                chunk_text: chunk.text.clone(),
-                chunk_start: chunk.start_offset,
-                chunk_end: chunk.end_offset,
-            });
-        }
+        let Some(src) = by_id.get(memory_id.as_str()) else {
+            // Hallucinated id — don't surface a chip the user can't
+            // click through to. Renderer falls through to plain text.
+            continue;
+        };
+        citations.push(AskRecallCitation {
+            memory_id: memory_id.clone(),
+            title: src.title.clone(),
+            chunk_text: src.excerpt.clone(),
+            chunk_start: src.excerpt_start,
+            chunk_end: src.excerpt_end,
+        });
     }
 
-    // 6. Final completion event so the UI can flip out of streaming
-    //    state cleanly even if it missed a token in transit.
     let _ = app.emit(
         "recall://ask-recall-complete",
         serde_json::json!({ "tokens": response.tokens_generated, "latencyMs": latency_ms }),
+    );
+
+    eprintln!(
+        "[recall][ask-recall] done: tokens={} latency_ms={} citations={} context_chunks={}",
+        response.tokens_generated, latency_ms, citations.len(), context_chunks_count
     );
 
     Ok(AskRecallResponse {

@@ -22,6 +22,7 @@
 //! 4. No cloud calls during normal operation. The embedding model is
 //!    downloaded once on opt-in from a pinned URL with sha256 verification.
 
+pub mod ask;
 pub mod embeddings;
 pub mod hardware;
 pub mod llm;
