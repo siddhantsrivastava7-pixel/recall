@@ -1385,23 +1385,47 @@ pub async fn ask_recall(
     // did I save last week" gets tag-pivoted first, then narrowed by
     // the temporal window. Pure prose queries fall through to semantic.
     let tag = tag_intent::detect(trimmed);
+    // v0.5.14: inherit tag intent from the prior assistant turn
+    // when the current question has no detected intent of its own.
+    // For follow-ups like "which one is the latest?" after a turn
+    // about license keys, the new question has no tag phrase but
+    // the conversation context absolutely is about that tag class.
+    // Without inheritance, fresh semantic_search pulls unrelated
+    // memories ("ninth attempt of building STT software" matches
+    // "which one is the latest" semantically) and the LLM has no
+    // way to reject them. Inheriting the tag forces continued
+    // tag-pivot retrieval so the same memory class stays in scope.
+    let inherited_tag: Option<String> = if tag.is_none() && !history.is_empty() {
+        history.iter().rev().find_map(|m| match m {
+            ask_session::Message::Assistant {
+                tag_intent: Some(t),
+                ..
+            } => Some(t.clone()),
+            _ => None,
+        })
+    } else {
+        None
+    };
     let temporal = temporal::detect(trimmed);
     let semantic_query: String = match &temporal {
         Some((_, residual)) if !residual.is_empty() => residual.clone(),
         Some(_) => String::new(), // pure temporal — no semantic ranking
         None => trimmed.to_string(),
     };
-    let route = match (&tag, &temporal, semantic_query.is_empty()) {
-        (Some(_), Some(_), _) => "tag_plus_temporal",
-        (Some(_), None, _) => "tag_pivot",
-        (None, Some(_), true) => "temporal_only",
-        (None, Some(_), false) => "temporal_plus_semantic",
-        (None, None, _) => "semantic_only",
+    let route = match (&tag, &inherited_tag, &temporal, semantic_query.is_empty()) {
+        (Some(_), _, Some(_), _) => "tag_plus_temporal",
+        (Some(_), _, None, _) => "tag_pivot",
+        (None, Some(_), Some(_), _) => "inherited_tag_plus_temporal",
+        (None, Some(_), None, _) => "inherited_tag_pivot",
+        (None, None, Some(_), true) => "temporal_only",
+        (None, None, Some(_), false) => "temporal_plus_semantic",
+        (None, None, None, _) => "semantic_only",
     };
     eprintln!(
-        "[recall][ask-recall] route={} tag={:?} temporal={:?} residual='{}'",
+        "[recall][ask-recall] route={} tag={:?} inherited={:?} temporal={:?} residual='{}'",
         route,
         tag.as_ref().map(|t| t.tag),
+        inherited_tag.as_deref(),
         temporal.as_ref().map(|(w, _)| w.label),
         semantic_query
     );
@@ -1444,10 +1468,23 @@ pub async fn ask_recall(
     // (avoid duplicate context blocks).
     let mut tag_pivoted_ids: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    if let Some(intent) = &tag {
+    // v0.5.14: tag-pivot fires for either an explicit tag (current
+    // turn detected one) OR an inherited tag (prior assistant
+    // turn's intent carried forward). The downstream code only
+    // needs the tag string + label; we synthesize a minimal
+    // descriptor for the inherited case.
+    let pivot_tag_str: Option<&str> = tag
+        .as_ref()
+        .map(|t| t.tag)
+        .or(inherited_tag.as_deref());
+    let pivot_label: Option<String> = tag
+        .as_ref()
+        .map(|t| t.label.to_string())
+        .or_else(|| inherited_tag.as_ref().map(|s| s.replace('-', " ")));
+    if let Some(pivot_tag_value) = pivot_tag_str {
         let tagged = state
             .memory_repository
-            .list_memories_by_topic_label(intent.tag)
+            .list_memories_by_topic_label(pivot_tag_value)
             .await?;
         // v0.5.6: drop self-captures (Recall UI screenshots) up
         // front so they never enter the candidate set, even if
@@ -1463,8 +1500,9 @@ pub async fn ask_recall(
             })
             .collect();
         eprintln!(
-            "[recall][ask-recall] tag-pivot: tag={} hits={}",
-            intent.tag,
+            "[recall][ask-recall] tag-pivot: tag={} (inherited={}) hits={}",
+            pivot_tag_value,
+            tag.is_none(),
             tagged.len()
         );
         // Apply temporal window filter when both intents fired.
@@ -1613,13 +1651,18 @@ pub async fn ask_recall(
             in_window.len(),
             sources.len()
         );
-    } else if tag.is_some() && tag_pivoted_ids.len() >= 2 {
+    } else if (tag.is_some() || inherited_tag.is_some()) && tag_pivoted_ids.len() >= 2 {
         // v0.5.10: tag intent fired AND tag-pivot returned ≥2
         // memories. Skip semantic padding — for an enumeration
         // question like "what license keys did I save?", random
         // semantic matches (URLs, command-line outputs whose
         // embeddings happen to score high) just clutter the
         // sources panel. Tag-pivot already covered the answer.
+        // v0.5.14: same gate applies for inherited tag intent
+        // (follow-up turns in a tag-pivot conversation). Without
+        // this, "which one is the latest?" pulled STT-iteration
+        // memories alongside the license keys and the LLM picked
+        // the iteration count as its answer.
         // We only fall through to semantic when tag-pivot is
         // empty/sparse, which suggests the user's question
         // wasn't really tag enumeration despite the phrasing.
@@ -1775,25 +1818,43 @@ pub async fn ask_recall(
         // opaque alphanumerics as low-confidence by default and
         // wraps them in qualifiers ("might be a license key") —
         // a directive prompt overrides that conservative bias.
-        let intro = match (&tag, &temporal) {
-            (Some(intent), Some(w)) => format!(
+        // v0.5.14: prompt intro chooses among (explicit tag) /
+        // (inherited tag) / (temporal-only) / (general). The
+        // explicit-tag intro is imperative ("list every one") for
+        // enumeration questions like "what license keys did I
+        // save". The inherited-tag intro is calmer ("the user is
+        // continuing the conversation about <class>") because the
+        // follow-up question may not be enumeration — they might
+        // ask "which one is the latest?" and want a specific
+        // answer, not a re-list.
+        let intro = match (&tag, &inherited_tag, &temporal) {
+            (Some(intent), _, Some(w)) => format!(
                 "The user is asking for ALL {} from their saved memories from {}. Each memory below tagged with `{}` IS a {} — list every one with its exact body content, one per line. Cite each with [memory:<id>] using the exact id shown. Do not hedge. Do not say 'might be' or 'not explicitly stated'. The tag is authoritative.",
                 intent.label,
                 w.0.label,
                 intent.tag,
                 intent.label.trim_end_matches('s')
             ),
-            (Some(intent), None) => format!(
+            (Some(intent), _, None) => format!(
                 "The user is asking for ALL {} from their saved memories. Each memory below tagged with `{}` IS a {} — list every one with its exact body content, one per line. Cite each with [memory:<id>] using the exact id shown. Do not hedge. Do not say 'might be' or 'not explicitly stated'. The tag is authoritative.",
                 intent.label,
                 intent.tag,
                 intent.label.trim_end_matches('s')
             ),
-            (None, Some((w, _))) => format!(
+            (None, Some(inherited), _) => {
+                let label = pivot_label.clone().unwrap_or_else(|| inherited.replace('-', " "));
+                format!(
+                    "The user is continuing a conversation about their saved {}. Use only the memories below; every memory tagged `{}` IS a {}. Cite each fact with [memory:<id>] using the exact id shown. Trust the tag when the body looks opaque. If the memories don't answer the follow-up, say so plainly.",
+                    label,
+                    inherited,
+                    label.trim_end_matches('s')
+                )
+            }
+            (None, None, Some((w, _))) => format!(
                 "The user is asking about their saved memories from {}. Use only the memories below; cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't answer the question, say so.",
                 w.label
             ),
-            (None, None) => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't contain the answer, say so explicitly.".to_string(),
+            (None, None, None) => "Use only the memories below to answer. Cite each fact with [memory:<id>] using the exact id shown. Tags after each memory header (e.g. 'tags: license-key') describe what the memory is — trust them when the body looks opaque. If the memories don't contain the answer, say so explicitly.".to_string(),
         };
         format!("{}\n\nMemories:\n{}\nQuestion: {}", intro, block, trimmed)
     };
