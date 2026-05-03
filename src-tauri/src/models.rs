@@ -312,6 +312,60 @@ pub struct MemoryChunkRow {
     pub created_at: String,
 }
 
+/// v0.5.15: Lightweight session summary for the chat list in the
+/// sidebar. Doesn't include messages — those load on demand when
+/// the user opens the session. `display_title()` (frontend)
+/// prefers `llm_title` when present, falls back to `title`.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecallSessionSummary {
+    pub session_id: String,
+    pub title: String,
+    pub llm_title: Option<String>,
+    pub created_at: String,
+    pub last_used_at: String,
+    pub message_count: i64,
+}
+
+/// v0.5.15: Full session — summary plus the ordered list of
+/// messages. Returned by `get_session(id)` when the user opens a
+/// chat. The frontend re-hydrates AskView's thread state from
+/// this.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecallSessionFull {
+    pub session_id: String,
+    pub title: String,
+    pub llm_title: Option<String>,
+    pub created_at: String,
+    pub last_used_at: String,
+    pub messages: Vec<AskRecallMessageRow>,
+}
+
+/// v0.5.15: One message row from `ask_recall_messages`. Citations
+/// and retrieved sources are JSON-encoded in storage; this struct
+/// holds them as `Option<String>` JSON blobs that the command
+/// layer decodes when serving to the frontend.
+///
+/// `role` is `"user"` or `"assistant"`. The other assistant-only
+/// fields (tokens_generated / latency_ms / tag_intent / sources /
+/// citations) are NULL on user rows.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRecallMessageRow {
+    pub id: String,
+    pub session_id: String,
+    pub sequence: i64,
+    pub role: String,
+    pub content: String,
+    pub retrieved_sources: Option<String>,
+    pub citations: Option<String>,
+    pub tokens_generated: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub tag_intent: Option<String>,
+    pub timestamp: String,
+}
+
 /// v0.5.6: row from `memory_entities` — one structured fact
 /// extracted from a memory's content. The same memory typically
 /// has several rows (one per detected person/company/product/etc.).

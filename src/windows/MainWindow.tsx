@@ -6,18 +6,21 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Download,
   FolderOpen,
   LayoutGrid,
   Layers,
+  Plus,
   Search,
   Settings,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useChatStore, chatDisplayTitle } from "@/stores/chatStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -119,6 +122,45 @@ function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => 
   const pinned = projects.slice(0, 3);
   const [appVersion, setAppVersion] = useState<string>("");
 
+  // v0.5.15: chat sidebar state. The store hydrates on first
+  // mount, then listens for the LLM-title-renamed event so the
+  // sidebar reflects async title generation without polling.
+  const chatSessions = useChatStore((s) => s.sessions);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const chatHydrating = useChatStore((s) => s.hydrating);
+  const refreshChats = useChatStore((s) => s.refresh);
+  const newChat = useChatStore((s) => s.newChat);
+  const openChat = useChatStore((s) => s.openChat);
+  const deleteChat = useChatStore((s) => s.deleteChat);
+  const applyTitleEvent = useChatStore((s) => s.applyTitleEvent);
+
+  useEffect(() => {
+    void refreshChats();
+  }, [refreshChats]);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void listen<{ sessionId: string; title: string }>(
+      "recall://ask-recall-session-renamed",
+      (event) => {
+        if (disposed) return;
+        if (!event.payload) return;
+        applyTitleEvent(event.payload.sessionId, event.payload.title);
+      },
+    ).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [applyTitleEvent]);
+
   useEffect(() => {
     let active = true;
     void getVersion()
@@ -198,6 +240,72 @@ function Sidebar({ view, setView }: { view: MainView; setView: (v: MainView) => 
         />
       </div>
 
+      {/* v0.5.15: RECENT CHATS — persistent Ask Recall conversation
+          list. Always visible (no view-gated hiding) so users have
+          peripheral awareness of recent chats from any surface,
+          ChatGPT/Claude-style. Click a row to open the chat in
+          AskView; hover reveals trash icon for delete. The "+ New
+          chat" button at the top creates a fresh session and
+          switches to AskView. */}
+      <div className="nav-group">
+        <div
+          className="nav-label"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>Recent chats</span>
+          <button
+            type="button"
+            onClick={async () => {
+              const id = await newChat();
+              if (id) setView("ask");
+            }}
+            title="Start a new chat"
+            style={{
+              background: "none",
+              border: "none",
+              padding: 2,
+              cursor: "pointer",
+              color: "var(--t-3)",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <Plus size={12} strokeWidth={1.8} />
+          </button>
+        </div>
+        {chatSessions.length === 0 ? (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--t-4)",
+              padding: "4px 10px 8px",
+              fontStyle: "italic",
+            }}
+          >
+            {chatHydrating ? "Loading…" : "No conversations yet."}
+          </div>
+        ) : (
+          chatSessions.slice(0, 50).map((s) => (
+            <ChatRow
+              key={s.sessionId}
+              title={chatDisplayTitle(s)}
+              active={view === "ask" && activeSessionId === s.sessionId}
+              onClick={async () => {
+                await openChat(s.sessionId);
+                setView("ask");
+              }}
+              onDelete={async () => {
+                await deleteChat(s.sessionId);
+              }}
+            />
+          ))
+        )}
+      </div>
+
       {pinned.length > 0 ? (
         <div className="nav-group">
           <div className="nav-label">Pinned Projects</div>
@@ -260,6 +368,117 @@ function NavRow({
       ) : kbd ? (
         <span className="nav-count" style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
           {kbd}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+/**
+ * v0.5.15: a single row in the RECENT CHATS sidebar list.
+ * Hover reveals a trash icon on the right; click trash → tiny
+ * inline confirm row replaces the title. No modal — keeps the
+ * sidebar fluid. Click anywhere else on the row → opens the
+ * chat. Active conversation gets the same `selected` highlight
+ * as the LIBRARY rows.
+ */
+function ChatRow({
+  title,
+  active,
+  onClick,
+  onDelete,
+}: {
+  title: string;
+  active: boolean;
+  onClick: () => void | Promise<void>;
+  onDelete: () => void | Promise<void>;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming) {
+    return (
+      <div
+        className="nav-item"
+        style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 26 }}
+      >
+        <span style={{ fontSize: 11, color: "var(--t-3)" }}>Delete?</span>
+        <button
+          type="button"
+          onClick={() => void onDelete()}
+          style={{
+            fontSize: 11,
+            color: "var(--bad, #d33)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          Yes
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          style={{
+            fontSize: 11,
+            color: "var(--t-4)",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={`nav-item${active ? " selected" : ""}`}
+      onClick={() => void onClick()}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ paddingLeft: 26, position: "relative" }}
+    >
+      <span
+        style={{
+          flex: "1 1 auto",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          textAlign: "left",
+        }}
+      >
+        {title || "Untitled chat"}
+      </span>
+      {hovered ? (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(event) => {
+            event.stopPropagation();
+            setConfirming(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.stopPropagation();
+              setConfirming(true);
+            }
+          }}
+          title="Delete this conversation"
+          style={{
+            background: "none",
+            border: "none",
+            padding: 2,
+            cursor: "pointer",
+            color: "var(--t-4)",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <Trash2 size={11} strokeWidth={1.6} />
         </span>
       ) : null}
     </button>

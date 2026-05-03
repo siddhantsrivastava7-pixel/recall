@@ -1305,17 +1305,24 @@ pub async fn ask_recall(
         return Err(AppError::Invalid("Question is required.".into()));
     }
 
-    // v0.5.12: snapshot session history (if any) BEFORE we run the
-    // turn. The history lives on AppState; we clone the relevant
-    // messages here so the LLM call doesn't hold the session lock
-    // across a multi-second generation. Validate the session
-    // exists when one was requested — better to fail fast than
-    // silently fall back to single-shot.
+    // v0.5.15: load session history from SQLite (replaces v0.5.12's
+    // in-memory HashMap). The persisted shape is the
+    // `AskRecallMessageRow` JSON-blob storage; we decode each row
+    // back into the in-memory `Message` enum the prompt builder
+    // expects. Validate the session exists when one was requested
+    // — better to fail fast than silently fall back to single-shot.
     let history: Vec<ask_session::Message> = match &session_id {
         Some(sid) => {
-            let sessions = state.ask_recall_sessions.lock().await;
-            match sessions.get(sid) {
-                Some(session) => session.messages.clone(),
+            let session = state
+                .ask_recall_session_repository
+                .get_session(sid)
+                .await?;
+            match session {
+                Some(s) => s
+                    .messages
+                    .iter()
+                    .filter_map(message_row_to_session_message)
+                    .collect(),
                 None => {
                     return Err(AppError::Invalid(format!(
                         "Ask Recall session {sid} not found. Start a new chat to begin."
@@ -2032,23 +2039,79 @@ pub async fn ask_recall(
     // for the next turn, and the user explicitly chose to keep
     // what they got.)
     let now = chrono::Utc::now().to_rfc3339();
-    let assistant_message = ask_session::Message::Assistant {
-        content: response.text.clone(),
-        retrieved_sources: retrieved_sources.clone(),
-        citations: citations.clone(),
-        tokens_generated: response.tokens_generated,
-        latency_ms,
-        tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
-        timestamp: now.clone(),
-    };
+
+    // v0.5.15: persist user + assistant rows to the DB. The history
+    // count we just snapshotted (`history.len()`) gives us the
+    // sequence index for the user row; assistant follows at + 1.
+    // After this call, get_session() returns the full thread for
+    // re-rendering. If no session_id was passed, we're on the
+    // legacy single-shot path — skip persistence.
     if let Some(sid) = &session_id {
-        let mut sessions = state.ask_recall_sessions.lock().await;
-        if let Some(session) = sessions.get_mut(sid) {
-            session.messages.push(ask_session::Message::User {
-                content: trimmed.to_string(),
-                timestamp: now.clone(),
-            });
-            session.messages.push(assistant_message);
+        let user_seq = history.len() as i64;
+        let assistant_seq = user_seq + 1;
+        let user_row = crate::models::AskRecallMessageRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: sid.clone(),
+            sequence: user_seq,
+            role: "user".to_string(),
+            content: trimmed.to_string(),
+            retrieved_sources: None,
+            citations: None,
+            tokens_generated: None,
+            latency_ms: None,
+            tag_intent: None,
+            timestamp: now.clone(),
+        };
+        let assistant_row = crate::models::AskRecallMessageRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: sid.clone(),
+            sequence: assistant_seq,
+            role: "assistant".to_string(),
+            content: response.text.clone(),
+            retrieved_sources: serde_json::to_string(&retrieved_sources).ok(),
+            citations: serde_json::to_string(&citations).ok(),
+            tokens_generated: Some(response.tokens_generated as i64),
+            latency_ms: Some(latency_ms as i64),
+            tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
+            timestamp: now.clone(),
+        };
+        if let Err(err) = state
+            .ask_recall_session_repository
+            .append_message(&user_row)
+            .await
+        {
+            eprintln!("[recall][ask-recall] failed to persist user msg: {err}");
+        }
+        if let Err(err) = state
+            .ask_recall_session_repository
+            .append_message(&assistant_row)
+            .await
+        {
+            eprintln!("[recall][ask-recall] failed to persist assistant msg: {err}");
+        }
+
+        // First-turn title generation: if this was the user's
+        // first message in the session, also rename the session
+        // to a trimmed version of the question (the placeholder
+        // "New chat" gets replaced immediately) and kick off an
+        // async LLM call to produce a 4-6 word summary title.
+        if user_seq == 0 {
+            let placeholder = trim_to_title(trimmed, 50);
+            if let Err(err) = state
+                .ask_recall_session_repository
+                .rename_session(sid, &placeholder)
+                .await
+            {
+                eprintln!("[recall][ask-recall] placeholder rename failed: {err}");
+            }
+            spawn_llm_title_generation(
+                app.clone(),
+                state.ask_recall_session_repository.clone(),
+                state.llm_adapter().cloned(),
+                sid.clone(),
+                trimmed.to_string(),
+                response.text.clone(),
+            );
         }
     }
 
@@ -2064,48 +2127,122 @@ pub async fn ask_recall(
     })
 }
 
-// ─── v0.5.12: multi-turn session management ──────────────────────
-
-/// Create a new Ask Recall conversation session and return its
-/// id. The frontend stores this id and passes it on every
-/// subsequent `ask_recall` call to thread the conversation.
-/// Sessions live in memory only — restarting the app drops them
-/// (persistence lands in a future release).
-#[tauri::command]
-pub async fn ask_recall_new_session(state: State<'_, AppState>) -> AppResult<String> {
-    use crate::ai::ask::session::AskRecallSession;
-    let id = uuid::Uuid::new_v4().to_string();
-    let session = AskRecallSession::new(id.clone(), chrono::Utc::now().to_rfc3339());
-    let mut sessions = state.ask_recall_sessions.lock().await;
-    sessions.insert(id.clone(), session);
-    eprintln!("[recall][ask-recall] new session: {id}");
-    Ok(id)
+/// v0.5.15: trim a string to a clean title at most `max_chars`
+/// long. Cuts at the last whitespace before the limit so we
+/// don't end mid-word, falls back to hard cut if no whitespace
+/// is available within budget.
+fn trim_to_title(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim().trim_end_matches('?').trim_end_matches('.');
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let cut: String = trimmed.chars().take(max_chars).collect();
+    if let Some(idx) = cut.rfind(char::is_whitespace) {
+        let mut out = cut[..idx].trim().to_string();
+        out.push('…');
+        return out;
+    }
+    let mut out = cut;
+    out.push('…');
+    out
 }
 
-/// Return the current state of a session — every message in
-/// chronological order plus metadata. Used by the frontend after
-/// app restart (when the in-memory sessions are gone) to
-/// gracefully fall back to "session not found" rather than
-/// retrying with a stale id.
-#[tauri::command]
-pub async fn ask_recall_get_session(
-    session_id: String,
-    state: State<'_, AppState>,
-) -> AppResult<Option<crate::ai::ask::session::AskRecallSession>> {
-    let sessions = state.ask_recall_sessions.lock().await;
-    Ok(sessions.get(&session_id).cloned())
+/// v0.5.15: convert a persisted message row back into the
+/// in-memory shape the prompt builder expects. Returns None for
+/// rows whose JSON blobs fail to decode (defensive — shouldn't
+/// happen in practice but we'd rather skip than crash).
+fn message_row_to_session_message(
+    row: &crate::models::AskRecallMessageRow,
+) -> Option<crate::ai::ask::session::Message> {
+    use crate::ai::ask::session::Message;
+    match row.role.as_str() {
+        "user" => Some(Message::User {
+            content: row.content.clone(),
+            timestamp: row.timestamp.clone(),
+        }),
+        "assistant" => {
+            let retrieved_sources: Vec<AskRecallCitation> = row
+                .retrieved_sources
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let citations: Vec<AskRecallCitation> = row
+                .citations
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            Some(Message::Assistant {
+                content: row.content.clone(),
+                retrieved_sources,
+                citations,
+                tokens_generated: row.tokens_generated.unwrap_or(0) as u32,
+                latency_ms: row.latency_ms.unwrap_or(0) as u64,
+                tag_intent: row.tag_intent.clone(),
+                timestamp: row.timestamp.clone(),
+            })
+        }
+        _ => None,
+    }
 }
 
-/// Drop a session from memory. Called when the user clicks
-/// "New chat" — the new session id replaces the old one and
-/// the old one's history can be GC'd.
-#[tauri::command]
-pub async fn ask_recall_clear_session(
+/// v0.5.15: fire-and-forget LLM call to generate a 4-6 word
+/// summary title for a freshly-started conversation. Runs ~1s
+/// after the first turn completes; on success, updates the
+/// session row's `llm_title` field and emits an event the
+/// sidebar listens for. Failures are silent — the placeholder
+/// title (the user's first message, trimmed) stays in place.
+fn spawn_llm_title_generation(
+    app: AppHandle,
+    repo: crate::db::repositories::SharedAskRecallSessionRepository,
+    llm: Option<std::sync::Arc<dyn crate::ai::llm::AskRecallAdapter>>,
     session_id: String,
-    state: State<'_, AppState>,
-) -> AppResult<bool> {
-    let mut sessions = state.ask_recall_sessions.lock().await;
-    Ok(sessions.remove(&session_id).is_some())
+    user_question: String,
+    assistant_answer: String,
+) {
+    let Some(llm) = llm else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if !llm.is_ready().await {
+            return;
+        }
+        let prompt = format!(
+            "<|im_start|>system\nYou produce 4-6 word chat titles. Output ONLY the title with no quotes, no period, no prefix. Be specific to the topic.<|im_end|>\n<|im_start|>user\nUser: {}\n\nAssistant: {}\n\nTitle:<|im_end|>\n<|im_start|>assistant\n",
+            user_question.chars().take(200).collect::<String>(),
+            assistant_answer.chars().take(400).collect::<String>(),
+        );
+        let request = LlmGenerationRequest {
+            prompt,
+            pre_formatted: true,
+            max_tokens: 24,
+            temperature: 0.0,
+        };
+        let Ok(response) = llm.generate(request).await else {
+            return;
+        };
+        let title = response
+            .text
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim_end_matches('.')
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if title.is_empty() || title.chars().count() > 80 {
+            return;
+        }
+        if let Err(err) = repo.set_llm_title(&session_id, &title).await {
+            eprintln!("[recall][ask-recall] set_llm_title failed: {err}");
+            return;
+        }
+        let _ = app.emit(
+            "recall://ask-recall-session-renamed",
+            serde_json::json!({ "sessionId": session_id, "title": title }),
+        );
+    });
 }
 
 /// v0.5.11: flip the cancel flag for the in-flight ask_recall (if
@@ -2123,4 +2260,161 @@ pub async fn ask_recall_cancel(state: State<'_, AppState>) -> AppResult<bool> {
     } else {
         Ok(false)
     }
+}
+
+// ─── v0.5.15: persistent Ask Recall sessions ──────────────────────
+
+/// Create a fresh session row with a placeholder "Untitled" title.
+/// The frontend immediately switches to the new session as the
+/// active conversation. Real titles arrive in two waves: when the
+/// first user message lands we set `title` to its trimmed text,
+/// then ~1s after the first turn completes we run a small LLM
+/// call and fill in `llm_title` with a 4–6 word summary.
+#[tauri::command]
+pub async fn ask_recall_new_session(state: State<'_, AppState>) -> AppResult<String> {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    state
+        .ask_recall_session_repository
+        .create_session(&session_id, "New chat", &now)
+        .await?;
+    Ok(session_id)
+}
+
+/// List every session newest-first. Drives the RECENT CHATS
+/// sidebar surface. Light shape — message bodies stay in the
+/// `ask_recall_messages` table until the user opens the chat.
+#[tauri::command]
+pub async fn ask_recall_list_sessions(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::models::AskRecallSessionSummary>> {
+    state.ask_recall_session_repository.list_sessions().await
+}
+
+/// Read one session's full message history. Returns None when
+/// the id doesn't exist (session was deleted from another
+/// surface). The frontend rehydrates AskView's thread state from
+/// the returned `messages` array.
+///
+/// v0.5.15: decodes the per-row `retrieved_sources` / `citations`
+/// JSON blobs into structured arrays before serializing to the
+/// frontend. Saves the frontend from having to JSON.parse
+/// everything at render time.
+#[tauri::command]
+pub async fn ask_recall_get_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<DecodedAskRecallSession>> {
+    let session = state
+        .ask_recall_session_repository
+        .get_session(&session_id)
+        .await?;
+    Ok(session.map(|s| DecodedAskRecallSession {
+        session_id: s.session_id,
+        title: s.title,
+        llm_title: s.llm_title,
+        created_at: s.created_at,
+        last_used_at: s.last_used_at,
+        messages: s
+            .messages
+            .into_iter()
+            .map(decode_message_row)
+            .collect(),
+    }))
+}
+
+/// v0.5.15: decoded session payload — same fields as
+/// `AskRecallSessionFull` but messages have their JSON blobs
+/// already deserialized into structured arrays.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecodedAskRecallSession {
+    pub session_id: String,
+    pub title: String,
+    pub llm_title: Option<String>,
+    pub created_at: String,
+    pub last_used_at: String,
+    pub messages: Vec<DecodedAskRecallMessage>,
+}
+
+/// v0.5.15: discriminated by `role`. Mirrors the frontend's
+/// `AskRecallMessage` type so JSON deserialization on the TS
+/// side is direct.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "role")]
+pub enum DecodedAskRecallMessage {
+    User {
+        content: String,
+        timestamp: String,
+    },
+    Assistant {
+        content: String,
+        retrieved_sources: Vec<AskRecallCitation>,
+        citations: Vec<AskRecallCitation>,
+        tokens_generated: u32,
+        latency_ms: u64,
+        tag_intent: Option<String>,
+        timestamp: String,
+    },
+}
+
+fn decode_message_row(row: crate::models::AskRecallMessageRow) -> DecodedAskRecallMessage {
+    if row.role == "assistant" {
+        let retrieved_sources: Vec<AskRecallCitation> = row
+            .retrieved_sources
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let citations: Vec<AskRecallCitation> = row
+            .citations
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        DecodedAskRecallMessage::Assistant {
+            content: row.content,
+            retrieved_sources,
+            citations,
+            tokens_generated: row.tokens_generated.unwrap_or(0) as u32,
+            latency_ms: row.latency_ms.unwrap_or(0) as u64,
+            tag_intent: row.tag_intent,
+            timestamp: row.timestamp,
+        }
+    } else {
+        DecodedAskRecallMessage::User {
+            content: row.content,
+            timestamp: row.timestamp,
+        }
+    }
+}
+
+/// Drop a session and (via ON DELETE CASCADE) all its messages.
+/// Idempotent.
+#[tauri::command]
+pub async fn ask_recall_delete_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    state
+        .ask_recall_session_repository
+        .delete_session(&session_id)
+        .await
+}
+
+/// Manually rename a session. Updates the `title` field. The
+/// LLM-generated `llm_title` is left untouched — the sidebar
+/// surfaces `llm_title` when present, falling back to `title`.
+#[tauri::command]
+pub async fn ask_recall_rename_session(
+    session_id: String,
+    title: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Invalid("Title cannot be empty.".into()));
+    }
+    state
+        .ask_recall_session_repository
+        .rename_session(&session_id, trimmed)
+        .await
 }

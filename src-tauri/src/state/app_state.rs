@@ -11,8 +11,8 @@ use crate::{
     ai::llm::AskRecallAdapter,
     ai::scheduler::AiScheduler,
     db::repositories::{
-        SharedLicenseRepository, SharedMemoryRepository, SharedProjectRepository,
-        SharedSettingsRepository,
+        SharedAskRecallSessionRepository, SharedLicenseRepository, SharedMemoryRepository,
+        SharedProjectRepository, SharedSettingsRepository,
     },
     platform::factory::PlatformServices,
     services::{
@@ -38,6 +38,7 @@ pub struct AppState {
     pub project_repository: SharedProjectRepository,
     pub settings_repository: SharedSettingsRepository,
     pub license_repository: SharedLicenseRepository,
+    pub ask_recall_session_repository: SharedAskRecallSessionRepository,
     pub memory_service: Arc<MemoryService>,
     pub project_service: Arc<ProjectService>,
     pub settings_service: Arc<SettingsService>,
@@ -67,17 +68,13 @@ pub struct AppState {
     /// to keep first paint cheap. Tier-aware (1.5B/3B/7B Qwen2.5).
     /// `None` when no LLM adapter is configured for this host.
     llm_adapter_cell: OnceLock<Arc<dyn AskRecallAdapter>>,
-    /// v0.5.11: in-memory map of Ask Recall conversation sessions,
-    /// keyed by session_id. Lifetime = app process. `Mutex` is async
-    /// so cancellation lookups don't block the runtime under
-    /// generation load. Persistence (re-open conversations across
-    /// app restarts) lands in a future release.
-    pub ask_recall_sessions:
-        Arc<AsyncMutex<HashMap<String, crate::ai::ask::session::AskRecallSession>>>,
     /// v0.5.11: per-session cancel handles. Stored separately from
-    /// the session struct so the cancel command can drop a flag
-    /// without taking the full sessions lock for the duration of
+    /// session storage so the cancel command can drop a flag
+    /// without taking the sessions lock for the duration of
     /// generation. Cleared after a turn completes (or on cancel).
+    /// v0.5.15: the in-memory sessions HashMap moved to SQLite (see
+    /// `ask_recall_session_repository`); this map persists only
+    /// for the runtime cancel signal.
     pub ask_recall_cancel_handles:
         Arc<AsyncMutex<HashMap<String, crate::ai::ask::session::CancelHandle>>>,
     /// Capture service is exposed on AppState so the AI scheduler hook can
@@ -97,6 +94,7 @@ impl AppState {
         project_repository: SharedProjectRepository,
         settings_repository: SharedSettingsRepository,
         license_repository: SharedLicenseRepository,
+        ask_recall_session_repository: SharedAskRecallSessionRepository,
         platform: PlatformServices,
     ) -> Self {
         let capture_service =
@@ -141,6 +139,7 @@ impl AppState {
             project_repository,
             settings_repository,
             license_repository,
+            ask_recall_session_repository,
             memory_service,
             project_service,
             settings_service,
@@ -155,7 +154,6 @@ impl AppState {
             ai_scheduler_cell: OnceLock::new(),
             screenshot_store_cell: OnceLock::new(),
             llm_adapter_cell: OnceLock::new(),
-            ask_recall_sessions: Arc::new(AsyncMutex::new(HashMap::new())),
             ask_recall_cancel_handles: Arc::new(AsyncMutex::new(HashMap::new())),
             capture_service,
             init_error: None,

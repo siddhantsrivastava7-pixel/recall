@@ -338,5 +338,79 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     .execute(pool)
     .await?;
 
+    // v0.5.15: persistent Ask Recall conversations. Up through
+    // v0.5.14 each session lived only in an in-memory HashMap on
+    // AppState — restart the app and your chats vanished. Now
+    // every session persists, the sidebar shows them all
+    // newest-first, and clicking one rehydrates the thread view.
+    //
+    // `ask_recall_sessions` carries the per-conversation row with
+    // a placeholder title (first user message, trimmed) plus an
+    // `llm_title` column for the LLM-generated summary that fires
+    // ~1s after the first turn completes (4–6 word headline; the
+    // sidebar prefers it when present, falls back to `title`
+    // otherwise).
+    //
+    // `ask_recall_messages` stores each user/assistant turn as a
+    // sequenced row keyed on (session_id, sequence). Citations
+    // and retrieved sources are stashed as JSON BLOBs since the
+    // shapes are pure-presentation data the rest of the system
+    // never queries by; saving them flat would multiply the
+    // schema for no win. ON DELETE CASCADE cleans up messages
+    // when a conversation is deleted.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ask_recall_sessions (
+          session_id    TEXT PRIMARY KEY NOT NULL,
+          title         TEXT NOT NULL,
+          llm_title     TEXT,
+          created_at    TEXT NOT NULL,
+          last_used_at  TEXT NOT NULL,
+          message_count INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_ask_recall_sessions_recent
+        ON ask_recall_sessions(last_used_at DESC)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ask_recall_messages (
+          id                TEXT PRIMARY KEY NOT NULL,
+          session_id        TEXT NOT NULL REFERENCES ask_recall_sessions(session_id) ON DELETE CASCADE,
+          sequence          INTEGER NOT NULL,
+          role              TEXT NOT NULL,
+          content           TEXT NOT NULL,
+          retrieved_sources TEXT,
+          citations         TEXT,
+          tokens_generated  INTEGER,
+          latency_ms        INTEGER,
+          tag_intent        TEXT,
+          timestamp         TEXT NOT NULL,
+          UNIQUE(session_id, sequence)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_ask_recall_messages_session
+        ON ask_recall_messages(session_id, sequence)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

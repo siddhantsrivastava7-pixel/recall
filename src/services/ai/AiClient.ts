@@ -109,22 +109,35 @@ export const aiClient = {
   /// AskView's input row.
   cancelAskRecall: () => invoke<boolean>("ask_recall_cancel"),
 
-  /// v0.5.12: create a new conversation session and return its id.
-  /// The frontend stores this id locally and passes it on every
-  /// askRecall call. Sessions are in-memory only and lost on app
-  /// restart.
+  /// v0.5.15: create a new conversation session and return its id.
+  /// Persisted to SQLite so the chat survives app restart. Title
+  /// starts as "New chat" and gets replaced first by the user's
+  /// first question (trimmed) and then by the LLM-generated
+  /// summary (~1s after the first turn completes).
   newAskRecallSession: () => invoke<string>("ask_recall_new_session"),
 
-  /// v0.5.12: fetch the full message list for a session. Used to
-  /// detect "session expired" (e.g. after app restart) so the UI
-  /// can fall back to a fresh session gracefully.
+  /// v0.5.15: fetch the full message list for a session, including
+  /// stored citations + retrieved sources. Used by AskView to
+  /// rehydrate the thread when the user clicks an entry in the
+  /// sidebar.
   getAskRecallSession: (sessionId: string) =>
-    invoke<AskRecallSession | null>("ask_recall_get_session", { sessionId }),
+    invoke<AskRecallSessionFull | null>("ask_recall_get_session", { sessionId }),
 
-  /// v0.5.12: drop a session from memory. Called when the user
-  /// clicks "New chat" — old session goes away, new one created.
-  clearAskRecallSession: (sessionId: string) =>
-    invoke<boolean>("ask_recall_clear_session", { sessionId }),
+  /// v0.5.15: list every session newest-first. Drives the
+  /// RECENT CHATS sidebar. Lightweight shape — message bodies
+  /// stay in the message table until a session is opened.
+  listAskRecallSessions: () =>
+    invoke<AskRecallSessionSummary[]>("ask_recall_list_sessions"),
+
+  /// v0.5.15: drop a session and (cascade) all its messages.
+  /// Idempotent.
+  deleteAskRecallSession: (sessionId: string) =>
+    invoke<void>("ask_recall_delete_session", { sessionId }),
+
+  /// v0.5.15: rename a session. Updates the placeholder title;
+  /// llm_title is left untouched.
+  renameAskRecallSession: (sessionId: string, title: string) =>
+    invoke<void>("ask_recall_rename_session", { sessionId, title }),
 
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
@@ -247,6 +260,37 @@ export interface AskRecallSession {
   sessionId: string;
   messages: AskRecallMessage[];
   createdAt: string;
+}
+
+/// v0.5.15: persisted session payload for the new SQLite-backed
+/// store. Distinct from the v0.5.12 `AskRecallSession` because
+/// it adds title fields + last_used_at for sidebar rendering.
+export interface AskRecallSessionFull {
+  sessionId: string;
+  title: string;
+  llmTitle: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  messages: AskRecallMessage[];
+}
+
+/// v0.5.15: lightweight summary for the RECENT CHATS sidebar list.
+/// Backend's `ask_recall_list_sessions` returns these newest-first.
+/// `displayTitle()` (helper) prefers `llmTitle` when present.
+export interface AskRecallSessionSummary {
+  sessionId: string;
+  title: string;
+  llmTitle: string | null;
+  createdAt: string;
+  lastUsedAt: string;
+  messageCount: number;
+}
+
+/// Helper: pick the LLM-generated title when available, otherwise
+/// fall back to the placeholder title (first user message,
+/// trimmed). Centralized so every surface renders the same way.
+export function chatDisplayTitle(s: { title: string; llmTitle: string | null }): string {
+  return s.llmTitle && s.llmTitle.trim().length > 0 ? s.llmTitle : s.title;
 }
 
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full

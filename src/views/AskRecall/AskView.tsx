@@ -46,6 +46,7 @@ import {
   type AskRecallMessage,
   type AskRecallResponse,
 } from "@/services/ai/AiClient";
+import { useChatStore } from "@/stores/chatStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import type { MainView } from "@/windows/MainWindow";
 
@@ -77,13 +78,16 @@ type AskPhase =
 const CITATION_RE = /\[memory:([0-9a-fA-F\-]+)\]/g;
 
 export function AskView({ setView }: AskViewProps) {
-  // v0.5.12: thread state — committed messages from the session
-  // (alternating user/assistant). Pending state for the in-flight
-  // turn (`pendingUser` + `streamedText`) renders as the last
-  // entry in the thread until the response resolves; then it's
-  // replaced by the canonical messages.
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AskRecallMessage[]>([]);
+  // v0.5.15: thread state lives in the shared chat store so the
+  // sidebar and AskView stay in sync. Pending state (current
+  // in-flight turn) stays local since it's short-lived and
+  // only meaningful inside this view.
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const messages = useChatStore((s) => s.activeMessages);
+  const newChatAction = useChatStore((s) => s.newChat);
+  const appendMessageToActive = useChatStore((s) => s.appendMessageToActive);
+  const refreshChats = useChatStore((s) => s.refresh);
+
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [streamedText, setStreamedText] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -94,26 +98,22 @@ export function AskView({ setView }: AskViewProps) {
 
   const selectMemory = useMemoryStore((state) => state.selectMemory);
 
-  // Spawn a session on first mount. We don't restore from any
-  // persisted state — each AskView mount is a fresh conversation
-  // by design (matches user mental model of "open AskRecall →
-  // new chat").
+  // v0.5.15: when AskView mounts and there's no active session
+  // (e.g., user just clicked "Ask Recall" in the nav for the
+  // first time, or after a "New chat" click), spawn one. The
+  // store's newChat handles SQLite write + sets active id.
   useEffect(() => {
+    if (sessionId) return;
     let disposed = false;
-    void aiClient
-      .newAskRecallSession()
-      .then((id) => {
-        if (!disposed) setSessionId(id);
-      })
-      .catch((err) => {
-        if (!disposed) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      });
+    void newChatAction().catch((err) => {
+      if (!disposed) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [sessionId, newChatAction]);
 
   // Stream listeners. Tokens append to streamedText; phase events
   // update the spinner copy; complete events are advisory (the
@@ -199,27 +199,31 @@ export function AskView({ setView }: AskViewProps) {
         trimmed,
         sessionId,
       );
-      // Backend already appended the User+Assistant pair to the
-      // session. Mirror it locally so the next turn renders in
-      // the right order without an extra session fetch.
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "user",
-          content: trimmed,
-          timestamp: new Date().toISOString(),
-        },
-        {
-          role: "assistant",
-          content: result.text,
-          retrievedSources: result.retrievedSources,
-          citations: result.citations,
-          tokensGenerated: result.tokensGenerated,
-          latencyMs: result.latencyMs,
-          tagIntent: result.tagIntent,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      // v0.5.15: append both messages to the shared store so the
+      // sidebar's last_used_at + message_count stay in sync. The
+      // backend has already persisted them; we mirror locally so
+      // the thread renders in order without a session refetch.
+      const ts = new Date().toISOString();
+      appendMessageToActive({
+        role: "user",
+        content: trimmed,
+        timestamp: ts,
+      });
+      appendMessageToActive({
+        role: "assistant",
+        content: result.text,
+        retrievedSources: result.retrievedSources,
+        citations: result.citations,
+        tokensGenerated: result.tokensGenerated,
+        latencyMs: result.latencyMs,
+        tagIntent: result.tagIntent,
+        timestamp: ts,
+      });
+      // Refresh the sidebar list so the placeholder title (set
+      // server-side from the first user message) replaces "New
+      // chat". The LLM-generated summary title arrives later via
+      // the `recall://ask-recall-session-renamed` event.
+      void refreshChats();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -228,7 +232,7 @@ export function AskView({ setView }: AskViewProps) {
       setPendingUser(null);
       setPhase({ kind: "idle" });
     }
-  }, [question, streaming, sessionId]);
+  }, [question, streaming, sessionId, appendMessageToActive, refreshChats]);
 
   const cancel = useCallback(async () => {
     if (!streaming) return;
@@ -239,27 +243,18 @@ export function AskView({ setView }: AskViewProps) {
     }
   }, [streaming]);
 
+  // v0.5.15: New chat just delegates to the store action; the
+  // store creates a fresh session row in SQLite, sets it as
+  // active, and clears activeMessages. Local pending state
+  // resets here.
   const newChat = useCallback(async () => {
     if (streaming) return;
-    if (sessionId) {
-      try {
-        await aiClient.clearAskRecallSession(sessionId);
-      } catch {
-        // Best-effort.
-      }
-    }
-    setMessages([]);
     setStreamedText("");
     setPendingUser(null);
     setError(null);
     setPhase({ kind: "idle" });
-    try {
-      const id = await aiClient.newAskRecallSession();
-      setSessionId(id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [streaming, sessionId]);
+    await newChatAction();
+  }, [streaming, newChatAction]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {

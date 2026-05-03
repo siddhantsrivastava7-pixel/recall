@@ -305,7 +305,61 @@ pub trait LicenseRepository: Send + Sync {
     async fn clear(&self) -> AppResult<()>;
 }
 
+/// v0.5.15: persistent Ask Recall conversation storage. Sessions
+/// live in SQLite (replacing the v0.5.11 in-memory HashMap on
+/// AppState) so chats survive app restart. Messages append in
+/// strict per-session sequence order; `last_used_at` bumps on
+/// every turn so the sidebar can sort newest-first.
+#[async_trait]
+pub trait AskRecallSessionRepository: Send + Sync {
+    /// Create a new session row. Title is the placeholder used
+    /// until the LLM-generated summary lands (or forever if the
+    /// summary call fails).
+    async fn create_session(
+        &self,
+        session_id: &str,
+        title: &str,
+        now_iso: &str,
+    ) -> AppResult<()>;
+
+    /// Update the placeholder title (manual rename). Doesn't touch
+    /// the LLM-generated summary; UIs should prefer `llm_title`
+    /// when present.
+    async fn rename_session(&self, session_id: &str, title: &str) -> AppResult<()>;
+
+    /// Set the LLM-generated summary title. Fired ~1s after the
+    /// first turn completes via a small follow-up LLM call.
+    async fn set_llm_title(&self, session_id: &str, llm_title: &str) -> AppResult<()>;
+
+    /// Drop the session and (via ON DELETE CASCADE) all its
+    /// messages. Idempotent: deleting a missing id is Ok(()).
+    async fn delete_session(&self, session_id: &str) -> AppResult<()>;
+
+    /// List every session newest-first. Used by the sidebar.
+    /// Light shape — full message contents stay in
+    /// `ask_recall_messages` and load on demand when a session
+    /// is opened.
+    async fn list_sessions(&self) -> AppResult<Vec<crate::models::AskRecallSessionSummary>>;
+
+    /// Read one session row + all its messages in sequence order.
+    /// Returns None when the session_id isn't in the table.
+    async fn get_session(
+        &self,
+        session_id: &str,
+    ) -> AppResult<Option<crate::models::AskRecallSessionFull>>;
+
+    /// Append a message to a session. Increments the session's
+    /// `message_count` and bumps `last_used_at`. Caller is
+    /// responsible for assigning the right `sequence` (typically
+    /// current message_count for the session).
+    async fn append_message(
+        &self,
+        message: &crate::models::AskRecallMessageRow,
+    ) -> AppResult<()>;
+}
+
 pub type SharedMemoryRepository = Arc<dyn MemoryRepository>;
 pub type SharedProjectRepository = Arc<dyn ProjectRepository>;
 pub type SharedSettingsRepository = Arc<dyn SettingsRepository>;
 pub type SharedLicenseRepository = Arc<dyn LicenseRepository>;
+pub type SharedAskRecallSessionRepository = Arc<dyn AskRecallSessionRepository>;
