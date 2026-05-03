@@ -1287,13 +1287,13 @@ fn truncate_for_context(text: &str, max_chars: usize) -> String {
 #[tauri::command]
 pub async fn ask_recall(
     question: String,
-    /// v0.5.12: when present, treat this as a continuation of an
-    /// existing conversation. The backend looks up the session in
-    /// AppState, injects past turns into the prompt as multi-turn
-    /// chat-template messages, and appends the user/assistant pair
-    /// to the session after generation completes. When None, runs
-    /// single-shot with the v0.5.11 prompt format — preserves the
-    /// existing behavior for callers that don't yet manage sessions.
+    // v0.5.12: when present, treat this as a continuation of an
+    // existing conversation. The backend looks up the session in
+    // AppState, injects past turns into the prompt as multi-turn
+    // chat-template messages, and appends the user/assistant pair
+    // to the session after generation completes. When None, runs
+    // single-shot with the v0.5.11 prompt format — preserves the
+    // existing behavior for callers that don't yet manage sessions.
     session_id: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
