@@ -1202,7 +1202,7 @@ pub async fn list_memories_by_entity(
 /// `[memory:<uuid>]` markers in the LLM output back to the underlying
 /// memory + the chunk that fed the retrieval (so the UI can highlight
 /// the cited passage on click).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskRecallCitation {
     pub memory_id: String,
