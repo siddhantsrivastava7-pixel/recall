@@ -150,7 +150,19 @@ pub trait AskRecallAdapter: Send + Sync {
 
     /// Drop the loaded weights, freeing RAM. Next `generate` call
     /// will lazily reload. v0.4.0 wires this to a manual "Unload
-    /// model" button in Settings; the idle reaper that calls this
-    /// automatically lands in v0.4.2 alongside the sidecar.
+    /// model" button in Settings; v0.5.13 adds an automatic idle
+    /// reaper that calls this when the model has been idle past a
+    /// threshold (default 5 minutes).
     async fn unload(&self) -> AppResult<()>;
+
+    /// v0.5.13: timestamp of the most recent successful `generate`
+    /// call, when the model is currently loaded. Returns `None` if
+    /// the model is unloaded OR has never been used in this process.
+    /// Used by the idle reaper in `start_ai_scheduler` to drop the
+    /// 3.5+ GB of resident weights once nobody's actively asking.
+    /// Default impl returns None — adapters that want auto-unload
+    /// (LlamaQwen2Adapter) override.
+    async fn last_used_at(&self) -> Option<std::time::SystemTime> {
+        None
+    }
 }

@@ -1671,6 +1671,71 @@ pub async fn ask_recall(
         }
     }
 
+    // ─── 2c. Multi-turn context carry-forward (v0.5.13) ──────────────
+    //
+    // Each turn's retrieval sees only the current question's text.
+    // For follow-ups like "which one is the latest?" after a turn
+    // about license keys, that question by itself doesn't pull
+    // license-key memories — semantic_search instead returns
+    // memories about iterations/versions/attempts, and the LLM
+    // (which has the chat history in its prompt) tries to ground
+    // its answer in whatever it was given. Wrong context, wrong
+    // answer.
+    //
+    // Fix: prepend the prior assistant turn's `retrieved_sources`
+    // to the current turn's context. The LLM then sees:
+    //   * memories the previous turn was grounded in (the license
+    //     keys), so "which one" has a concrete antecedent
+    //   * any new memories the fresh retrieval pulled
+    // Cap at SEMANTIC_TOP_K so the prompt stays bounded.
+    if !history.is_empty() {
+        // Find the most recent assistant message and pull its
+        // retrieved_sources. Walk from the end so we always pick
+        // the latest, even if history is malformed.
+        let prev_sources_opt = history.iter().rev().find_map(|m| match m {
+            ask_session::Message::Assistant {
+                retrieved_sources, ..
+            } => Some(retrieved_sources.clone()),
+            _ => None,
+        });
+        if let Some(prev_sources) = prev_sources_opt {
+            let already: std::collections::HashSet<String> = sources
+                .iter()
+                .map(|s| s.memory_id.clone())
+                .collect();
+            let mut carried: Vec<ContextSource> = Vec::new();
+            for prev in &prev_sources {
+                if already.contains(&prev.memory_id) {
+                    continue;
+                }
+                // topic_labels were not preserved on the citation
+                // shape (frontend doesn't need them); the LLM
+                // already has them in the prior chat-template
+                // turn, so re-deriving is unnecessary.
+                carried.push(ContextSource {
+                    memory_id: prev.memory_id.clone(),
+                    title: prev.title.clone(),
+                    topic_labels: Vec::new(),
+                    excerpt: prev.chunk_text.clone(),
+                    excerpt_start: prev.chunk_start,
+                    excerpt_end: prev.chunk_end,
+                });
+            }
+            // Carried first (prior context wins for follow-ups),
+            // then current. Truncate to SEMANTIC_TOP_K so the
+            // prompt budget stays bounded.
+            let carried_count = carried.len();
+            carried.extend(sources.drain(..));
+            sources = carried;
+            sources.truncate(SEMANTIC_TOP_K as usize);
+            eprintln!(
+                "[recall][ask-recall] carried {} prior sources; total context now {}",
+                carried_count,
+                sources.len()
+            );
+        }
+    }
+
     // ─── 3. Build the prompt ────────────────────────────────────────
     let context_chunks_count = sources.len() as u32;
     let prompt = if sources.is_empty() {

@@ -282,9 +282,26 @@ export function AskView({ setView }: AskViewProps) {
   const hasContent =
     messages.length > 0 || pendingUser !== null || streaming || error !== null;
 
+  // v0.5.13: layout restructured to put the input at the bottom
+  // (Claude/ChatGPT pattern). Outer container is a flex column
+  // filling the available height; thread scrolls inside its own
+  // overflow region; input is pinned at the bottom and always
+  // visible without scrolling. `min-height: 0` on the thread is
+  // the standard CSS-flex incantation for "let me actually scroll
+  // inside this flex item" — without it the thread expands to
+  // its content's height and the page itself scrolls.
   return (
-    <div className="page fade-in">
-      <div className="page-head">
+    <div
+      className="page fade-in"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+      }}
+    >
+      <div className="page-head" style={{ flexShrink: 0 }}>
         <div className="page-eyebrow">
           <Sparkles size={11} strokeWidth={1.7} /> Ask Recall
         </div>
@@ -307,10 +324,82 @@ export function AskView({ setView }: AskViewProps) {
         ) : null}
       </div>
 
-      {/* Input box — top of the page so the user always sees where
-          to type, without needing to scroll past a long thread. */}
+      {/* Thread — flex:1 fills remaining space; overflow:auto so the
+          conversation scrolls inside it rather than scrolling the
+          whole page. min-height:0 is required for flex children to
+          actually constrain to parent height instead of growing. */}
       <div
         style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          paddingTop: 4,
+          paddingBottom: 12,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        {error ? (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "var(--bad-bg)",
+              color: "var(--bad)",
+              fontSize: 12,
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
+
+        {hasContent ? (
+          <>
+            {messages.map((msg, idx) => (
+              <MessageRow
+                key={`${idx}-${msg.timestamp}`}
+                message={msg}
+                onOpenMemory={openMemory}
+              />
+            ))}
+            {pendingUser ? <UserBubble content={pendingUser} /> : null}
+            {streaming ? (
+              <AssistantStreamingBubble
+                text={streamedText}
+                onOpenMemory={openMemory}
+              />
+            ) : null}
+            <div ref={threadEndRef} />
+          </>
+        ) : (
+          <div
+            style={{
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px dashed var(--sh-window-edge)",
+              color: "var(--t-3)",
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            Tips: be specific. Ask for "license keys I saved" or "what did I
+            save about pricing last week" rather than "summarize everything".
+            Recall only answers from your own memories — if it doesn't have
+            enough context it will say so rather than guess. Follow-ups stay
+            in the same conversation; click "New chat" to reset.
+          </div>
+        )}
+      </div>
+
+      {/* Input box — pinned at the bottom of the view. flex-shrink:0
+          keeps it visible no matter how tall the thread grows. The
+          thread auto-scrolls to its end when new tokens land
+          (threadEndRef effect), so the user always sees the latest
+          assistant message immediately above the input. */}
+      <div
+        style={{
+          flexShrink: 0,
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -318,6 +407,7 @@ export function AskView({ setView }: AskViewProps) {
           borderRadius: 14,
           background: "var(--panel-glass)",
           boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
+          marginTop: 8,
         }}
       >
         <textarea
@@ -386,68 +476,6 @@ export function AskView({ setView }: AskViewProps) {
           </button>
         </div>
       </div>
-
-      {error ? (
-        <div
-          style={{
-            marginTop: 14,
-            padding: "10px 12px",
-            borderRadius: 10,
-            background: "var(--bad-bg)",
-            color: "var(--bad)",
-            fontSize: 12,
-          }}
-        >
-          {error}
-        </div>
-      ) : null}
-
-      {hasContent ? (
-        <div
-          style={{
-            marginTop: 18,
-            display: "flex",
-            flexDirection: "column",
-            gap: 14,
-          }}
-        >
-          {messages.map((msg, idx) => (
-            <MessageRow
-              key={`${idx}-${msg.timestamp}`}
-              message={msg}
-              onOpenMemory={openMemory}
-            />
-          ))}
-          {pendingUser ? (
-            <UserBubble content={pendingUser} />
-          ) : null}
-          {streaming ? (
-            <AssistantStreamingBubble
-              text={streamedText}
-              onOpenMemory={openMemory}
-            />
-          ) : null}
-          <div ref={threadEndRef} />
-        </div>
-      ) : (
-        <div
-          style={{
-            marginTop: 18,
-            padding: "12px 14px",
-            borderRadius: 12,
-            border: "1px dashed var(--sh-window-edge)",
-            color: "var(--t-3)",
-            fontSize: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          Tips: be specific. Ask for "license keys I saved" or "what did I
-          save about pricing last week" rather than "summarize everything".
-          Recall only answers from your own memories — if it doesn't have
-          enough context it will say so rather than guess. Follow-ups stay
-          in the same conversation; click "New chat" to reset.
-        </div>
-      )}
     </div>
   );
 }

@@ -336,7 +336,50 @@ fn start_ai_scheduler(
     // installation rather than panic — the rest of the AI subsystem
     // (OCR, embeddings) keeps working without Ask Recall.
     match qwen2_llama::boxed(handle.clone(), llm_entry) {
-        Ok(adapter) => state.install_llm_adapter(adapter),
+        Ok(adapter) => {
+            state.install_llm_adapter(adapter.clone());
+            // v0.5.13: idle reaper. The 7B Q4_K_M LLM is ~3.5 GB
+            // resident once loaded; for users who run a turn or
+            // two and walk away, that's a lot of RAM sitting idle.
+            // Background tick checks every 60s — if `last_used_at`
+            // is more than IDLE_THRESHOLD_SECS old AND the model
+            // is still loaded, call unload(). Next ask_recall pays
+            // the ~5-10s cold reload cost which is acceptable for
+            // a fresh question.
+            //
+            // Hardcoded threshold for v0.5.13; v0.5.14+ surfaces
+            // it in Settings (1/5/15/never).
+            const IDLE_THRESHOLD_SECS: u64 = 5 * 60;
+            const TICK_SECS: u64 = 60;
+            let reaper_adapter = adapter;
+            tauri::async_runtime::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(TICK_SECS));
+                // First tick fires immediately — skip it; we don't
+                // want to unload before the user even has a chance
+                // to use the LLM on this app launch.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let Some(last) = reaper_adapter.last_used_at().await else {
+                        // Either unloaded or never used; nothing to do.
+                        continue;
+                    };
+                    let idle = std::time::SystemTime::now()
+                        .duration_since(last)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if idle >= IDLE_THRESHOLD_SECS {
+                        eprintln!(
+                            "[recall][llm-reaper] model idle for {idle}s (threshold {IDLE_THRESHOLD_SECS}s); unloading"
+                        );
+                        if let Err(err) = reaper_adapter.unload().await {
+                            eprintln!("[recall][llm-reaper] unload failed: {err}");
+                        }
+                    }
+                }
+            });
+        }
         Err(err) => {
             eprintln!("[recall][ai-scheduler] LLM adapter init failed: {err}");
         }

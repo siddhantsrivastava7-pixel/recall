@@ -89,6 +89,13 @@ pub struct LlamaQwen2Adapter {
     /// one call at a time on the shared context, which is fine for
     /// our single-flight Ask Recall surface.
     state: Mutex<Option<LoadedModel>>,
+    /// v0.5.13: timestamp of the most recent successful generate
+    /// call, while the model is loaded. Cleared on unload. The
+    /// idle reaper in `start_ai_scheduler` polls this every 60s
+    /// and unloads when (now - last_used_at) > threshold (5 min
+    /// by default). Cuts 3.5+ GB of resident weights when nobody
+    /// is using the LLM, while keeping it warm during active chat.
+    last_used_at: Mutex<Option<std::time::SystemTime>>,
 }
 
 struct LoadedModel {
@@ -110,6 +117,7 @@ impl LlamaQwen2Adapter {
             entry,
             backend: Arc::new(backend),
             state: Mutex::new(None),
+            last_used_at: Mutex::new(None),
         })
     }
 
@@ -344,8 +352,31 @@ impl AskRecallAdapter for LlamaQwen2Adapter {
 
     async fn unload(&self) -> AppResult<()> {
         let mut guard = self.state.lock().await;
+        let was_loaded = guard.is_some();
         *guard = None;
+        // Clear the idle stamp so the reaper doesn't think we're
+        // still "in use" the moment the model is reloaded.
+        let mut last = self.last_used_at.lock().await;
+        *last = None;
+        if was_loaded {
+            eprintln!("[recall][llm] unloaded (RAM freed)");
+        }
         Ok(())
+    }
+
+    async fn last_used_at(&self) -> Option<std::time::SystemTime> {
+        // Only meaningful when the model is currently loaded; if
+        // unloaded, the reaper has nothing to do regardless of
+        // when the last call was. Take the state lock first to
+        // avoid a race where the model unloads between the two
+        // checks.
+        let guard = self.state.lock().await;
+        if guard.is_none() {
+            return None;
+        }
+        drop(guard);
+        let last = self.last_used_at.lock().await;
+        *last
     }
 }
 
@@ -589,6 +620,17 @@ impl LlamaQwen2Adapter {
         *guard = Some(LoadedModel {
             model: returned_model,
         });
+
+        // v0.5.13: stamp last_used_at on success so the reaper
+        // knows when this generation completed. Failed generations
+        // (early return on the `?` above) don't update the stamp;
+        // the reaper still sees the previous successful call's
+        // timestamp, which is the desired behavior — a transient
+        // failure shouldn't reset the idle clock.
+        {
+            let mut last = self.last_used_at.lock().await;
+            *last = Some(std::time::SystemTime::now());
+        }
 
         Ok(response)
     }
