@@ -33,10 +33,19 @@ pub type LlmModelId = &'static str;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmGenerationRequest {
     /// Already-formatted prompt including system + user + chunk
-    /// context. The adapter may apply a chat template wrapper on top
-    /// (e.g. Qwen's `<|im_start|>` markers) but the prompt-building
-    /// caller is responsible for the substantive content.
+    /// context. The adapter applies a chat template wrapper on top
+    /// (Qwen's `<|im_start|>` markers) — set `pre_formatted = true`
+    /// to skip the wrap and use this string verbatim. The
+    /// prompt-building caller is responsible for the substantive
+    /// content either way.
     pub prompt: String,
+    /// v0.5.11: when true, `prompt` is already wrapped in the
+    /// model's chat template (multi-turn callers build this
+    /// directly with full conversation history). When false, the
+    /// adapter applies its default single-turn template — matches
+    /// the v0.4.x / v0.5.0 behavior.
+    #[serde(default)]
+    pub pre_formatted: bool,
     /// Hard cap on generated tokens. Saves us from a runaway model.
     pub max_tokens: usize,
     /// Sampling temperature. 0.0 = greedy. Anything > 0 introduces
@@ -119,6 +128,24 @@ pub trait AskRecallAdapter: Send + Sync {
         let response = self.generate(request).await?;
         on_token(response.text.clone());
         Ok(response)
+    }
+
+    /// v0.5.11: streaming variant with a cancel signal. The loop
+    /// polls `cancel.is_cancelled()` every token; when set, it
+    /// returns the partial response and stops. Wired through to
+    /// the cancel button on AskView so users can abort long
+    /// generations without restarting the app.
+    ///
+    /// Default impl ignores the cancel handle and falls back to
+    /// the cancellation-free path. Adapters that genuinely stream
+    /// (LlamaQwen2Adapter) override.
+    async fn generate_streaming_cancellable(
+        &self,
+        request: LlmGenerationRequest,
+        _cancel: crate::ai::ask::session::CancelHandle,
+        on_token: Box<dyn Fn(String) + Send + Sync>,
+    ) -> AppResult<LlmGenerationResponse> {
+        self.generate_streaming(request, on_token).await
     }
 
     /// Drop the loaded weights, freeing RAM. Next `generate` call

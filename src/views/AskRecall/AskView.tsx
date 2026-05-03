@@ -26,7 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ArrowRight, Loader2, MessageCircleQuestion, Sparkles } from "lucide-react";
+import { ArrowRight, Loader2, MessageCircleQuestion, Sparkles, X } from "lucide-react";
 import {
   aiClient,
   type AskRecallCitation,
@@ -46,7 +46,23 @@ interface AskTokenEvent {
 interface AskCompleteEvent {
   tokens: number;
   latencyMs: number;
+  cancelled?: boolean;
 }
+
+/// v0.5.11: phase events from the backend so the UI can tell the
+/// user what's actually happening between "I clicked Ask" and "the
+/// first token arrived." The backend emits one event per stage
+/// transition; the frontend swaps the spinner copy.
+interface AskStageEvent {
+  stage: "retrieving" | "prefill";
+  detail?: { memories?: number };
+}
+
+type AskPhase =
+  | { kind: "idle" }
+  | { kind: "retrieving" }
+  | { kind: "prefill"; memories: number }
+  | { kind: "generating" };
 
 const CITATION_RE = /\[memory:([0-9a-fA-F\-]+)\]/g;
 
@@ -57,6 +73,11 @@ export function AskView({ setView }: AskViewProps) {
   const [response, setResponse] = useState<AskRecallResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [completionMeta, setCompletionMeta] = useState<AskCompleteEvent | null>(null);
+  /// v0.5.11: phase tracks what the backend is currently doing so
+  /// we can show specific copy ("Searching memories…" /
+  /// "Reading 12 memories…") instead of a generic spinner. First
+  /// token arrival flips us into "generating" implicitly.
+  const [phase, setPhase] = useState<AskPhase>({ kind: "idle" });
   const lastQuestion = useRef<string>("");
 
   const selectMemory = useMemoryStore((state) => state.selectMemory);
@@ -68,11 +89,16 @@ export function AskView({ setView }: AskViewProps) {
   useEffect(() => {
     let unlistenToken: UnlistenFn | undefined;
     let unlistenComplete: UnlistenFn | undefined;
+    let unlistenStage: UnlistenFn | undefined;
     let disposed = false;
 
     void listen<AskTokenEvent>("recall://ask-recall-token", (event) => {
       if (disposed) return;
       setStreamedText((prev) => prev + (event.payload?.delta ?? ""));
+      // First-token implicit generating-stage transition.
+      setPhase((prev) =>
+        prev.kind === "prefill" ? { kind: "generating" } : prev,
+      );
     }).then((fn) => {
       if (disposed) {
         fn();
@@ -92,10 +118,29 @@ export function AskView({ setView }: AskViewProps) {
       }
     });
 
+    void listen<AskStageEvent>("recall://ask-recall-stage", (event) => {
+      if (disposed) return;
+      const payload = event.payload;
+      if (!payload) return;
+      if (payload.stage === "retrieving") {
+        setPhase({ kind: "retrieving" });
+      } else if (payload.stage === "prefill") {
+        const memories = payload.detail?.memories ?? 0;
+        setPhase({ kind: "prefill", memories });
+      }
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlistenStage = fn;
+      }
+    });
+
     return () => {
       disposed = true;
       unlistenToken?.();
       unlistenComplete?.();
+      unlistenStage?.();
     };
   }, []);
 
@@ -107,6 +152,7 @@ export function AskView({ setView }: AskViewProps) {
     setStreamedText("");
     setResponse(null);
     setCompletionMeta(null);
+    setPhase({ kind: "retrieving" });
     lastQuestion.current = trimmed;
     try {
       const result = await aiClient.askRecall(trimmed);
@@ -119,8 +165,25 @@ export function AskView({ setView }: AskViewProps) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStreaming(false);
+      setPhase({ kind: "idle" });
     }
   }, [question, streaming]);
+
+  /// v0.5.11: Cancel button hits the backend cancel command which
+  /// flips the LLM's per-token cancel flag. The generation loop
+  /// breaks on its next token and returns a partial response —
+  /// the in-flight `aiClient.askRecall(...)` promise resolves
+  /// normally with that partial answer, so we don't need to handle
+  /// rejection here.
+  const cancel = useCallback(async () => {
+    if (!streaming) return;
+    try {
+      await aiClient.cancelAskRecall();
+    } catch {
+      // Best-effort: if cancel itself errors, the in-flight ask
+      // will eventually complete on its own. Nothing to surface.
+    }
+  }, [streaming]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -206,14 +269,26 @@ export function AskView({ setView }: AskViewProps) {
         />
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 11, color: "var(--t-4)" }}>
-            {streaming ? "Generating…" : "⌘ + Enter to ask"}
+            {streaming ? phaseCopy(phase) : "⌘ + Enter to ask"}
           </span>
+          {streaming ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => void cancel()}
+              style={{ marginLeft: "auto", height: 32, padding: "0 12px" }}
+              title="Stop generation and return the partial answer"
+            >
+              <X size={12} strokeWidth={1.8} />
+              Cancel
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn btn-primary"
             onClick={() => void ask()}
             disabled={streaming || question.trim().length === 0}
-            style={{ marginLeft: "auto", height: 32, padding: "0 14px" }}
+            style={{ marginLeft: streaming ? 0 : "auto", height: 32, padding: "0 14px" }}
           >
             {streaming ? (
               <>
@@ -396,6 +471,27 @@ export function AskView({ setView }: AskViewProps) {
    for ids the citation parser dropped (rare — usually a malformed uuid)
    render as plain text so the user still sees the LLM's intent.
    ──────────────────────────────────────────────────────────────────────── */
+
+/// v0.5.11: phase copy for the spinner row. Each backend stage
+/// gets a specific message so the user knows what's happening
+/// during the long pre-token wait. "generating" doesn't appear
+/// here because once tokens start streaming the live answer
+/// panel is the visible activity — spinner stays as "Generating…"
+/// for consistency.
+function phaseCopy(phase: AskPhase): string {
+  switch (phase.kind) {
+    case "idle":
+      return "⌘ + Enter to ask";
+    case "retrieving":
+      return "Searching memories…";
+    case "prefill":
+      return phase.memories === 1
+        ? "Reading 1 memory…"
+        : `Reading ${phase.memories} memories…`;
+    case "generating":
+      return "Generating…";
+  }
+}
 
 function renderAnswerWithCitations(
   text: string,

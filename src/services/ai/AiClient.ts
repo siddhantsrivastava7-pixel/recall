@@ -103,6 +103,13 @@ export const aiClient = {
   askRecall: (question: string) =>
     invoke<AskRecallResponse>("ask_recall", { question }),
 
+  /// v0.5.11: flip the cancel flag for the in-flight ask. The LLM
+  /// generation loop polls every token and returns a partial
+  /// response on cancel. Idempotent — calling when nothing is in
+  /// flight returns false. Surfaced as the Cancel button in
+  /// AskView's input row.
+  cancelAskRecall: () => invoke<boolean>("ask_recall_cancel"),
+
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
   /// regardless of the persisted "backfill done" flag, and returns a

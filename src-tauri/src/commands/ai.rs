@@ -913,6 +913,7 @@ pub async fn ai_diagnose_llm(state: State<'_, AppState>) -> AppResult<LlmDiagnos
     let prompt = "In one short sentence, what is Recall (the local-first memory app)?".to_string();
     let request = LlmGenerationRequest {
         prompt: prompt.clone(),
+        pre_formatted: false,
         max_tokens: 80,
         temperature: 0.0,
     };
@@ -1307,6 +1308,32 @@ pub async fn ask_recall(
         ));
     }
 
+    // v0.5.11: register a cancel handle for this in-flight ask. The
+    // ask_recall_cancel command flips the flag and the LLM's
+    // generation loop polls it every token. We use the literal key
+    // "current" because v0.5.11 only supports one in-flight ask
+    // at a time (LLM mutex serializes generation anyway). v0.5.12+
+    // multi-turn uses session_id-keyed handles. Cleanup happens at
+    // the natural completion points below — leaving a stale handle
+    // briefly on early-error paths is harmless because cancel is a
+    // pure flag flip and the next ask_recall replaces the entry.
+    let cancel_handle = crate::ai::ask::session::CancelHandle::new();
+    {
+        let mut handles = state.ask_recall_cancel_handles.lock().await;
+        handles.insert("current".to_string(), cancel_handle.clone());
+    }
+
+    // v0.5.11: phase events let the UI show "Searching memories…" /
+    // "Reading 12 memories…" instead of an opaque spinner. Frontend
+    // listens on `recall://ask-recall-stage` and swaps copy.
+    let emit_stage = |stage: &'static str, detail: serde_json::Value| {
+        let _ = app.emit(
+            "recall://ask-recall-stage",
+            serde_json::json!({ "stage": stage, "detail": detail }),
+        );
+    };
+    emit_stage("retrieving", serde_json::json!({}));
+
     // ─── 1. Route by intent ──────────────────────────────────────────
     //
     // Three signals, in order:
@@ -1683,10 +1710,25 @@ pub async fn ask_recall(
     });
     let request = LlmGenerationRequest {
         prompt,
+        pre_formatted: false,
         max_tokens: 512,
         temperature: 0.0,
     };
-    let response = llm.generate_streaming(request, on_token).await?;
+    // v0.5.11: emit prefill stage so the UI can show
+    // "Reading N memories…" before the model warms up the prompt.
+    // First-token arrival is the implicit signal for "generating"
+    // (frontend swaps on first delta), so we don't emit a separate
+    // generating event here.
+    emit_stage(
+        "prefill",
+        serde_json::json!({ "memories": context_chunks_count }),
+    );
+    // v0.5.11: cancellable streaming. The cancel handle was
+    // registered above; the LLM loop polls it every token and
+    // returns a partial response if cancelled.
+    let response = llm
+        .generate_streaming_cancellable(request, cancel_handle.clone(), on_token)
+        .await?;
     let latency_ms = started_at.elapsed().as_millis() as u64;
 
     // Citations: dedupe by memory_id, resolve back to the source we
@@ -1733,18 +1775,32 @@ pub async fn ask_recall(
         })
         .collect();
 
+    let cancelled = cancel_handle.is_cancelled();
     let _ = app.emit(
         "recall://ask-recall-complete",
-        serde_json::json!({ "tokens": response.tokens_generated, "latencyMs": latency_ms }),
+        serde_json::json!({
+            "tokens": response.tokens_generated,
+            "latencyMs": latency_ms,
+            "cancelled": cancelled,
+        }),
     );
 
+    // v0.5.11: drop the cancel handle from the registry now that
+    // generation is done. Subsequent cancel calls before the next
+    // ask_recall starts will no-op silently.
+    {
+        let mut handles = state.ask_recall_cancel_handles.lock().await;
+        handles.remove("current");
+    }
+
     eprintln!(
-        "[recall][ask-recall] done: tokens={} latency_ms={} citations={} retrieved={} context_chunks={}",
+        "[recall][ask-recall] done: tokens={} latency_ms={} citations={} retrieved={} context_chunks={} cancelled={}",
         response.tokens_generated,
         latency_ms,
         citations.len(),
         retrieved_sources.len(),
-        context_chunks_count
+        context_chunks_count,
+        cancelled
     );
 
     Ok(AskRecallResponse {
@@ -1757,4 +1813,21 @@ pub async fn ask_recall(
         context_chunks: context_chunks_count,
         tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
     })
+}
+
+/// v0.5.11: flip the cancel flag for the in-flight ask_recall (if
+/// any). The LLM generation loop polls the flag every token; on
+/// cancel the loop returns a partial response and the streaming
+/// completes early. Idempotent — no-ops if no ask is currently in
+/// flight (the registry entry was already removed by completion).
+#[tauri::command]
+pub async fn ask_recall_cancel(state: State<'_, AppState>) -> AppResult<bool> {
+    let handles = state.ask_recall_cancel_handles.lock().await;
+    if let Some(handle) = handles.get("current") {
+        handle.cancel();
+        eprintln!("[recall][ask-recall] cancel requested");
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }

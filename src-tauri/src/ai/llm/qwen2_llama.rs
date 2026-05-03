@@ -322,14 +322,24 @@ impl AskRecallAdapter for LlamaQwen2Adapter {
         request: LlmGenerationRequest,
         on_token: Box<dyn Fn(String) + Send + Sync>,
     ) -> AppResult<LlmGenerationResponse> {
-        self.generate_inner(request, Some(on_token)).await
+        self.generate_inner(request, Some(on_token), None).await
+    }
+
+    async fn generate_streaming_cancellable(
+        &self,
+        request: LlmGenerationRequest,
+        cancel: crate::ai::ask::session::CancelHandle,
+        on_token: Box<dyn Fn(String) + Send + Sync>,
+    ) -> AppResult<LlmGenerationResponse> {
+        self.generate_inner(request, Some(on_token), Some(cancel))
+            .await
     }
 
     async fn generate(
         &self,
         request: LlmGenerationRequest,
     ) -> AppResult<LlmGenerationResponse> {
-        self.generate_inner(request, None).await
+        self.generate_inner(request, None, None).await
     }
 
     async fn unload(&self) -> AppResult<()> {
@@ -343,11 +353,14 @@ impl LlamaQwen2Adapter {
     /// Single internal generation path used by both batch and
     /// streaming entry points. The streaming caller supplies an
     /// `on_token` callback; batch passes None and we collect tokens
-    /// internally.
+    /// internally. v0.5.11 adds an optional cancel handle the loop
+    /// polls each token; when set, the loop breaks early with the
+    /// partial response.
     async fn generate_inner(
         &self,
         request: LlmGenerationRequest,
         on_token: Option<Box<dyn Fn(String) + Send + Sync>>,
+        cancel: Option<crate::ai::ask::session::CancelHandle>,
     ) -> AppResult<LlmGenerationResponse> {
         self.ensure_files_downloaded().await?;
         let mut guard = self.state.lock().await;
@@ -360,13 +373,21 @@ impl LlamaQwen2Adapter {
         let LoadedModel { model } = guard.take().expect("just loaded");
 
         // Wrap the prompt in Qwen2.5's chat template — same shape
-        // as v0.4.x. llama.cpp's tokenizer recognises the
-        // `<|im_start|>` / `<|im_end|>` special tokens via the
-        // tokenizer config baked into the GGUF.
-        let formatted = format!(
-            "<|im_start|>system\nYou are Recall, a helpful AI assistant grounded in the user's saved memories. Cite each factual claim with [memory:<id>]. If the provided context doesn't contain the answer, say so explicitly — do not guess.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-            request.prompt
-        );
+        // as v0.4.x for single-turn callers. v0.5.11 adds the
+        // `pre_formatted` escape hatch: multi-turn callers build
+        // the full chat-template text themselves (with multiple
+        // user/assistant turns + their own system prompt) and
+        // we use it verbatim. llama.cpp's tokenizer recognises
+        // the `<|im_start|>` / `<|im_end|>` special tokens via
+        // the tokenizer config baked into the GGUF.
+        let formatted = if request.pre_formatted {
+            request.prompt.clone()
+        } else {
+            format!(
+                "<|im_start|>system\nYou are Recall, a helpful AI assistant grounded in the user's saved memories. Cite each factual claim with [memory:<id>]. If the provided context doesn't contain the answer, say so explicitly — do not guess.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+                request.prompt
+            )
+        };
 
         let max_tokens = request.max_tokens.max(1) as i32;
         let temperature = request.temperature.max(0.0);
@@ -486,6 +507,18 @@ impl LlamaQwen2Adapter {
             );
 
             for step in 0..max_tokens {
+                // v0.5.11: per-token cancel check. Cancel handle is
+                // shared between this blocking thread and the async
+                // caller; flipping it from the cancel command makes
+                // the loop exit on its next iteration with the
+                // partial response instead of running to max_tokens.
+                if let Some(c) = cancel.as_ref() {
+                    if c.is_cancelled() {
+                        eprintln!("[recall][llm] cancelled at step {step}");
+                        break;
+                    }
+                }
+
                 // Sample from the logits of the last logit-bearing
                 // token in the most recent decode batch. On the
                 // first step that's the last prefill chunk's last
