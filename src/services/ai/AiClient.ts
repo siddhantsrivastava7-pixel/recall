@@ -94,14 +94,13 @@ export const aiClient = {
   semanticSearch: (query: string, limit?: number) =>
     invoke<SemanticSearchHit[]>("semantic_search", { query, limit }),
 
-  /// v0.4.3: full Ask Recall RAG. Embeds the question, retrieves the
-  /// top Strong-tier chunks, builds a grounded prompt, streams tokens
-  /// via the `recall://ask-recall-token` event, and returns the
-  /// final answer + citations. The frontend listens to the streaming
-  /// events to render tokens as they arrive; the resolved promise is
-  /// the canonical "done" signal.
-  askRecall: (question: string) =>
-    invoke<AskRecallResponse>("ask_recall", { question }),
+  /// v0.4.3 / v0.5.12: Ask Recall — single-shot when sessionId is
+  /// undefined (legacy behavior), multi-turn when sessionId is set.
+  /// In multi-turn the backend looks up the session, injects past
+  /// turns as chat-template messages in the prompt, and appends the
+  /// new user/assistant pair to the session after generation.
+  askRecall: (question: string, sessionId?: string) =>
+    invoke<AskRecallResponse>("ask_recall", { question, sessionId }),
 
   /// v0.5.11: flip the cancel flag for the in-flight ask. The LLM
   /// generation loop polls every token and returns a partial
@@ -109,6 +108,23 @@ export const aiClient = {
   /// flight returns false. Surfaced as the Cancel button in
   /// AskView's input row.
   cancelAskRecall: () => invoke<boolean>("ask_recall_cancel"),
+
+  /// v0.5.12: create a new conversation session and return its id.
+  /// The frontend stores this id locally and passes it on every
+  /// askRecall call. Sessions are in-memory only and lost on app
+  /// restart.
+  newAskRecallSession: () => invoke<string>("ask_recall_new_session"),
+
+  /// v0.5.12: fetch the full message list for a session. Used to
+  /// detect "session expired" (e.g. after app restart) so the UI
+  /// can fall back to a fresh session gracefully.
+  getAskRecallSession: (sessionId: string) =>
+    invoke<AskRecallSession | null>("ask_recall_get_session", { sessionId }),
+
+  /// v0.5.12: drop a session from memory. Called when the user
+  /// clicks "New chat" — old session goes away, new one created.
+  clearAskRecallSession: (sessionId: string) =>
+    invoke<boolean>("ask_recall_clear_session", { sessionId }),
 
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
@@ -202,6 +218,35 @@ export interface AskRecallCitation {
   chunkText: string;
   chunkStart: number;
   chunkEnd: number;
+}
+
+/// v0.5.12: a single message in an Ask Recall conversation. Backend
+/// stores these in the session's `messages` array and ships them
+/// over to the frontend on `getAskRecallSession`. The frontend
+/// renders user messages as input bubbles and assistant messages
+/// as answer bubbles + their own source-cards panel.
+export type AskRecallMessage =
+  | {
+      role: "user";
+      content: string;
+      timestamp: string;
+    }
+  | {
+      role: "assistant";
+      content: string;
+      retrievedSources: AskRecallCitation[];
+      citations: AskRecallCitation[];
+      tokensGenerated: number;
+      latencyMs: number;
+      tagIntent: string | null;
+      timestamp: string;
+    };
+
+/// v0.5.12: full session payload returned by `getAskRecallSession`.
+export interface AskRecallSession {
+  sessionId: string;
+  messages: AskRecallMessage[];
+  createdAt: string;
 }
 
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full

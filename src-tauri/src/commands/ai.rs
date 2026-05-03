@@ -1279,18 +1279,52 @@ fn truncate_for_context(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// v0.5.12: response shape extended with session_id when the call
+/// came in with one. The frontend uses this to track the current
+/// conversation; the backend uses it to look up history on the
+/// next turn. Single-shot calls (no session_id passed in) get
+/// `session_id = None` back, exactly the v0.5.11 shape.
 #[tauri::command]
 pub async fn ask_recall(
     question: String,
+    /// v0.5.12: when present, treat this as a continuation of an
+    /// existing conversation. The backend looks up the session in
+    /// AppState, injects past turns into the prompt as multi-turn
+    /// chat-template messages, and appends the user/assistant pair
+    /// to the session after generation completes. When None, runs
+    /// single-shot with the v0.5.11 prompt format — preserves the
+    /// existing behavior for callers that don't yet manage sessions.
+    session_id: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AskRecallResponse> {
-    use crate::ai::ask::{tag_intent, temporal};
+    use crate::ai::ask::{session as ask_session, tag_intent, temporal};
 
     let trimmed = question.trim();
     if trimmed.is_empty() {
         return Err(AppError::Invalid("Question is required.".into()));
     }
+
+    // v0.5.12: snapshot session history (if any) BEFORE we run the
+    // turn. The history lives on AppState; we clone the relevant
+    // messages here so the LLM call doesn't hold the session lock
+    // across a multi-second generation. Validate the session
+    // exists when one was requested — better to fail fast than
+    // silently fall back to single-shot.
+    let history: Vec<ask_session::Message> = match &session_id {
+        Some(sid) => {
+            let sessions = state.ask_recall_sessions.lock().await;
+            match sessions.get(sid) {
+                Some(session) => session.messages.clone(),
+                None => {
+                    return Err(AppError::Invalid(format!(
+                        "Ask Recall session {sid} not found. Start a new chat to begin."
+                    )));
+                }
+            }
+        }
+        None => Vec::new(),
+    };
 
     let scheduler = state
         .ai_scheduler()
@@ -1708,9 +1742,70 @@ pub async fn ask_recall(
             serde_json::json!({ "delta": delta }),
         );
     });
+    // v0.5.12: when this turn is part of a multi-turn conversation,
+    // wrap the user-content prompt in the full Qwen2.5 chat template
+    // including all prior turns. The adapter sees this verbatim
+    // (pre_formatted=true) so the model gets proper turn boundaries
+    // instead of a flat string of pasted-together text.
+    //
+    // History budgeting: keep the most recent 3 user-assistant
+    // pairs. Older turns drop entirely — we don't summarize or
+    // partially-include because Qwen2.5 handles abrupt history
+    // truncation more cleanly than truncated turn-bodies. If the
+    // user wants Recall to remember turn 1 specifically by turn 6,
+    // they re-paste the relevant context — same as any other LLM
+    // chat surface. v0.5.13+ can add smarter summarization.
+    let (final_prompt, pre_formatted) = if history.is_empty() {
+        (prompt, false)
+    } else {
+        const MAX_HISTORY_PAIRS: usize = 3;
+        let mut wrapped = String::with_capacity(prompt.len() + 8_192);
+        wrapped.push_str("<|im_start|>system\n");
+        wrapped.push_str("You are Recall, a helpful AI assistant grounded in the user's saved memories. Cite each factual claim with [memory:<id>]. If the provided context doesn't contain the answer, say so explicitly — do not guess.");
+        wrapped.push_str("<|im_end|>\n");
+        // Walk history pair-by-pair, keep last MAX_HISTORY_PAIRS
+        // complete (User, Assistant) pairs.
+        let pairs: Vec<(&ask_session::Message, &ask_session::Message)> = history
+            .chunks_exact(2)
+            .filter_map(|pair| match (&pair[0], &pair[1]) {
+                (
+                    u @ ask_session::Message::User { .. },
+                    a @ ask_session::Message::Assistant { .. },
+                ) => Some((u, a)),
+                _ => None,
+            })
+            .collect();
+        let drop_n = pairs.len().saturating_sub(MAX_HISTORY_PAIRS);
+        for (user_msg, assistant_msg) in pairs.into_iter().skip(drop_n) {
+            if let ask_session::Message::User { content, .. } = user_msg {
+                wrapped.push_str("<|im_start|>user\n");
+                wrapped.push_str(content);
+                wrapped.push_str("<|im_end|>\n");
+            }
+            if let ask_session::Message::Assistant { content, .. } = assistant_msg {
+                wrapped.push_str("<|im_start|>assistant\n");
+                wrapped.push_str(content);
+                wrapped.push_str("<|im_end|>\n");
+            }
+        }
+        // Current turn — `prompt` here is the intro+memories+question
+        // text from the existing build above.
+        wrapped.push_str("<|im_start|>user\n");
+        wrapped.push_str(&prompt);
+        wrapped.push_str("<|im_end|>\n");
+        wrapped.push_str("<|im_start|>assistant\n");
+        eprintln!(
+            "[recall][ask-recall] multi-turn: history_pairs={} kept={} prompt_chars={}",
+            history.len() / 2,
+            (history.len() / 2).min(MAX_HISTORY_PAIRS),
+            wrapped.len()
+        );
+        (wrapped, true)
+    };
+
     let request = LlmGenerationRequest {
-        prompt,
-        pre_formatted: false,
+        prompt: final_prompt,
+        pre_formatted,
         max_tokens: 512,
         temperature: 0.0,
     };
@@ -1803,6 +1898,34 @@ pub async fn ask_recall(
         cancelled
     );
 
+    // v0.5.12: append User + Assistant messages to the session if
+    // this turn was part of a conversation. We only append AFTER
+    // generation completes successfully so a cancelled or errored
+    // turn doesn't leave a half-state in the history. (Cancelled
+    // turns DO append — the partial answer is still useful context
+    // for the next turn, and the user explicitly chose to keep
+    // what they got.)
+    let now = chrono::Utc::now().to_rfc3339();
+    let assistant_message = ask_session::Message::Assistant {
+        content: response.text.clone(),
+        retrieved_sources: retrieved_sources.clone(),
+        citations: citations.clone(),
+        tokens_generated: response.tokens_generated,
+        latency_ms,
+        tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
+        timestamp: now.clone(),
+    };
+    if let Some(sid) = &session_id {
+        let mut sessions = state.ask_recall_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(sid) {
+            session.messages.push(ask_session::Message::User {
+                content: trimmed.to_string(),
+                timestamp: now.clone(),
+            });
+            session.messages.push(assistant_message);
+        }
+    }
+
     Ok(AskRecallResponse {
         question: trimmed.to_string(),
         text: response.text,
@@ -1813,6 +1936,50 @@ pub async fn ask_recall(
         context_chunks: context_chunks_count,
         tag_intent: tag.as_ref().map(|t| t.tag.to_string()),
     })
+}
+
+// ─── v0.5.12: multi-turn session management ──────────────────────
+
+/// Create a new Ask Recall conversation session and return its
+/// id. The frontend stores this id and passes it on every
+/// subsequent `ask_recall` call to thread the conversation.
+/// Sessions live in memory only — restarting the app drops them
+/// (persistence lands in a future release).
+#[tauri::command]
+pub async fn ask_recall_new_session(state: State<'_, AppState>) -> AppResult<String> {
+    use crate::ai::ask::session::AskRecallSession;
+    let id = uuid::Uuid::new_v4().to_string();
+    let session = AskRecallSession::new(id.clone(), chrono::Utc::now().to_rfc3339());
+    let mut sessions = state.ask_recall_sessions.lock().await;
+    sessions.insert(id.clone(), session);
+    eprintln!("[recall][ask-recall] new session: {id}");
+    Ok(id)
+}
+
+/// Return the current state of a session — every message in
+/// chronological order plus metadata. Used by the frontend after
+/// app restart (when the in-memory sessions are gone) to
+/// gracefully fall back to "session not found" rather than
+/// retrying with a stale id.
+#[tauri::command]
+pub async fn ask_recall_get_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<crate::ai::ask::session::AskRecallSession>> {
+    let sessions = state.ask_recall_sessions.lock().await;
+    Ok(sessions.get(&session_id).cloned())
+}
+
+/// Drop a session from memory. Called when the user clicks
+/// "New chat" — the new session id replaces the old one and
+/// the old one's history can be GC'd.
+#[tauri::command]
+pub async fn ask_recall_clear_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<bool> {
+    let mut sessions = state.ask_recall_sessions.lock().await;
+    Ok(sessions.remove(&session_id).is_some())
 }
 
 /// v0.5.11: flip the cancel flag for the in-flight ask_recall (if

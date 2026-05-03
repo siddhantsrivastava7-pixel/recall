@@ -1,35 +1,49 @@
 /**
- * AskView — v0.4.3 Ask Recall surface.
+ * AskView — v0.5.12 Ask Recall surface (multi-turn).
  *
- * Single-shot Q&A grounded in the user's saved memories. Pipeline:
+ * Conversation-grounded Q&A across the user's saved memories.
+ * Pipeline:
  *
- *   1. User types a question → click Ask (or ⌘Enter).
- *   2. Frontend kicks off the `ask_recall` Tauri command and starts
- *      listening to `recall://ask-recall-token` events.
- *   3. Tokens stream into a transcript area as they arrive.
- *   4. When `ask_recall` resolves we have the full answer + a list of
- *      `[memory:<uuid>]` citations the LLM emitted. We rewrite each
- *      marker into a small clickable chip that opens the underlying
- *      memory in the All Memories view.
+ *   1. View mounts → spawn a backend session via `newAskRecallSession`.
+ *      The session id is the conversation handle; backend stores
+ *      messages keyed by it.
+ *   2. User types a question → click Ask (or ⌘Enter).
+ *   3. Frontend appends a "pending user" bubble locally and calls
+ *      `askRecall(question, sessionId)` which streams tokens via
+ *      `recall://ask-recall-token` events.
+ *   4. When the call resolves, we have the full response. Append it
+ *      to the local thread as a committed assistant message; backend
+ *      already mirrored it into the session.
+ *   5. New Chat button drops the session and creates a fresh one.
  *
- * Why a dedicated view (not a modal): on Tier C / 7B Q4_K_M the
- * generation latency is ~2.6 tok/s, so a 300-token answer takes
- * ~115s. Streaming makes the wait feel like reading along; a
- * full-screen surface gives that reading the room it deserves.
+ * Why thread-style rather than single Q&A: follow-up questions are
+ * the natural shape of memory-grounded chat. "What license keys
+ * did I save? ... and which one is for Recall?" — the second
+ * question only makes sense in context of the first.
  *
- * Resource discipline:
- *   * No background polling — events flow through Tauri's listener
- *     channel and tear down on unmount.
- *   * The model is loaded lazily on first `ask_recall`. Settings
- *     owns the unload UX; this view never touches lifecycle.
+ * Resource discipline (unchanged from v0.4.3):
+ *   * Tauri event listeners tear down on unmount.
+ *   * Backend serializes generation; only one turn in flight at a
+ *     time across the whole app.
+ *   * Cancel button (v0.5.11) flips a flag the LLM polls every
+ *     token — partial answer becomes the committed answer for the
+ *     turn, conversation continues normally.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ArrowRight, Loader2, MessageCircleQuestion, Sparkles, X } from "lucide-react";
+import {
+  ArrowRight,
+  Loader2,
+  MessageCircleQuestion,
+  Plus,
+  Sparkles,
+  X,
+} from "lucide-react";
 import {
   aiClient,
   type AskRecallCitation,
+  type AskRecallMessage,
   type AskRecallResponse,
 } from "@/services/ai/AiClient";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -49,10 +63,6 @@ interface AskCompleteEvent {
   cancelled?: boolean;
 }
 
-/// v0.5.11: phase events from the backend so the UI can tell the
-/// user what's actually happening between "I clicked Ask" and "the
-/// first token arrived." The backend emits one event per stage
-/// transition; the frontend swaps the spinner copy.
 interface AskStageEvent {
   stage: "retrieving" | "prefill";
   detail?: { memories?: number };
@@ -67,25 +77,47 @@ type AskPhase =
 const CITATION_RE = /\[memory:([0-9a-fA-F\-]+)\]/g;
 
 export function AskView({ setView }: AskViewProps) {
-  const [question, setQuestion] = useState("");
-  const [streaming, setStreaming] = useState(false);
+  // v0.5.12: thread state — committed messages from the session
+  // (alternating user/assistant). Pending state for the in-flight
+  // turn (`pendingUser` + `streamedText`) renders as the last
+  // entry in the thread until the response resolves; then it's
+  // replaced by the canonical messages.
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<AskRecallMessage[]>([]);
+  const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [streamedText, setStreamedText] = useState("");
-  const [response, setResponse] = useState<AskRecallResponse | null>(null);
+  const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [completionMeta, setCompletionMeta] = useState<AskCompleteEvent | null>(null);
-  /// v0.5.11: phase tracks what the backend is currently doing so
-  /// we can show specific copy ("Searching memories…" /
-  /// "Reading 12 memories…") instead of a generic spinner. First
-  /// token arrival flips us into "generating" implicitly.
   const [phase, setPhase] = useState<AskPhase>({ kind: "idle" });
-  const lastQuestion = useRef<string>("");
+  const [question, setQuestion] = useState("");
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
 
   const selectMemory = useMemoryStore((state) => state.selectMemory);
 
-  // Wire up streaming token listener for the duration of the view.
-  // Tokens arrive whether or not we currently care; we only append to
-  // `streamedText` while we're actively streaming so a stale token
-  // can't pollute a new question.
+  // Spawn a session on first mount. We don't restore from any
+  // persisted state — each AskView mount is a fresh conversation
+  // by design (matches user mental model of "open AskRecall →
+  // new chat").
+  useEffect(() => {
+    let disposed = false;
+    void aiClient
+      .newAskRecallSession()
+      .then((id) => {
+        if (!disposed) setSessionId(id);
+      })
+      .catch((err) => {
+        if (!disposed) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // Stream listeners. Tokens append to streamedText; phase events
+  // update the spinner copy; complete events are advisory (the
+  // resolved promise is the canonical "done").
   useEffect(() => {
     let unlistenToken: UnlistenFn | undefined;
     let unlistenComplete: UnlistenFn | undefined;
@@ -95,7 +127,6 @@ export function AskView({ setView }: AskViewProps) {
     void listen<AskTokenEvent>("recall://ask-recall-token", (event) => {
       if (disposed) return;
       setStreamedText((prev) => prev + (event.payload?.delta ?? ""));
-      // First-token implicit generating-stage transition.
       setPhase((prev) =>
         prev.kind === "prefill" ? { kind: "generating" } : prev,
       );
@@ -107,9 +138,8 @@ export function AskView({ setView }: AskViewProps) {
       }
     });
 
-    void listen<AskCompleteEvent>("recall://ask-recall-complete", (event) => {
-      if (disposed) return;
-      setCompletionMeta(event.payload ?? null);
+    void listen<AskCompleteEvent>("recall://ask-recall-complete", () => {
+      // No-op — we use the resolved promise from askRecall instead.
     }).then((fn) => {
       if (disposed) {
         fn();
@@ -144,46 +174,92 @@ export function AskView({ setView }: AskViewProps) {
     };
   }, []);
 
+  // Auto-scroll to the bottom whenever the thread grows or the
+  // streaming text updates. Smooth scrolling because abrupt jumps
+  // mid-token-stream feel jittery.
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages.length, streamedText, streaming]);
+
   const ask = useCallback(async () => {
     const trimmed = question.trim();
     if (!trimmed || streaming) return;
+    if (!sessionId) {
+      setError("Conversation session not ready yet — try again in a moment.");
+      return;
+    }
     setStreaming(true);
     setError(null);
     setStreamedText("");
-    setResponse(null);
-    setCompletionMeta(null);
+    setPendingUser(trimmed);
+    setQuestion("");
     setPhase({ kind: "retrieving" });
-    lastQuestion.current = trimmed;
     try {
-      const result = await aiClient.askRecall(trimmed);
-      setResponse(result);
-      // Backend's `text` is the canonical answer; replace any partial
-      // streamed text with it so the citation marker positions line
-      // up exactly with what the citation parser saw.
-      setStreamedText(result.text);
+      const result: AskRecallResponse = await aiClient.askRecall(
+        trimmed,
+        sessionId,
+      );
+      // Backend already appended the User+Assistant pair to the
+      // session. Mirror it locally so the next turn renders in
+      // the right order without an extra session fetch.
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "user",
+          content: trimmed,
+          timestamp: new Date().toISOString(),
+        },
+        {
+          role: "assistant",
+          content: result.text,
+          retrievedSources: result.retrievedSources,
+          citations: result.citations,
+          tokensGenerated: result.tokensGenerated,
+          latencyMs: result.latencyMs,
+          tagIntent: result.tagIntent,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStreaming(false);
+      setStreamedText("");
+      setPendingUser(null);
       setPhase({ kind: "idle" });
     }
-  }, [question, streaming]);
+  }, [question, streaming, sessionId]);
 
-  /// v0.5.11: Cancel button hits the backend cancel command which
-  /// flips the LLM's per-token cancel flag. The generation loop
-  /// breaks on its next token and returns a partial response —
-  /// the in-flight `aiClient.askRecall(...)` promise resolves
-  /// normally with that partial answer, so we don't need to handle
-  /// rejection here.
   const cancel = useCallback(async () => {
     if (!streaming) return;
     try {
       await aiClient.cancelAskRecall();
     } catch {
-      // Best-effort: if cancel itself errors, the in-flight ask
-      // will eventually complete on its own. Nothing to surface.
+      // Best-effort.
     }
   }, [streaming]);
+
+  const newChat = useCallback(async () => {
+    if (streaming) return;
+    if (sessionId) {
+      try {
+        await aiClient.clearAskRecallSession(sessionId);
+      } catch {
+        // Best-effort.
+      }
+    }
+    setMessages([]);
+    setStreamedText("");
+    setPendingUser(null);
+    setError(null);
+    setPhase({ kind: "idle" });
+    try {
+      const id = await aiClient.newAskRecallSession();
+      setSessionId(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [streaming, sessionId]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -203,25 +279,8 @@ export function AskView({ setView }: AskViewProps) {
     [selectMemory, setView],
   );
 
-  // Build a citation lookup by memory id for fast chip rendering.
-  const citationById = useMemo(() => {
-    const map = new Map<string, AskRecallCitation>();
-    for (const c of response?.citations ?? []) {
-      map.set(c.memoryId, c);
-    }
-    return map;
-  }, [response?.citations]);
-
-  // Render the streamed/final text with `[memory:<uuid>]` markers
-  // rewritten into clickable chips. We re-run this on every token
-  // tick — it's a few regex passes over a string under ~2 KB so
-  // the cost is negligible.
-  const renderedAnswer = useMemo(
-    () => renderAnswerWithCitations(streamedText, citationById, openMemory),
-    [streamedText, citationById, openMemory],
-  );
-
-  const hasAnswer = streamedText.length > 0 || streaming;
+  const hasContent =
+    messages.length > 0 || pendingUser !== null || streaming || error !== null;
 
   return (
     <div className="page fade-in">
@@ -231,11 +290,25 @@ export function AskView({ setView }: AskViewProps) {
         </div>
         <h1 className="page-title">Ask your memories.</h1>
         <p className="page-sub">
-          Single-shot Q&amp;A grounded in your saved content — citations link
+          Multi-turn Q&amp;A grounded in your saved content — citations link
           back to the memories that backed each claim. Runs fully on-device.
         </p>
+        {messages.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void newChat()}
+            disabled={streaming}
+            style={{ marginTop: 8, height: 28, padding: "0 12px" }}
+          >
+            <Plus size={12} strokeWidth={1.8} />
+            New chat
+          </button>
+        ) : null}
       </div>
 
+      {/* Input box — top of the page so the user always sees where
+          to type, without needing to scroll past a long thread. */}
       <div
         style={{
           display: "flex",
@@ -251,7 +324,11 @@ export function AskView({ setView }: AskViewProps) {
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="What did I save about… (e.g., 'pricing notes from last month')"
+          placeholder={
+            messages.length === 0
+              ? "What did I save about… (e.g., 'pricing notes from last month')"
+              : "Follow up… (or click New chat to start over)"
+          }
           rows={3}
           disabled={streaming}
           style={{
@@ -277,7 +354,7 @@ export function AskView({ setView }: AskViewProps) {
               className="btn btn-ghost"
               onClick={() => void cancel()}
               style={{ marginLeft: "auto", height: 32, padding: "0 12px" }}
-              title="Stop generation and return the partial answer"
+              title="Stop generation and keep the partial answer"
             >
               <X size={12} strokeWidth={1.8} />
               Cancel
@@ -287,8 +364,12 @@ export function AskView({ setView }: AskViewProps) {
             type="button"
             className="btn btn-primary"
             onClick={() => void ask()}
-            disabled={streaming || question.trim().length === 0}
-            style={{ marginLeft: streaming ? 0 : "auto", height: 32, padding: "0 14px" }}
+            disabled={streaming || question.trim().length === 0 || !sessionId}
+            style={{
+              marginLeft: streaming ? 0 : "auto",
+              height: 32,
+              padding: "0 14px",
+            }}
           >
             {streaming ? (
               <>
@@ -321,127 +402,32 @@ export function AskView({ setView }: AskViewProps) {
         </div>
       ) : null}
 
-      {hasAnswer ? (
-        <div style={{ marginTop: 18 }}>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--t-4)",
-              textTransform: "uppercase",
-              letterSpacing: 0.6,
-              marginBottom: 8,
-            }}
-          >
-            {streaming ? "Streaming answer" : "Answer"}
-          </div>
-          <div
-            style={{
-              padding: 16,
-              borderRadius: 12,
-              background: "var(--panel)",
-              boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
-              fontSize: 14,
-              lineHeight: 1.6,
-              color: "var(--t-1)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {renderedAnswer}
-            {streaming ? <span className="cursor-blink">▍</span> : null}
-          </div>
-
-          {/* v0.5.5: render retrievedSources (every memory we fed
-              the LLM) rather than only citations (what the LLM
-              chose to cite). For tag-pivot enumeration the model
-              may hedge and only cite one — but the user wants to
-              see all retrieved candidates.
-
-              Falls back to citations when retrievedSources is
-              missing (older backend) so the UI degrades gracefully
-              if the user is on a cached frontend pointing at a
-              fresh backend or vice versa during update. */}
-          {(() => {
-            const sources =
-              (response?.retrievedSources?.length ?? 0) > 0
-                ? response!.retrievedSources
-                : response?.citations ?? [];
-            if (sources.length === 0) return null;
-            const tagLabel = response?.tagIntent
-              ? ` matching "${response.tagIntent}"`
-              : "";
-            return (
-              <div style={{ marginTop: 14 }}>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "var(--t-4)",
-                    textTransform: "uppercase",
-                    letterSpacing: 0.6,
-                    marginBottom: 8,
-                  }}
-                >
-                  Sources ({sources.length}
-                  {tagLabel})
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                  }}
-                >
-                  {sources.map((c) => (
-                    <button
-                      key={c.memoryId}
-                      type="button"
-                      onClick={() => openMemory(c.memoryId)}
-                      style={{
-                        textAlign: "left",
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "none",
-                        background: "var(--panel)",
-                        boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
-                        cursor: "pointer",
-                        color: "var(--t-1)",
-                      }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-                        {c.title || "Untitled memory"}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--t-3)",
-                          display: "-webkit-box",
-                          WebkitLineClamp: 3,
-                          WebkitBoxOrient: "vertical",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {c.chunkText}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-
-          {response && completionMeta ? (
-            <div
-              style={{
-                marginTop: 12,
-                fontSize: 11,
-                color: "var(--t-4)",
-              }}
-            >
-              {response.contextChunks} memor
-              {response.contextChunks === 1 ? "y" : "ies"} cited ·{" "}
-              {completionMeta.tokens} tokens · {(completionMeta.latencyMs / 1000).toFixed(1)}s
-            </div>
+      {hasContent ? (
+        <div
+          style={{
+            marginTop: 18,
+            display: "flex",
+            flexDirection: "column",
+            gap: 14,
+          }}
+        >
+          {messages.map((msg, idx) => (
+            <MessageRow
+              key={`${idx}-${msg.timestamp}`}
+              message={msg}
+              onOpenMemory={openMemory}
+            />
+          ))}
+          {pendingUser ? (
+            <UserBubble content={pendingUser} />
           ) : null}
+          {streaming ? (
+            <AssistantStreamingBubble
+              text={streamedText}
+              onOpenMemory={openMemory}
+            />
+          ) : null}
+          <div ref={threadEndRef} />
         </div>
       ) : (
         <div
@@ -458,7 +444,8 @@ export function AskView({ setView }: AskViewProps) {
           Tips: be specific. Ask for "license keys I saved" or "what did I
           save about pricing last week" rather than "summarize everything".
           Recall only answers from your own memories — if it doesn't have
-          enough context it will say so rather than guess.
+          enough context it will say so rather than guess. Follow-ups stay
+          in the same conversation; click "New chat" to reset.
         </div>
       )}
     </div>
@@ -466,18 +453,234 @@ export function AskView({ setView }: AskViewProps) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────
-   Citation rendering — splits the answer text on every `[memory:<uuid>]`
-   marker and replaces matching ids with a small inline button. Markers
-   for ids the citation parser dropped (rare — usually a malformed uuid)
-   render as plain text so the user still sees the LLM's intent.
+   Per-message rendering. Three flavors: committed user, committed
+   assistant, and the streaming-in-progress assistant.
    ──────────────────────────────────────────────────────────────────────── */
 
-/// v0.5.11: phase copy for the spinner row. Each backend stage
-/// gets a specific message so the user knows what's happening
-/// during the long pre-token wait. "generating" doesn't appear
-/// here because once tokens start streaming the live answer
-/// panel is the visible activity — spinner stays as "Generating…"
-/// for consistency.
+function MessageRow({
+  message,
+  onOpenMemory,
+}: {
+  message: AskRecallMessage;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  if (message.role === "user") {
+    return <UserBubble content={message.content} />;
+  }
+  return (
+    <AssistantBubble
+      content={message.content}
+      retrievedSources={message.retrievedSources}
+      citations={message.citations}
+      tagIntent={message.tagIntent}
+      tokensGenerated={message.tokensGenerated}
+      latencyMs={message.latencyMs}
+      onOpenMemory={onOpenMemory}
+    />
+  );
+}
+
+function UserBubble({ content }: { content: string }) {
+  return (
+    <div
+      style={{
+        alignSelf: "flex-end",
+        maxWidth: "85%",
+        padding: "10px 14px",
+        borderRadius: 14,
+        background: "var(--accent-soft, var(--panel))",
+        color: "var(--t-1)",
+        fontSize: 14,
+        lineHeight: 1.5,
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        userSelect: "text",
+        WebkitUserSelect: "text",
+        cursor: "text",
+      }}
+    >
+      {content}
+    </div>
+  );
+}
+
+function AssistantBubble({
+  content,
+  retrievedSources,
+  citations,
+  tagIntent,
+  tokensGenerated,
+  latencyMs,
+  onOpenMemory,
+}: {
+  content: string;
+  retrievedSources: AskRecallCitation[];
+  citations: AskRecallCitation[];
+  tagIntent: string | null;
+  tokensGenerated: number;
+  latencyMs: number;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  const citationById = useMemo(() => {
+    const map = new Map<string, AskRecallCitation>();
+    for (const c of citations) map.set(c.memoryId, c);
+    return map;
+  }, [citations]);
+  const renderedAnswer = useMemo(
+    () => renderAnswerWithCitations(content, citationById, onOpenMemory),
+    [content, citationById, onOpenMemory],
+  );
+  const sources = retrievedSources.length > 0 ? retrievedSources : citations;
+  const tagLabel = tagIntent ? ` matching "${tagIntent}"` : "";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div
+        style={{
+          padding: 16,
+          borderRadius: 12,
+          background: "var(--panel)",
+          boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: "var(--t-1)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          userSelect: "text",
+          WebkitUserSelect: "text",
+          cursor: "text",
+        }}
+      >
+        {renderedAnswer}
+      </div>
+      {sources.length > 0 ? (
+        <SourceList
+          sources={sources}
+          tagLabel={tagLabel}
+          onOpenMemory={onOpenMemory}
+        />
+      ) : null}
+      <div style={{ fontSize: 11, color: "var(--t-4)" }}>
+        {tokensGenerated} tokens · {(latencyMs / 1000).toFixed(1)}s
+      </div>
+    </div>
+  );
+}
+
+function AssistantStreamingBubble({
+  text,
+  onOpenMemory,
+}: {
+  text: string;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  // No citations available yet during streaming — markers render as
+  // plain text until the call resolves.
+  const empty = useMemo(() => new Map<string, AskRecallCitation>(), []);
+  const renderedAnswer = useMemo(
+    () => renderAnswerWithCitations(text, empty, onOpenMemory),
+    [text, empty, onOpenMemory],
+  );
+  return (
+    <div
+      style={{
+        padding: 16,
+        borderRadius: 12,
+        background: "var(--panel)",
+        boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
+        fontSize: 14,
+        lineHeight: 1.6,
+        color: "var(--t-1)",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        userSelect: "text",
+        WebkitUserSelect: "text",
+        cursor: "text",
+      }}
+    >
+      {renderedAnswer}
+      <span className="cursor-blink">▍</span>
+    </div>
+  );
+}
+
+function SourceList({
+  sources,
+  tagLabel,
+  onOpenMemory,
+}: {
+  sources: AskRecallCitation[];
+  tagLabel: string;
+  onOpenMemory: (memoryId: string) => void;
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--t-4)",
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          marginBottom: 6,
+        }}
+      >
+        Sources ({sources.length}
+        {tagLabel})
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {sources.map((c) => (
+          <button
+            key={c.memoryId}
+            type="button"
+            onClick={() => onOpenMemory(c.memoryId)}
+            style={{
+              textAlign: "left",
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: "none",
+              background: "var(--panel)",
+              boxShadow: "0 0 0 0.5px var(--sh-window-edge)",
+              cursor: "pointer",
+              color: "var(--t-1)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 4,
+                userSelect: "text",
+                WebkitUserSelect: "text",
+              }}
+            >
+              {c.title || "Untitled memory"}
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--t-3)",
+                display: "-webkit-box",
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                userSelect: "text",
+                WebkitUserSelect: "text",
+              }}
+            >
+              {c.chunkText}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   Helpers — phase copy, citation rewrite. Unchanged in shape from
+   v0.5.11 except citation rewrite now accepts an empty map for the
+   streaming-bubble case.
+   ──────────────────────────────────────────────────────────────────────── */
+
 function phaseCopy(phase: AskPhase): string {
   switch (phase.kind) {
     case "idle":
@@ -502,8 +705,6 @@ function renderAnswerWithCitations(
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   let chipIndex = 0;
-  // Build a stable index per memory id so the same citation always
-  // gets the same number, even if it appears multiple times.
   const numberByMemoryId = new Map<string, number>();
   let nextNumber = 1;
   const re = new RegExp(CITATION_RE.source, "g");
