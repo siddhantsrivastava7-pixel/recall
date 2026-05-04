@@ -2456,6 +2456,8 @@ pub async fn generate_daily_recap_summary(
     memory_id: String,
     state: State<'_, AppState>,
 ) -> AppResult<DailyRecapSummaryPayload> {
+    eprintln!("[recall][recap] generate_daily_recap_summary entry: {memory_id}");
+
     let adapter = state
         .llm_adapter()
         .ok_or_else(|| {
@@ -2472,6 +2474,7 @@ pub async fn generate_daily_recap_summary(
             "Local AI is still warming up. Try again in a few seconds.".into(),
         ));
     }
+    eprintln!("[recall][recap] adapter is ready");
 
     let memory = state
         .memory_repository
@@ -2496,21 +2499,67 @@ pub async fn generate_daily_recap_summary(
     }
 
     let body = memory.content.clone();
+    eprintln!(
+        "[recall][recap] body length: {} chars",
+        body.chars().count()
+    );
     let prompt = build_daily_recap_prompt(&body);
+    eprintln!(
+        "[recall][recap] prompt length: {} chars",
+        prompt.chars().count()
+    );
     let request = LlmGenerationRequest {
         prompt,
         pre_formatted: true,
-        max_tokens: 220,
-        temperature: 0.2,
+        // v0.5.20: lowered from 220 to 180 — daily recap summaries
+        // are 3-5 sentences (~60-100 tokens). Larger ceilings invite
+        // the model to ramble past EOS, and the longer it runs the
+        // more chances for an internal llama.cpp assertion.
+        max_tokens: 180,
+        // v0.5.20: dropped from 0.2 to 0.0 to match Ask Recall's
+        // known-good greedy sampling path. Temperature 0.0 → greedy
+        // sampler (LlamaSampler::greedy), which is the only path
+        // exercised in production by every Ask Recall turn since
+        // v0.4.x. Anything else uses a sampling path that's seen
+        // less load.
+        temperature: 0.0,
     };
 
+    // v0.5.20 — drive the LLM through `generate_streaming` with a
+    // no-op callback instead of `generate()`. Both ultimately call
+    // `generate_inner`, but Ask Recall uses the streaming path on
+    // every turn (battle-tested) while the non-streaming `generate`
+    // is exercised only by the diagnostics command. v0.5.18/v0.5.19
+    // hit a process-level crash 2-3 seconds into the call when
+    // using `generate()` with a daily-recap body — we suspect a
+    // path-specific divergence inside llama-cpp-2 (it has unsafe
+    // FFI; the `generate` path may take a fast path that asserts
+    // on prompt shapes the streaming path tolerates). Routing
+    // through streaming sidesteps the question by reusing the
+    // proven path.
+    eprintln!("[recall][recap] starting generation via streaming path");
     let response = adapter
-        .generate(request)
+        .generate_streaming(
+            request,
+            Box::new(|_token| {
+                // No-op — we only want the final string. The
+                // streaming surface is here for code-path parity
+                // with Ask Recall, not for incremental rendering.
+            }),
+        )
         .await
-        .map_err(|err| AppError::Invalid(format!("LLM call failed: {err}")))?;
+        .map_err(|err| {
+            eprintln!("[recall][recap] LLM call failed: {err}");
+            AppError::Invalid(format!("LLM call failed: {err}"))
+        })?;
+    eprintln!(
+        "[recall][recap] generation complete: {} tokens in {}ms",
+        response.tokens_generated, response.latency_ms
+    );
 
     let summary = clean_recap_summary(&response.text);
     if summary.is_empty() {
+        eprintln!("[recall][recap] cleaned summary is empty (raw: {:?})", response.text);
         return Err(AppError::Invalid(
             "Model returned an empty summary. Try again.".into(),
         ));
@@ -2521,6 +2570,7 @@ pub async fn generate_daily_recap_summary(
         .memory_repository
         .set_ai_summary(&memory_id, &summary, &generated_at)
         .await?;
+    eprintln!("[recall][recap] persisted ai_summary");
 
     Ok(DailyRecapSummaryPayload {
         memory_id,
@@ -2532,32 +2582,50 @@ pub async fn generate_daily_recap_summary(
 }
 
 /// Build the Qwen2.5 chat-template prompt for daily recap
-/// summarization. The body is truncated to ~3000 chars so we stay
-/// well under the model's context window even for chatty days
-/// (10–20 spoken snippets + a dozen screenshots add up fast).
+/// summarization. The body is truncated to 2000 chars (was 3000
+/// in v0.5.18/19; lowered for v0.5.20 to stay well below the
+/// 8K-token model context with comfortable headroom — 2000 chars
+/// ≈ 600 tokens of body plus ~150 tokens of system + instruction
+/// is ~750 prompt tokens, leaving ~7400 tokens of headroom).
 /// Truncation is body-tail-first because the freshest captures
 /// matter more for the day's narrative.
+///
+/// v0.5.20 — body is also sanitized to strip any embedded chat-
+/// template sentinels (`<|im_start|>`, `<|im_end|>`) that may have
+/// landed in a captured memory. Without sanitization, a stray
+/// sentinel in a clipboard-saved snippet would terminate our user
+/// message early and the rest of the body would be tokenized as
+/// an unbound role boundary — confused state at best, internal
+/// llama.cpp assertion at worst. Replace the angle bracket so
+/// the literal text survives but the tokenizer doesn't see it
+/// as a special token.
 fn build_daily_recap_prompt(body: &str) -> String {
-    const MAX_BODY_CHARS: usize = 3000;
-    let trimmed_body = if body.chars().count() > MAX_BODY_CHARS {
-        let kept: String = body
+    const MAX_BODY_CHARS: usize = 2000;
+    let sanitized = body
+        .replace("<|im_start|>", "<|im start|>")
+        .replace("<|im_end|>", "<|im end|>");
+    let trimmed_body = if sanitized.chars().count() > MAX_BODY_CHARS {
+        let kept: String = sanitized
             .chars()
-            .skip(body.chars().count() - MAX_BODY_CHARS)
+            .skip(sanitized.chars().count() - MAX_BODY_CHARS)
             .collect();
-        format!("…\n{kept}")
+        format!("...\n{kept}")
     } else {
-        body.to_string()
+        sanitized
     };
 
+    // Plain ASCII characters only in the system prompt — em-dashes
+    // and curly quotes occasionally trip up tokenizers in edge
+    // cases; greedy sampling on Qwen2.5 handles ASCII reliably.
     format!(
         "<|im_start|>system\n\
-You write 3-5 sentence summaries of a user's day based on memories \
-they captured. Speak directly to the user (\"you saved\", \"you \
-reviewed\"). Stay grounded in the captures shown — never invent \
-facts, names, or actions. Output plain prose only — no headers, \
+You write short summaries of a user's day based on memories they \
+captured. Speak directly to the user (\"you saved\", \"you reviewed\"). \
+Stay grounded in the captures shown - never invent facts, names, or \
+actions. Output plain prose only, 3 to 5 sentences. No headers, \
 bullets, markdown, or quotation marks.<|im_end|>\n\
 <|im_start|>user\nBelow is a list of memories the user captured \
-today, grouped by source. Write a single short paragraph (3-5 \
+today, grouped by source. Write a single short paragraph (3 to 5 \
 sentences) summarizing the day. Focus on what they did or thought \
 about, not the count.\n\n{trimmed_body}<|im_end|>\n\
 <|im_start|>assistant\n"
