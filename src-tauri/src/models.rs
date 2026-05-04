@@ -379,6 +379,43 @@ pub struct MemoryChunkRow {
     pub created_at: String,
 }
 
+/// v0.5.23: One row in the `proactive_surfaces` table — a card
+/// shown at the top of Home. The selection engine in
+/// `ai/surfaces/engine.rs` decides which `kind` wins for a given
+/// session (Weekly recap on Monday / first-of-week, Forgotten Gold
+/// otherwise). Dismissed or expired rows never render; the schema
+/// keeps history rather than deleting so we can debug "what did we
+/// surface to the user yesterday" if a surface lands wrong.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ProactiveSurfaceRow {
+    pub id: String,
+    /// Surface kind. v0.5.23 ships with `'forgotten_gold'` and
+    /// `'weekly_recap'`. v0.5.24+ may add `'project_briefing'`,
+    /// `'researched_before'`, etc.
+    pub kind: String,
+    /// Memory referenced by the card. For Forgotten Gold this is
+    /// the rediscovered memory; for Weekly recap this is the
+    /// auto-generated weekly recap memory.
+    pub memory_id: String,
+    /// Higher = stronger signal. Comparable within a `kind` only.
+    pub score: f64,
+    /// Short, user-facing explanation rendered as the card's
+    /// subtitle. e.g. "Saved 3 weeks ago. Related to your Acme
+    /// deal work this week." `None` when the surface kind doesn't
+    /// have a reasoning model yet.
+    pub reason: Option<String>,
+    pub surfaced_at: String,
+    /// Set when the user clicks the dismiss button on the card.
+    /// Once non-NULL, the row never renders again.
+    pub dismissed_at: Option<String>,
+    /// Optional hard expiry. Engines set this for time-bound
+    /// surfaces (e.g. "this week's recap" expires the following
+    /// Monday). `None` = never auto-expires; only dismissal
+    /// removes it from the candidate set.
+    pub expires_at: Option<String>,
+}
+
 /// v0.5.15: Lightweight session summary for the chat list in the
 /// sidebar. Doesn't include messages — those load on demand when
 /// the user opens the session. `display_title()` (frontend)

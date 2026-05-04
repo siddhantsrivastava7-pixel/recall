@@ -385,8 +385,50 @@ pub trait AskRecallSessionRepository: Send + Sync {
     ) -> AppResult<()>;
 }
 
+/// v0.5.23: proactive memory surfaces (Forgotten Gold, Weekly
+/// recap, etc.). Each row is one card slotted at the top of Home.
+/// The selection logic in `ai/surfaces/engine.rs` picks one
+/// active card per session by `kind` priority + `score`; dismissed
+/// or expired rows never render.
+#[async_trait]
+pub trait ProactiveSurfaceRepository: Send + Sync {
+    /// Insert a new surface row. Returns the row's id.
+    async fn record_surface(
+        &self,
+        kind: &str,
+        memory_id: &str,
+        score: f64,
+        reason: Option<&str>,
+        surfaced_at: &str,
+        expires_at: Option<&str>,
+    ) -> AppResult<String>;
+
+    /// Most recent active (non-dismissed, non-expired) surface row
+    /// of the given `kind`. Used by the engine to decide whether
+    /// the kind already has a fresh card or needs a new one.
+    async fn latest_active_for_kind(
+        &self,
+        kind: &str,
+        now_iso: &str,
+    ) -> AppResult<Option<crate::models::ProactiveSurfaceRow>>;
+
+    /// Mark a surface row as dismissed. Idempotent.
+    async fn dismiss(&self, id: &str, dismissed_at: &str) -> AppResult<()>;
+
+    /// True when this `kind` already has any row recorded (active
+    /// or not) within the given time window. Used by selection
+    /// logic to dedupe — e.g. "have we already surfaced THIS week's
+    /// weekly recap card?" Window is inclusive on `since_iso`.
+    async fn has_recorded_since(
+        &self,
+        kind: &str,
+        since_iso: &str,
+    ) -> AppResult<bool>;
+}
+
 pub type SharedMemoryRepository = Arc<dyn MemoryRepository>;
 pub type SharedProjectRepository = Arc<dyn ProjectRepository>;
 pub type SharedSettingsRepository = Arc<dyn SettingsRepository>;
 pub type SharedLicenseRepository = Arc<dyn LicenseRepository>;
 pub type SharedAskRecallSessionRepository = Arc<dyn AskRecallSessionRepository>;
+pub type SharedProactiveSurfaceRepository = Arc<dyn ProactiveSurfaceRepository>;

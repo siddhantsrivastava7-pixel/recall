@@ -157,6 +157,21 @@ export const aiClient = {
   saveQaAsMemory: (question: string, answer: string) =>
     invoke<SavedQaPayload>("save_qa_as_memory", { question, answer }),
 
+  /// v0.5.23: get the active proactive surface card for Home, if
+  /// any. Returns null when no surface qualifies right now (the
+  /// slot stays hidden in that case). The engine is idempotent —
+  /// repeat calls within the same day return the same surface for
+  /// Forgotten Gold; Weekly recap returns the same row until the
+  /// week rolls over.
+  getProactiveSurface: () =>
+    invoke<ActiveProactiveSurface | null>("proactive_surface_get_current"),
+
+  /// v0.5.23: dismiss a surface card. Once dismissed, the row never
+  /// renders again — Forgotten Gold won't pick a different memory
+  /// the same day either. Tomorrow's once-per-day pick fires fresh.
+  dismissProactiveSurface: (surfaceId: string) =>
+    invoke<void>("proactive_surface_dismiss", { surfaceId }),
+
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
   /// regardless of the persisted "backfill done" flag, and returns a
@@ -326,6 +341,34 @@ export interface DailyRecapSummaryPayload {
 export interface SavedQaPayload {
   memoryId: string;
   title: string;
+}
+
+/// v0.5.23: one row of the proactive_surfaces table — a card the
+/// surface engine has decided to show at the top of Home. The
+/// frontend keys rendering off `kind`; the backend ensures only
+/// one ActiveProactiveSurface is returned per call (the highest
+/// priority one for the current state).
+export interface ProactiveSurfaceRow {
+  id: string;
+  /// v0.5.23 ships with `'forgotten_gold'` and `'weekly_recap'`.
+  /// v0.5.24+ may add `'project_briefing'`, `'researched_before'`.
+  kind: string;
+  memoryId: string;
+  /// 0..=1, comparable within a kind only.
+  score: number;
+  /// User-facing one-liner rendered as the card subtitle.
+  reason: string | null;
+  surfacedAt: string;
+  dismissedAt: string | null;
+  expiresAt: string | null;
+}
+
+/// v0.5.23: payload returned by `getProactiveSurface`. Holds the
+/// surface row + the underlying memory hydrated so the card can
+/// render without a separate fetch round-trip.
+export interface ActiveProactiveSurface {
+  surface: ProactiveSurfaceRow;
+  memory: import("@/domain/types").Memory;
 }
 
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full

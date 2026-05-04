@@ -29,3 +29,4 @@ pub mod hardware;
 pub mod llm;
 pub mod ocr;
 pub mod scheduler;
+pub mod surfaces;

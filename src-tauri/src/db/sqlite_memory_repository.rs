@@ -14,7 +14,7 @@ use crate::{
     services::link_utils::extract_domain,
 };
 
-const MEMORY_SELECT: &str = r#"
+pub(crate) const MEMORY_SELECT: &str = r#"
 SELECT
   memories.id,
   memories.source_type,

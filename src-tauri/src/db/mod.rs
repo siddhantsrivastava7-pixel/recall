@@ -4,6 +4,7 @@ pub mod seed;
 pub mod sqlite_ask_recall_session_repository;
 pub mod sqlite_license_repository;
 pub mod sqlite_memory_repository;
+pub mod sqlite_proactive_surface_repository;
 pub mod sqlite_project_repository;
 pub mod sqlite_settings_repository;
 pub mod system_projects;
@@ -21,11 +22,12 @@ use crate::{
         migrations::run_migrations,
         repositories::{
             SharedAskRecallSessionRepository, SharedLicenseRepository, SharedMemoryRepository,
-            SharedProjectRepository, SharedSettingsRepository,
+            SharedProactiveSurfaceRepository, SharedProjectRepository, SharedSettingsRepository,
         },
         sqlite_ask_recall_session_repository::SqliteAskRecallSessionRepository,
         sqlite_license_repository::SqliteLicenseRepository,
         sqlite_memory_repository::SqliteMemoryRepository,
+        sqlite_proactive_surface_repository::SqliteProactiveSurfaceRepository,
         sqlite_project_repository::SqliteProjectRepository,
         sqlite_settings_repository::SqliteSettingsRepository,
         system_projects::ensure_default_inbox_project,
@@ -41,6 +43,7 @@ pub struct DatabaseContext {
     pub settings_repository: SharedSettingsRepository,
     pub license_repository: SharedLicenseRepository,
     pub ask_recall_session_repository: SharedAskRecallSessionRepository,
+    pub proactive_surface_repository: SharedProactiveSurfaceRepository,
 }
 
 pub async fn initialize_database(app: &AppHandle) -> AppResult<DatabaseContext> {
@@ -68,6 +71,8 @@ pub async fn initialize_database(app: &AppHandle) -> AppResult<DatabaseContext> 
     let license_repository = Arc::new(SqliteLicenseRepository::new(pool.clone()));
     let ask_recall_session_repository =
         Arc::new(SqliteAskRecallSessionRepository::new(pool.clone()));
+    let proactive_surface_repository =
+        Arc::new(SqliteProactiveSurfaceRepository::new(pool.clone()));
 
     Ok(DatabaseContext {
         pool,
@@ -77,6 +82,7 @@ pub async fn initialize_database(app: &AppHandle) -> AppResult<DatabaseContext> 
         settings_repository,
         license_repository,
         ask_recall_session_repository,
+        proactive_surface_repository,
     })
 }
 
@@ -101,6 +107,8 @@ pub async fn initialize_fallback_database() -> AppResult<DatabaseContext> {
     let license_repository = Arc::new(SqliteLicenseRepository::new(pool.clone()));
     let ask_recall_session_repository =
         Arc::new(SqliteAskRecallSessionRepository::new(pool.clone()));
+    let proactive_surface_repository =
+        Arc::new(SqliteProactiveSurfaceRepository::new(pool.clone()));
 
     Ok(DatabaseContext {
         pool,
@@ -110,5 +118,6 @@ pub async fn initialize_fallback_database() -> AppResult<DatabaseContext> {
         settings_repository,
         license_repository,
         ask_recall_session_repository,
+        proactive_surface_repository,
     })
 }

@@ -16,7 +16,8 @@ use commands::{
         ask_recall_new_session, ask_recall_rename_session, embed_all_memories,
         find_related, generate_daily_recap_summary, list_entities_for_memory,
         list_memories_by_entity, ocr_rebuild_index, ocr_run_for_memory,
-        save_qa_as_memory, semantic_search,
+        proactive_surface_dismiss, proactive_surface_get_current, save_qa_as_memory,
+        semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
     bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
@@ -538,6 +539,7 @@ pub fn run() {
                 settings_repository,
                 database.license_repository,
                 database.ask_recall_session_repository,
+                database.proactive_surface_repository,
                 platform,
             );
             state.init_error = init_error;
@@ -693,6 +695,8 @@ pub fn run() {
             ask_recall_rename_session,
             generate_daily_recap_summary,
             save_qa_as_memory,
+            proactive_surface_get_current,
+            proactive_surface_dismiss,
             list_entities_for_memory,
             list_memories_by_entity,
             embed_all_memories,

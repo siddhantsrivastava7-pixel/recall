@@ -3,6 +3,7 @@ import { ArrowRight, FolderOpen, Search } from "lucide-react";
 
 import { MemoryCard } from "@/components/memory/MemoryCard";
 import { MemoryDetail } from "@/components/memory/MemoryDetail";
+import { ProactiveSurface } from "@/components/dashboard/ProactiveSurface";
 import {
   formatRelativeTimestamp,
   getMemoryDisplayDomain,
@@ -207,6 +208,17 @@ export function Dashboard({ setView }: { setView: (view: MainView) => void }) {
           </div>
         </form>
       </section>
+
+      {/*
+        v0.5.23 — Proactive surface slot. Sits ABOVE the Recent
+        grid so the user sees it before they reach for "what did I
+        save." Renders ONE card at a time (Weekly recap on
+        Mondays / first-of-week, Forgotten Gold otherwise) or
+        nothing — the slot collapses cleanly when no surface
+        qualifies. We deliberately don't replace the Recent
+        section; this is additive context, not a replacement.
+      */}
+      <ProactiveSurface setView={setView} />
 
       <div
         style={{

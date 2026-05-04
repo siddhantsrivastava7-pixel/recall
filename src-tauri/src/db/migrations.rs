@@ -123,6 +123,43 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "ai_summary", "TEXT").await?;
     ensure_column(pool, "memories", "ai_summary_generated_at", "TEXT").await?;
 
+    // v0.5.23 — proactive surfaces table. Each row is one card
+    // shown at the top of Home: forgotten gold, weekly recap, etc.
+    // The selection logic in `ai/surfaces/engine.rs` picks one
+    // active row per session by `kind` priority + `score`, never
+    // shows dismissed or expired rows. Schema is intentionally
+    // generic so future surface kinds (project briefings,
+    // researched-before chips) reuse the same plumbing.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS proactive_surfaces (
+            id           TEXT PRIMARY KEY,
+            kind         TEXT NOT NULL,
+            memory_id    TEXT NOT NULL,
+            score        REAL NOT NULL DEFAULT 0,
+            reason       TEXT,
+            surfaced_at  TEXT NOT NULL,
+            dismissed_at TEXT,
+            expires_at   TEXT,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_surfaces_kind \
+         ON proactive_surfaces(kind, surfaced_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_proactive_surfaces_memory \
+         ON proactive_surfaces(memory_id)",
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         UPDATE memories

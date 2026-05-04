@@ -12,7 +12,7 @@ use crate::{
     ai::scheduler::AiScheduler,
     db::repositories::{
         SharedAskRecallSessionRepository, SharedLicenseRepository, SharedMemoryRepository,
-        SharedProjectRepository, SharedSettingsRepository,
+        SharedProactiveSurfaceRepository, SharedProjectRepository, SharedSettingsRepository,
     },
     platform::factory::PlatformServices,
     services::{
@@ -39,6 +39,10 @@ pub struct AppState {
     pub settings_repository: SharedSettingsRepository,
     pub license_repository: SharedLicenseRepository,
     pub ask_recall_session_repository: SharedAskRecallSessionRepository,
+    /// v0.5.23: proactive surface storage (Forgotten Gold, Weekly recap, etc.).
+    /// Held as a repo trait object so the engine can record/dismiss
+    /// surfaces without coupling to SQLite concretely.
+    pub proactive_surface_repository: SharedProactiveSurfaceRepository,
     pub memory_service: Arc<MemoryService>,
     pub project_service: Arc<ProjectService>,
     pub settings_service: Arc<SettingsService>,
@@ -95,6 +99,7 @@ impl AppState {
         settings_repository: SharedSettingsRepository,
         license_repository: SharedLicenseRepository,
         ask_recall_session_repository: SharedAskRecallSessionRepository,
+        proactive_surface_repository: SharedProactiveSurfaceRepository,
         platform: PlatformServices,
     ) -> Self {
         let capture_service =
@@ -146,6 +151,7 @@ impl AppState {
             settings_repository,
             license_repository,
             ask_recall_session_repository,
+            proactive_surface_repository,
             memory_service,
             project_service,
             settings_service,

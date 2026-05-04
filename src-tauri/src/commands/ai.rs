@@ -2483,18 +2483,21 @@ pub async fn generate_daily_recap_summary(
         .ok_or_else(|| AppError::Invalid("Memory not found.".into()))?;
 
     // Daily recap memories are identified by `source_app = "spoken"`
-    // AND `external_id LIKE 'spoken-daily:%'`. We refuse to summarize
-    // anything else here — generic memory summarization is a future
-    // feature, not v0.5.18 scope.
-    let is_recap = memory.source_app.as_deref() == Some("spoken")
+    // AND `external_id LIKE 'spoken-daily:%'`. v0.5.23 extends the
+    // recognition to weekly recap memories (`source_app = "weekly"`,
+    // `external_id LIKE 'weekly:%'`) so the same LLM summary path
+    // serves both. Anything outside the recap namespace is rejected
+    // — generic memory summarization is a future feature.
+    let is_daily = memory.source_app.as_deref() == Some("spoken")
         && memory
             .external_id
             .as_deref()
             .map(|id| id.starts_with("spoken-daily:"))
             .unwrap_or(false);
-    if !is_recap {
+    let is_weekly = crate::ai::surfaces::weekly_recap::is_weekly_recap(&memory);
+    if !is_daily && !is_weekly {
         return Err(AppError::Invalid(
-            "AI summary is only available for Daily recap memories today.".into(),
+            "AI summary is only available for Daily or Weekly recap memories today.".into(),
         ));
     }
 
@@ -2739,4 +2742,40 @@ pub async fn save_qa_as_memory(
         memory_id: memory.id,
         title,
     })
+}
+
+// ─── v0.5.23: proactive surfaces (Forgotten Gold, Weekly recap) ───
+
+/// Get the current active surface card for Home, if any. Returns
+/// the underlying memory hydrated alongside the surface row so the
+/// frontend can render without a second fetch round-trip. The
+/// engine is idempotent — repeat calls within the same day return
+/// the same surface row (we cache after first pick).
+#[tauri::command]
+pub async fn proactive_surface_get_current(
+    state: State<'_, AppState>,
+) -> AppResult<Option<crate::ai::surfaces::ActiveSurface>> {
+    crate::ai::surfaces::compute_active_surface(
+        &state.pool,
+        &state.memory_repository,
+        &state.proactive_surface_repository,
+    )
+    .await
+}
+
+/// Dismiss a surface card. Once dismissed, the row never renders
+/// again — the engine treats dismissal as the user saying "not
+/// this one." For Forgotten Gold specifically, we don't try a
+/// different memory the same day; we wait until tomorrow's
+/// once-per-day pick.
+#[tauri::command]
+pub async fn proactive_surface_dismiss(
+    surface_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    state
+        .proactive_surface_repository
+        .dismiss(&surface_id, &now)
+        .await
 }
