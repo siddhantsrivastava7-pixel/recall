@@ -30,7 +30,16 @@
  *     turn, conversation continues normally.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowRight,
@@ -77,7 +86,134 @@ type AskPhase =
 
 const CITATION_RE = /\[memory:([0-9a-fA-F\-]+)\]/g;
 
-export function AskView({ setView }: AskViewProps) {
+/* ────────────────────────────────────────────────────────────────────────
+   v0.5.16 — top-level ErrorBoundary around AskView.
+
+   v0.5.15 introduced persistent chat history. When a user clicked an
+   old chat in the sidebar, AskView rehydrated `activeMessages` from
+   SQLite and re-rendered the thread. A render-throw inside any
+   message row (e.g. malformed citations JSON, an unexpected null
+   field, a renderer assumption) used to blow up the whole AskView
+   subtree and leave the user staring at a blank pane with no clear
+   recovery path.
+
+   The boundary catches that throw, surfaces the actual error message
+   so we can diagnose, and offers a "Start a new chat" button that
+   resets the active session. The user keeps their data — only this
+   one session's render is broken — and they're never stuck on a
+   blank screen.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface AskViewBoundaryProps {
+  setView: (view: MainView) => void;
+  children: ReactNode;
+}
+
+interface AskViewBoundaryState {
+  error: Error | null;
+}
+
+class AskViewErrorBoundary extends Component<
+  AskViewBoundaryProps,
+  AskViewBoundaryState
+> {
+  state: AskViewBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): AskViewBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Console-only — surfacing this through any persistence layer
+    // would itself need its own error handling, and we'd rather
+    // not turn one bad render into a crash loop.
+    console.error("[AskView] render error:", error, info);
+  }
+
+  reset = () => {
+    this.setState({ error: null });
+  };
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return (
+        <AskViewErrorFallback
+          error={this.state.error}
+          onReset={this.reset}
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AskViewErrorFallback({
+  error,
+  onReset,
+}: {
+  error: Error;
+  onReset: () => void;
+}) {
+  const newChatAction = useChatStore((s) => s.newChat);
+  const handleNewChat = useCallback(async () => {
+    await newChatAction();
+    onReset();
+  }, [newChatAction, onReset]);
+  return (
+    <div
+      className="page fade-in"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        padding: 20,
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--bad)" }}>
+        Couldn&apos;t render this conversation.
+      </div>
+      <div style={{ fontSize: 12, color: "var(--t-3)", lineHeight: 1.5 }}>
+        Something went wrong while loading this chat. Your saved chats
+        and memories are safe — only this view crashed. Start a new chat
+        to continue.
+      </div>
+      <pre
+        style={{
+          fontSize: 11,
+          color: "var(--t-4)",
+          background: "var(--panel)",
+          padding: 10,
+          borderRadius: 8,
+          maxHeight: 160,
+          overflow: "auto",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {error.message || String(error)}
+      </pre>
+      <button
+        type="button"
+        className="btn btn-primary"
+        onClick={() => void handleNewChat()}
+        style={{ alignSelf: "flex-start", height: 32, padding: "0 14px" }}
+      >
+        <Plus size={12} strokeWidth={1.8} />
+        Start a new chat
+      </button>
+    </div>
+  );
+}
+
+export function AskView(props: AskViewProps) {
+  return (
+    <AskViewErrorBoundary setView={props.setView}>
+      <AskViewInner {...props} />
+    </AskViewErrorBoundary>
+  );
+}
+
+function AskViewInner({ setView }: AskViewProps) {
   // v0.5.15: thread state lives in the shared chat store so the
   // sidebar and AskView stay in sync. Pending state (current
   // in-flight turn) stays local since it's short-lived and
@@ -488,16 +624,22 @@ function MessageRow({
   onOpenMemory: (memoryId: string) => void;
 }) {
   if (message.role === "user") {
-    return <UserBubble content={message.content} />;
+    return <UserBubble content={message.content ?? ""} />;
   }
+  // v0.5.16: defensive defaults. If a persisted assistant message
+  // lands with missing citations / retrievedSources arrays (older
+  // schema, partial migration, or a serialization edge case), the
+  // render path used to throw on `.map`/`for…of` and blank the
+  // whole AskView. Empty-array fallbacks keep the bubble visible
+  // even if its source data is malformed.
   return (
     <AssistantBubble
-      content={message.content}
-      retrievedSources={message.retrievedSources}
-      citations={message.citations}
-      tagIntent={message.tagIntent}
-      tokensGenerated={message.tokensGenerated}
-      latencyMs={message.latencyMs}
+      content={message.content ?? ""}
+      retrievedSources={message.retrievedSources ?? []}
+      citations={message.citations ?? []}
+      tagIntent={message.tagIntent ?? null}
+      tokensGenerated={message.tokensGenerated ?? 0}
+      latencyMs={message.latencyMs ?? 0}
       onOpenMemory={onOpenMemory}
     />
   );
@@ -546,14 +688,23 @@ function AssistantBubble({
 }) {
   const citationById = useMemo(() => {
     const map = new Map<string, AskRecallCitation>();
-    for (const c of citations) map.set(c.memoryId, c);
+    // v0.5.16: skip nullish entries so a single bad row in
+    // persisted citations can't blow up the render of an entire
+    // session.
+    for (const c of citations ?? []) {
+      if (c && c.memoryId) {
+        map.set(c.memoryId, c);
+      }
+    }
     return map;
   }, [citations]);
   const renderedAnswer = useMemo(
     () => renderAnswerWithCitations(content, citationById, onOpenMemory),
     [content, citationById, onOpenMemory],
   );
-  const sources = retrievedSources.length > 0 ? retrievedSources : citations;
+  const safeRetrieved = retrievedSources ?? [];
+  const safeCitations = citations ?? [];
+  const sources = safeRetrieved.length > 0 ? safeRetrieved : safeCitations;
   const tagLabel = tagIntent ? ` matching "${tagIntent}"` : "";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
