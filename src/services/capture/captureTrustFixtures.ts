@@ -90,6 +90,8 @@ const settings: AppSettings = {
   // v0.5.21 — new fields. Fixtures use the safe defaults.
   aiLlmIdleMinutes: 5,
   aiTierOverride: null,
+  // v0.5.22 — low-battery pause threshold (%). 0 = disabled.
+  aiPauseBelowBatteryPct: 20,
 };
 
 const shortcuts: ShortcutBinding[] = [];

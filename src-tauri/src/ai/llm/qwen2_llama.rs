@@ -642,3 +642,100 @@ impl LlamaQwen2Adapter {
 pub fn boxed(app: AppHandle, entry: LlmModelEntry) -> AppResult<Arc<dyn AskRecallAdapter>> {
     Ok(Arc::new(LlamaQwen2Adapter::new(app, entry)?))
 }
+
+/// v0.5.22: model GC. Scan the LLM cache directory and delete any
+/// `.gguf` files whose filenames don't match a current registry
+/// entry. Run once per app boot — fast (just a directory listing
+/// + a couple of `fs::remove_file` calls in the worst case) and
+/// idempotent. Anything not on the keep list goes.
+///
+/// Why this exists: when a user changes their tier override (or an
+/// upgrade ships a new model variant), the old `.gguf` stays on
+/// disk. Each model is 1-5 GB; over a year of releases that adds
+/// up. GC guarantees the on-disk footprint never exceeds one
+/// model per active registry entry.
+///
+/// The function is best-effort. Any file system error logs and
+/// returns Ok — failing the GC pass shouldn't block the AI
+/// subsystem from booting.
+pub fn gc_orphan_models(app: &AppHandle) -> AppResult<()> {
+    use crate::ai::llm::registry::LlmModelEntry;
+
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| AppError::Invalid(format!("app_data_dir unavailable: {err}")))?;
+    let cache_dir = base.join(CACHE_SUBDIR);
+    if !cache_dir.exists() {
+        // Nothing on disk yet — GC has nothing to do.
+        return Ok(());
+    }
+
+    // Build the keep set from the registry (every model file we
+    // might legitimately want to read on this app version).
+    let keep: Vec<&'static str> = [
+        crate::ai::llm::registry::entry_for_tier(crate::ai::hardware::HardwareTier::A),
+        crate::ai::llm::registry::entry_for_tier(crate::ai::hardware::HardwareTier::B),
+        crate::ai::llm::registry::entry_for_tier(crate::ai::hardware::HardwareTier::C),
+    ]
+    .iter()
+    .map(|entry: &LlmModelEntry| entry.gguf_file)
+    .collect();
+
+    let entries = match std::fs::read_dir(&cache_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!(
+                "[recall][llm-gc] read_dir failed for {}: {err}",
+                cache_dir.display()
+            );
+            return Ok(());
+        }
+    };
+
+    let mut removed = 0u32;
+    let mut bytes_freed = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        // Only consider .gguf files. Other files (an orphan
+        // tokenizer.json from v0.4.x, partial .download tempfiles)
+        // can be cleaned up later — we want this pass to be
+        // surgical, not a directory bulldozer.
+        if !file_name.ends_with(".gguf") {
+            continue;
+        }
+        if keep.iter().any(|k| *k == file_name) {
+            continue;
+        }
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                bytes_freed += size;
+                eprintln!(
+                    "[recall][llm-gc] removed orphan {} ({} MB)",
+                    file_name,
+                    size / (1024 * 1024)
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "[recall][llm-gc] remove failed for {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
+    if removed > 0 {
+        eprintln!(
+            "[recall][llm-gc] freed {} MB across {} orphan model file(s)",
+            bytes_freed / (1024 * 1024),
+            removed
+        );
+    }
+    Ok(())
+}

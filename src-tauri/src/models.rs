@@ -285,6 +285,16 @@ pub struct AppSettings {
     /// LLM adapter is selected at boot from the tier value.
     #[serde(default)]
     pub ai_tier_override: Option<crate::ai::hardware::HardwareTier>,
+    /// v0.5.22: pause background AI work when battery percent drops
+    /// below this threshold. `0` = disabled (never pause based on
+    /// battery percent). Independent from `ai_pause_on_battery`
+    /// (that one fires whenever the host is on battery, ignoring
+    /// charge level). Default 20 — matches the threshold most OS
+    /// "low battery" warnings fire at. Has no effect on platforms
+    /// where battery percent isn't readable (macOS today; desktops
+    /// without batteries).
+    #[serde(default = "default_ai_pause_below_battery_pct")]
+    pub ai_pause_below_battery_pct: u32,
     /// v0.5.6: one-shot backfill that re-runs the auto-tagger
     /// (with URL/UUID guards) and the new entity extractor against
     /// every memory. `None` on first launch of v0.5.6 (triggers
@@ -327,6 +337,7 @@ impl Default for AppSettings {
             ai_heavy_only_on_ac: true,
             ai_llm_idle_minutes: default_ai_llm_idle_minutes(),
             ai_tier_override: None,
+            ai_pause_below_battery_pct: default_ai_pause_below_battery_pct(),
             ai_v0_5_6_backfill_done: None,
             ai_v0_5_7_backfill_done: None,
         }
@@ -339,6 +350,12 @@ impl Default for AppSettings {
 /// 3.5 GB resident model promptly.
 fn default_ai_llm_idle_minutes() -> u32 {
     5
+}
+
+/// v0.5.22: serde default for `ai_pause_below_battery_pct`. 20%
+/// matches the threshold most OS "low battery" warnings fire at.
+fn default_ai_pause_below_battery_pct() -> u32 {
+    20
 }
 
 /// One chunk row from `memory_chunks`. v0.3.0+. The `embedding_vector`

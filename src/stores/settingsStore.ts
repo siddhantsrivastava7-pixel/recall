@@ -35,6 +35,8 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
     aiHeavyOnlyOnAc: true,
     aiLlmIdleMinutes: 5,
     aiTierOverride: null,
+    // v0.5.22 — low-battery pause threshold (%). 0 = disabled.
+    aiPauseBelowBatteryPct: 20,
   },
   shortcuts: [],
   license: null,

@@ -143,6 +143,12 @@ export interface AppSettings {
   // chosen tier pins the LLM model on next app launch (restart
   // required because the adapter is selected at boot).
   aiTierOverride: HardwareTier | null;
+  // v0.5.22 — pause AI work when battery percent drops below this
+  // threshold. `0` = disabled (never pause based on battery percent).
+  // Independent from `aiPauseOnBattery` (which fires at any battery
+  // level). Has no effect on platforms where battery percent isn't
+  // readable (macOS today; desktops without batteries).
+  aiPauseBelowBatteryPct: number;
 }
 
 // ── AI subsystem (v0.2.0+) ───────────────────────────────────────────

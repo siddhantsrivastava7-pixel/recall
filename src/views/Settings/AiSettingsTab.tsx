@@ -525,6 +525,34 @@ export function AiSettingsTab() {
       />
 
       {/*
+        v0.5.22 — low-battery pause threshold. Independent from the
+        AC toggles above: a laptop on a struggling charger can still
+        drop in percent, and we want to ease off then. `0` disables
+        the gate (treat the slider as "never pause based on percent").
+        Has no effect on macOS / desktops without battery sensors —
+        the throttling layer treats unreadable percent as "no
+        constraint" rather than parking the scheduler.
+      */}
+      <DropdownRow
+        icon={<Zap size={14} />}
+        label="Pause AI when battery is low"
+        description="Stop background OCR + embedding work below this percentage. Independent from the AC-power toggles above. Windows only — macOS doesn't expose battery percent yet."
+        value={String(settings.aiPauseBelowBatteryPct)}
+        onChange={(value) => {
+          const pct = Number.parseInt(value, 10);
+          if (Number.isNaN(pct)) return;
+          void updateSettings({ ...settings, aiPauseBelowBatteryPct: pct });
+        }}
+        options={[
+          { value: "0", label: "Off" },
+          { value: "10", label: "Below 10%" },
+          { value: "20", label: "Below 20%" },
+          { value: "30", label: "Below 30%" },
+          { value: "50", label: "Below 50%" },
+        ]}
+      />
+
+      {/*
         v0.5.21 — Performance subsection. Two new controls land
         here: idle reaper threshold (live, takes effect within 60s)
         and hardware tier override (requires restart). Anything
@@ -1204,7 +1232,17 @@ function DropdownRow({
         }}
       >
         {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
+          // v0.5.22: native <option> elements in Tauri's WebView
+          // don't inherit the parent <select>'s color styles —
+          // the popup uses Windows' system chrome by default,
+          // which renders white-on-white in dark mode. Explicit
+          // inline `background` + `color` forces Chromium to
+          // draw option chrome with readable contrast.
+          <option
+            key={opt.value}
+            value={opt.value}
+            style={{ background: "#1a1a1a", color: "#f0f0f0" }}
+          >
             {opt.label}
           </option>
         ))}

@@ -351,6 +351,15 @@ fn start_ai_scheduler(
         );
     }
     let llm_entry = llm_registry::entry_for_tier(effective_tier);
+
+    // v0.5.22: model GC. Scan the LLM cache directory and remove any
+    // `.gguf` files that don't match a current registry entry. Runs
+    // before adapter init so a switched-tier user's old model file
+    // is freed even if the new one isn't downloaded yet. Best-effort
+    // — failures log and don't block boot.
+    if let Err(err) = qwen2_llama::gc_orphan_models(handle) {
+        eprintln!("[recall][llm-gc] pass failed: {err}");
+    }
     // v0.5.0: boxed() now returns AppResult because llama.cpp's
     // backend init can fail on unsupported CPUs. We log + skip
     // installation rather than panic — the rest of the AI subsystem

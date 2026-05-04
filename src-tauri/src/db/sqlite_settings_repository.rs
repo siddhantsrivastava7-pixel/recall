@@ -107,6 +107,12 @@ impl SettingsRepository for SqliteSettingsRepository {
                 "ai_llm_idle_minutes" => {
                     settings.ai_llm_idle_minutes = value.parse::<u32>().unwrap_or(5)
                 }
+                // v0.5.22: low-battery pause threshold. `0` = disabled.
+                // Clamp to 0..=100 since it's a percent.
+                "ai_pause_below_battery_pct" => {
+                    let parsed = value.parse::<u32>().unwrap_or(20);
+                    settings.ai_pause_below_battery_pct = parsed.min(100);
+                }
                 // v0.5.21: stored as "a" / "b" / "c" or empty for
                 // None. Anything else is treated as None — defensive
                 // against a hand-edited DB.
@@ -229,6 +235,13 @@ impl SettingsRepository for SqliteSettingsRepository {
         sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
             .bind("ai_llm_idle_minutes")
             .bind(settings.ai_llm_idle_minutes.to_string())
+            .execute(&mut *transaction)
+            .await?;
+
+        // v0.5.22: low-battery pause threshold (u32 percent; 0 = disabled).
+        sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+            .bind("ai_pause_below_battery_pct")
+            .bind(settings.ai_pause_below_battery_pct.to_string())
             .execute(&mut *transaction)
             .await?;
 

@@ -142,10 +142,65 @@ pub fn detect() -> HardwareInfo {
 /// should treat unknown as "assume on AC" so we don't accidentally pause
 /// background work on desktops that don't expose battery state at all.
 ///
-/// Phase 1 leaves this as a stub returning `None`; Phase 2 wires platform
-/// implementations (`IOPSCopyPowerSourcesInfo` on macOS, `GetSystemPowerStatus`
-/// on Windows). The "Pause on battery" toggle is still functional in Phase 1
-/// — it simply has no effect until this stub is replaced.
+/// v0.5.22: Windows now wires `GetSystemPowerStatus`. macOS still stubs
+/// to `None` — IOPSCopyPowerSourcesInfo binding isn't covered by the
+/// objc2-* crates we use today and adding an IOKit shim is more work
+/// than the current user base on Mac justifies.
 pub fn is_on_ac_power() -> Option<bool> {
+    power_status().and_then(|s| s.on_ac)
+}
+
+/// v0.5.22: best-effort battery percent (0-100). Returns `None` when
+/// unknown (desktop with no battery, macOS, or transient API failure).
+/// The throttling layer treats `None` as "no battery to worry about"
+/// — the low-battery pause only kicks in when we have a real reading
+/// below the user's threshold.
+pub fn battery_percent() -> Option<u8> {
+    power_status().and_then(|s| s.percent)
+}
+
+/// Internal: combined power-status snapshot. Both `on_ac` and `percent`
+/// share the same OS call on Windows (`GetSystemPowerStatus`), so
+/// reading them together avoids two syscalls when the throttling layer
+/// checks both per worker tick.
+#[derive(Debug, Clone, Copy, Default)]
+struct PowerStatus {
+    on_ac: Option<bool>,
+    percent: Option<u8>,
+}
+
+#[cfg(target_os = "windows")]
+fn power_status() -> Option<PowerStatus> {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut status = SYSTEM_POWER_STATUS::default();
+    // Safety: GetSystemPowerStatus only writes into the provided struct.
+    // It returns FALSE on failure, in which case we leave the snapshot
+    // empty and let callers treat as "unknown."
+    let ok = unsafe { GetSystemPowerStatus(&mut status as *mut _) };
+    if ok.is_err() {
+        return None;
+    }
+    // ACLineStatus: 0 = offline (battery), 1 = online (AC), 255 = unknown.
+    let on_ac = match status.ACLineStatus {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    };
+    // BatteryLifePercent: 0-100, or 255 = unknown. Some desktops with
+    // no battery report 255 here and 1 in ACLineStatus — that's fine,
+    // we surface percent as None and the throttling layer ignores it.
+    let percent = match status.BatteryLifePercent {
+        0..=100 => Some(status.BatteryLifePercent),
+        _ => None,
+    };
+    Some(PowerStatus { on_ac, percent })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn power_status() -> Option<PowerStatus> {
+    // macOS / other: no implementation today — see is_on_ac_power's
+    // doc comment for context. Returning None means "unknown" which
+    // the throttling layer maps to "assume on AC, no low-battery
+    // pause" — same behavior as pre-v0.5.22.
     None
 }
