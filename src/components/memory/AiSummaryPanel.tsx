@@ -1,27 +1,25 @@
 /**
  * v0.5.18 — AI summary panel for Daily recap memories.
+ * v0.5.19 — switched to explicit button-triggered generation.
  *
  * Renders the LLM-generated summary at the top of a Daily recap
- * memory's detail view. Three states:
+ * memory's detail view. States:
  *
- *   1. Cached and fresh → render the summary text directly.
- *   2. Cached but stale (memory.updatedAt > aiSummaryGeneratedAt
- *      by more than a small grace window) → render the cached
- *      text immediately AND kick off a regeneration in the
- *      background. Cached → fresh swap when the call resolves.
- *   3. Missing → render a one-line skeleton ("Generating
- *      summary…") and trigger generation on mount.
+ *   1. Cached → render the summary directly. Optional Regenerate.
+ *   2. No cache → render a Generate button. Click runs the LLM.
+ *   3. Generating → spinner.
+ *   4. Error → error line + Try again button.
  *
- * Generation is fire-and-forget per panel mount — we intentionally
- * don't dedupe across multiple opens of the same memory in one
- * session because the user almost never re-opens the same recap
- * twice in 5 minutes, and the dedupe machinery would be more code
- * than it's worth at v0.5.x scale.
- *
- * Errors render a small fallback line ("Couldn't generate — try
- * again") with a retry button that re-fires generation. The body
- * of the recap memory still renders the rule-based summary below
- * this panel, so the user is never left with no summary at all.
+ * Why button-triggered (v0.5.19): the v0.5.18 auto-fire-on-mount
+ * variant collided with concurrent LLM access (Ask Recall in
+ * flight) and with the post-save hook bumping `updatedAt`, which
+ * retriggered the generate effect via deps. The crash showed up
+ * 2-3 seconds after opening a recap memory — right when the LLM
+ * call would have started or when an unrelated capture's recap
+ * rebuild was racing with the open. Making it explicit eliminates
+ * the race entirely — the LLM only runs when the user asks for
+ * it, and the rule-based summary in the recap body remains
+ * available as the always-on fallback.
  */
 
 import { Sparkles, RefreshCw } from "lucide-react";
@@ -45,23 +43,6 @@ export function isDailyRecapMemory(memory: Memory): boolean {
   );
 }
 
-/// Five-minute grace window. The recap is rebuilt on every save
-/// (post-save hook), which bumps `updatedAt` even when the body
-/// changes by one bullet point. Without a grace window, every
-/// Saved-notes-section addition would invalidate the cached AI
-/// summary and re-fire generation. Five minutes lets routine
-/// captures coalesce — only the first detail-view open after a
-/// stretch of activity triggers regeneration.
-const STALE_GRACE_MS = 5 * 60 * 1000;
-
-function isSummaryStale(memory: Memory): boolean {
-  if (!memory.aiSummaryGeneratedAt) return true;
-  const generatedAt = new Date(memory.aiSummaryGeneratedAt).getTime();
-  const updatedAt = new Date(memory.updatedAt).getTime();
-  if (Number.isNaN(generatedAt) || Number.isNaN(updatedAt)) return false;
-  return updatedAt - generatedAt > STALE_GRACE_MS;
-}
-
 export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
   // We seed local state from the memory row. Once a regeneration
   // resolves, we update local state directly so the user sees the
@@ -75,13 +56,45 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
   // doesn't produce a stale write into the new memory's panel.
   const lastFiredFor = useRef<string | null>(null);
 
+  // Reset local state when the user navigates between recap
+  // memories (different memory.id). Don't kick off generation
+  // here — that's user-triggered now. The rule-based summary in
+  // the recap body still renders below this panel as the always-
+  // on fallback.
+  useEffect(() => {
+    lastFiredFor.current = memory.id;
+    setSummary(memory.aiSummary ?? null);
+    setError(null);
+    setGenerating(false);
+  }, [memory.id, memory.aiSummary]);
+
   const generate = useCallback(async () => {
+    if (generating) return;
+    lastFiredFor.current = memory.id;
     setGenerating(true);
     setError(null);
     try {
-      const result = await aiClient.generateDailyRecapSummary(memory.id);
-      // Only commit if the panel is still showing the same memory
-      // it was when generation kicked off.
+      // 90s frontend cap. The LLM call itself usually returns in
+      // 2-15s on tier B. If it's hanging past 90s something is
+      // wrong on the backend (model crashed, deadlock, OOM in
+      // progress) — give up so the UI doesn't sit on a spinner
+      // forever and the user can retry.
+      const TIMEOUT_MS = 90_000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Generation timed out. The model may be loading — try again in a moment.",
+              ),
+            ),
+          TIMEOUT_MS,
+        );
+      });
+      const result = await Promise.race([
+        aiClient.generateDailyRecapSummary(memory.id),
+        timeoutPromise,
+      ]);
       if (lastFiredFor.current === memory.id) {
         setSummary(result.summary);
       }
@@ -94,22 +107,7 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
         setGenerating(false);
       }
     }
-  }, [memory.id]);
-
-  // Reset local state and fire generation when the memory changes
-  // OR when the cached summary is stale relative to the memory's
-  // updatedAt.
-  useEffect(() => {
-    lastFiredFor.current = memory.id;
-    const cached = memory.aiSummary ?? null;
-    setSummary(cached);
-    setError(null);
-    if (cached && !isSummaryStale(memory)) {
-      // Fresh cache hit — nothing to do.
-      return;
-    }
-    void generate();
-  }, [memory.id, memory.aiSummary, memory.aiSummaryGeneratedAt, memory.updatedAt, generate]);
+  }, [memory.id, generating]);
 
   return (
     <section
@@ -126,7 +124,7 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
           display: "flex",
           alignItems: "center",
           gap: 8,
-          marginBottom: 10,
+          marginBottom: summary || generating || error ? 10 : 0,
           color: "var(--t-3)",
           fontSize: 11,
           fontWeight: 650,
@@ -136,6 +134,27 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
       >
         <Sparkles size={11} strokeWidth={1.9} />
         AI Summary
+        {summary && !generating ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void generate()}
+            title="Re-run the LLM to refresh this summary."
+            style={{
+              marginLeft: "auto",
+              height: 24,
+              padding: "0 8px",
+              fontSize: 10,
+              fontWeight: 500,
+              letterSpacing: 0,
+              textTransform: "none",
+              color: "var(--t-3)",
+            }}
+          >
+            <RefreshCw size={10} strokeWidth={1.8} />
+            Regenerate
+          </button>
+        ) : null}
         {generating ? (
           <span
             style={{
@@ -179,7 +198,7 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
       ) : error ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 12, color: "var(--bad)" }}>
-            Couldn't generate — {error}
+            Couldn&apos;t generate — {error}
           </div>
           <button
             type="button"
@@ -197,9 +216,24 @@ export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
           </button>
         </div>
       ) : (
-        <div style={{ fontSize: 13, color: "var(--t-3)" }}>
-          No summary yet.
-        </div>
+        // No cached summary, no in-flight generation — explicit CTA.
+        // The Summary block in the recap body below is the rule-
+        // based fallback the user can read in the meantime.
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => void generate()}
+          style={{
+            alignSelf: "flex-start",
+            height: 28,
+            padding: "0 12px",
+            fontSize: 12,
+          }}
+          title="Run the local LLM to summarize today's captures."
+        >
+          <Sparkles size={11} strokeWidth={1.8} />
+          Generate AI summary
+        </button>
       )}
     </section>
   );
