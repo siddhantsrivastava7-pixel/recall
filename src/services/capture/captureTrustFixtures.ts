@@ -87,6 +87,9 @@ const settings: AppSettings = {
   aiEnabled: false,
   aiPauseOnBattery: true,
   aiHeavyOnlyOnAc: true,
+  // v0.5.21 — new fields. Fixtures use the safe defaults.
+  aiLlmIdleMinutes: 5,
+  aiTierOverride: null,
 };
 
 const shortcuts: ShortcutBinding[] = [];
