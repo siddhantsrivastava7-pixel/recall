@@ -113,6 +113,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     )
     .await?;
 
+    // v0.5.18 — LLM-generated daily-recap summary cached on the
+    // memory row itself. `ai_summary` holds the generated text;
+    // `ai_summary_generated_at` lets the renderer detect staleness
+    // (regenerate when `updated_at > ai_summary_generated_at`).
+    // Only populated for daily-recap memories today; structure is
+    // generic so future memory kinds (long bookmarks, voice notes)
+    // can reuse it.
+    ensure_column(pool, "memories", "ai_summary", "TEXT").await?;
+    ensure_column(pool, "memories", "ai_summary_generated_at", "TEXT").await?;
+
     sqlx::query(
         r#"
         UPDATE memories

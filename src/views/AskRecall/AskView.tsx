@@ -523,13 +523,32 @@ function AskViewInner({ setView }: AskViewProps) {
 
         {hasContent ? (
           <>
-            {messages.map((msg, idx) => (
-              <MessageRow
-                key={`${idx}-${msg.timestamp}`}
-                message={msg}
-                onOpenMemory={openMemory}
-              />
-            ))}
+            {messages.map((msg, idx) => {
+              // v0.5.18: assistant bubbles offer a "Save as memory"
+              // button that needs the prior user question to compose
+              // the saved Q&A. Walk back to the most recent user
+              // message — for a well-formed thread that's idx-1, but
+              // we scan defensively in case streaming-cancel left an
+              // odd shape.
+              let priorUserContent: string | null = null;
+              if (msg.role === "assistant") {
+                for (let i = idx - 1; i >= 0; i--) {
+                  if (messages[i].role === "user") {
+                    priorUserContent = messages[i].content ?? null;
+                    break;
+                  }
+                }
+              }
+              return (
+                <MessageRow
+                  key={`${idx}-${msg.timestamp}`}
+                  message={msg}
+                  priorUserContent={priorUserContent}
+                  onOpenMemory={openMemory}
+                  setView={setView}
+                />
+              );
+            })}
             {pendingUser && turnInThisChat ? (
               <UserBubble content={pendingUser} />
             ) : null}
@@ -665,10 +684,14 @@ function AskViewInner({ setView }: AskViewProps) {
 
 function MessageRow({
   message,
+  priorUserContent,
   onOpenMemory,
+  setView,
 }: {
   message: AskRecallMessage;
+  priorUserContent: string | null;
   onOpenMemory: (memoryId: string) => void;
+  setView: (view: MainView) => void;
 }) {
   if (message.role === "user") {
     return <UserBubble content={message.content ?? ""} />;
@@ -682,12 +705,14 @@ function MessageRow({
   return (
     <AssistantBubble
       content={message.content ?? ""}
+      priorUserContent={priorUserContent}
       retrievedSources={message.retrievedSources ?? []}
       citations={message.citations ?? []}
       tagIntent={message.tagIntent ?? null}
       tokensGenerated={message.tokensGenerated ?? 0}
       latencyMs={message.latencyMs ?? 0}
       onOpenMemory={onOpenMemory}
+      setView={setView}
     />
   );
 }
@@ -718,20 +743,24 @@ function UserBubble({ content }: { content: string }) {
 
 function AssistantBubble({
   content,
+  priorUserContent,
   retrievedSources,
   citations,
   tagIntent,
   tokensGenerated,
   latencyMs,
   onOpenMemory,
+  setView,
 }: {
   content: string;
+  priorUserContent: string | null;
   retrievedSources: AskRecallCitation[];
   citations: AskRecallCitation[];
   tagIntent: string | null;
   tokensGenerated: number;
   latencyMs: number;
   onOpenMemory: (memoryId: string) => void;
+  setView: (view: MainView) => void;
 }) {
   const citationById = useMemo(() => {
     const map = new Map<string, AskRecallCitation>();
@@ -780,10 +809,138 @@ function AssistantBubble({
           onOpenMemory={onOpenMemory}
         />
       ) : null}
-      <div style={{ fontSize: 11, color: "var(--t-4)" }}>
-        {tokensGenerated} tokens · {(latencyMs / 1000).toFixed(1)}s
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <div style={{ fontSize: 11, color: "var(--t-4)" }}>
+          {tokensGenerated} tokens · {(latencyMs / 1000).toFixed(1)}s
+        </div>
+        {/* v0.5.18: opt-in "Save as memory" button. Composes a
+            new memory from the question + answer so a useful Q&A
+            becomes a first-class searchable memory. Hidden when
+            we don't have the question (defensive — should never
+            happen for committed assistant bubbles in a normal
+            thread). */}
+        {priorUserContent ? (
+          <SaveQaButton
+            question={priorUserContent}
+            answer={content}
+            onOpenMemory={onOpenMemory}
+            setView={setView}
+          />
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/// v0.5.18: small button that turns a Q&A into a memory. Three
+/// visible states:
+///   - idle   → "Save as memory"
+///   - saving → "Saving…" (disabled)
+///   - saved  → "Saved · Open memory" (clickable, navigates)
+///   - error  → "Couldn't save · Try again"
+/// The transitions are local — once a Q&A has been saved in this
+/// session the button stays in `saved` so the user doesn't double-
+/// save by accident. A page refresh resets the state, but the
+/// memory is persisted on the backend so re-saving creates a
+/// duplicate (acceptable for v0.5.18; v0.5.19 may add dedup).
+function SaveQaButton({
+  question,
+  answer,
+  onOpenMemory,
+  setView,
+}: {
+  question: string;
+  answer: string;
+  onOpenMemory: (memoryId: string) => void;
+  setView: (view: MainView) => void;
+}) {
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "saving" }
+    | { kind: "saved"; memoryId: string }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  const handleSave = useCallback(async () => {
+    if (state.kind === "saving") return;
+    setState({ kind: "saving" });
+    try {
+      const result = await aiClient.saveQaAsMemory(question, answer);
+      setState({ kind: "saved", memoryId: result.memoryId });
+    } catch (err) {
+      setState({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [question, answer, state.kind]);
+
+  const handleOpen = useCallback(() => {
+    if (state.kind !== "saved") return;
+    onOpenMemory(state.memoryId);
+    setView("memories");
+  }, [state, onOpenMemory, setView]);
+
+  if (state.kind === "saved") {
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost"
+        onClick={handleOpen}
+        style={{
+          marginLeft: "auto",
+          height: 26,
+          padding: "0 10px",
+          fontSize: 11,
+          color: "var(--good, var(--t-2))",
+        }}
+        title="Open the saved Q&A memory"
+      >
+        ✓ Saved · Open memory
+      </button>
+    );
+  }
+  if (state.kind === "error") {
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost"
+        onClick={() => void handleSave()}
+        style={{
+          marginLeft: "auto",
+          height: 26,
+          padding: "0 10px",
+          fontSize: 11,
+          color: "var(--bad)",
+        }}
+        title={state.message}
+      >
+        Couldn't save · Try again
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-ghost"
+      onClick={() => void handleSave()}
+      disabled={state.kind === "saving"}
+      style={{
+        marginLeft: "auto",
+        height: 26,
+        padding: "0 10px",
+        fontSize: 11,
+      }}
+      title="Save this Q&A as a memory you can search later"
+    >
+      {state.kind === "saving" ? "Saving…" : "Save as memory"}
+    </button>
   );
 }
 

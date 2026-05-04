@@ -250,6 +250,33 @@ pub trait MemoryRepository: Send + Sync {
     /// how many memories have at least one chunk, how many of those
     /// have all chunks embedded, etc.
     async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage>;
+
+    // ─── v0.5.18: daily-recap composer + AI summary cache ────────────
+
+    /// List every memory whose `created_at` falls in `[start_utc, end_utc)`
+    /// (RFC3339 strings). Used by the daily-recap composer to roll up
+    /// everything captured on a given local day. Ordered chronologically
+    /// (oldest first) so the composed body reads top-to-bottom by capture
+    /// time. Excludes the daily-recap memory itself (source_app = 'spoken'
+    /// AND external_id starts with 'spoken-daily:') so the recap doesn't
+    /// list itself as one of the day's captures.
+    async fn list_memories_for_day(
+        &self,
+        start_utc: &str,
+        end_utc: &str,
+    ) -> AppResult<Vec<Memory>>;
+
+    /// Persist the LLM-generated `summary` for a memory, stamped with
+    /// `generated_at`. Used by `generate_daily_recap_summary` after an
+    /// inference run; the renderer keys staleness off the timestamp so
+    /// a content edit on the recap memory triggers regeneration on
+    /// next detail-view open.
+    async fn set_ai_summary(
+        &self,
+        memory_id: &str,
+        summary: &str,
+        generated_at: &str,
+    ) -> AppResult<()>;
 }
 
 /// Input shape for `replace_chunks_hash_aware`. Borrows the chunk

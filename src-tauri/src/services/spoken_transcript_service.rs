@@ -2,23 +2,37 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use sysinfo::System;
 
 use crate::{
     db::repositories::SharedMemoryRepository,
     errors::app_error::{AppError, AppResult},
     models::{AppContextSnapshot, Memory, MemoryInput, MemorySourceType},
+    services::screenshot_store::SCREENSHOT_SOURCE_APP,
 };
 
-/// External-id prefix kept as `spoken-daily:` for backward-compat with users
-/// who already have a daily transcript memory from earlier versions. The
-/// SOURCE_APP namespace is also kept so existing memories can be looked up.
-/// User-facing labels say "Daily transcript" / "Transcription" and per-entry
-/// metadata records the actual transcription app that produced each line.
+/// v0.5.18: this service owns the **Daily recap** memory — a single
+/// per-local-day memory that rolls up everything captured that day:
+/// spoken snippets, screenshots, bookmarks, clipboard notes, iPhone
+/// captures. Pre-v0.5.18 it owned only the spoken-only "Daily
+/// transcript" memory; the rename happens on next update.
+///
+/// The `external_id` prefix and source_app namespace stay as
+/// `spoken-daily:` / `spoken` for backward-compat with users who
+/// already have a Daily transcript memory from earlier versions —
+/// renaming those would break Ask Recall retrieval against those
+/// existing memories. Only the title and content body are reshaped.
 const TRANSCRIPT_SOURCE_APP: &str = "spoken";
 const TRANSCRIPT_EXTERNAL_ID_PREFIX: &str = "spoken-daily:";
+/// Pre-v0.5.18 section marker. Still recognized on read so old
+/// daily transcript memories parse cleanly; new writes use the
+/// v0.5.18 `Spoken (N)` section header instead.
 const TRANSCRIPT_SECTION_MARKER: &str = "\n\nTranscript\n\n";
+/// v0.5.18 section marker prefix. The actual header is
+/// `Spoken ({count})` so both readers and writers pin on the
+/// `\n\nSpoken (` substring when extracting the spoken block.
+const SPOKEN_SECTION_PREFIX: &str = "\n\nSpoken (";
 
 /// Curated list of common transcription / dictation apps. Each entry is a
 /// (process-substring, display-name) pair. The substring matches against the
@@ -101,7 +115,7 @@ impl SpokenTranscriptService {
         let now_local = now_utc.with_timezone(&Local);
         let day_key = now_local.format("%Y-%m-%d").to_string();
         let external_id = format!("{TRANSCRIPT_EXTERNAL_ID_PREFIX}{day_key}");
-        let title = format!("Daily transcript · {}", now_local.format("%b %d"));
+        let title = format!("Daily recap · {}", now_local.format("%b %d"));
         // Prefer the detected transcription app name; fall back to whatever
         // the OS reported as frontmost (e.g. "Notes" — the destination), then
         // a generic "Transcription".
@@ -112,18 +126,27 @@ impl SpokenTranscriptService {
             .unwrap_or_else(|| "Transcription".to_string());
         let entry = build_entry_block(&now_local, &context_label, &snippet);
 
+        // v0.5.18: query the day's other captures so the recap body
+        // includes screenshots/bookmarks/notes alongside the spoken
+        // section. This is the same query the post-save hook runs.
+        let other_memories = self.list_day_memories(&now_local).await?;
+
+        let date_label = now_local.format("%b %d").to_string();
+
         if let Some(existing) = self
             .repository
             .find_by_external_source(TRANSCRIPT_SOURCE_APP, &external_id)
             .await?
         {
-            let body = extract_transcript_body(&existing.content);
-            let combined_body = append_entry_block(&body, &entry);
-            let content = build_daily_document(
-                &combined_body,
+            let prior_spoken_body = extract_spoken_body(&existing.content);
+            let combined_body = append_entry_block(&prior_spoken_body, &entry);
+            let content = compose_daily_recap_content(
                 &title,
+                &combined_body,
+                &other_memories,
                 existing.created_at.as_str(),
                 now_utc.to_rfc3339().as_str(),
+                &date_label,
             );
 
             return self
@@ -148,11 +171,13 @@ impl SpokenTranscriptService {
                 .await;
         }
 
-        let content = build_daily_document(
-            &entry,
+        let content = compose_daily_recap_content(
             &title,
+            &entry,
+            &other_memories,
             now_utc.to_rfc3339().as_str(),
             now_utc.to_rfc3339().as_str(),
+            &date_label,
         );
 
         self.repository
@@ -172,6 +197,141 @@ impl SpokenTranscriptService {
             })
             .await
     }
+
+    /// v0.5.18: rebuild today's Daily recap from the day's current
+    /// captures. Called from the capture pipeline's post-save hook
+    /// after a non-spoken memory lands (screenshot, bookmark, note,
+    /// iPhone import, etc.) so the recap stays in sync without the
+    /// caller having to reach into this service's internals.
+    ///
+    /// Idempotent: rebuilds the body purely from current DB state.
+    /// The spoken section (the only data not stored as separate
+    /// memory rows) is preserved verbatim from the existing recap
+    /// memory if one exists.
+    ///
+    /// Returns `Ok(None)` when there's nothing to recap yet (no
+    /// captures of any kind for today AND no existing recap memory).
+    /// Returns `Ok(Some(memory))` after a successful create/update.
+    pub async fn rebuild_recap_for_today(&self) -> AppResult<Option<Memory>> {
+        let now_utc = Utc::now();
+        let now_local = now_utc.with_timezone(&Local);
+        let day_key = now_local.format("%Y-%m-%d").to_string();
+        let external_id = format!("{TRANSCRIPT_EXTERNAL_ID_PREFIX}{day_key}");
+        let title = format!("Daily recap · {}", now_local.format("%b %d"));
+        let date_label = now_local.format("%b %d").to_string();
+
+        let other_memories = self.list_day_memories(&now_local).await?;
+
+        if let Some(existing) = self
+            .repository
+            .find_by_external_source(TRANSCRIPT_SOURCE_APP, &external_id)
+            .await?
+        {
+            let spoken_body = extract_spoken_body(&existing.content);
+            let content = compose_daily_recap_content(
+                &title,
+                &spoken_body,
+                &other_memories,
+                existing.created_at.as_str(),
+                now_utc.to_rfc3339().as_str(),
+                &date_label,
+            );
+            // Skip the write if nothing changed. Avoids tickling
+            // updated_at and re-firing AI summary regeneration on
+            // every screenshot save.
+            if content == existing.content {
+                return Ok(Some(existing));
+            }
+            return self
+                .repository
+                .update(
+                    &existing.id,
+                    MemoryInput {
+                        source_type: Some(MemorySourceType::Manual),
+                        title: Some(title),
+                        content,
+                        note: existing.note.clone(),
+                        project_id: existing.project_id.clone(),
+                        url: None,
+                        external_id: Some(external_id),
+                        folder_path: None,
+                        source_app: Some(TRANSCRIPT_SOURCE_APP.to_string()),
+                        source_window: existing.source_window.clone(),
+                        created_at: Some(existing.created_at),
+                        updated_at: Some(now_utc.to_rfc3339()),
+                    },
+                )
+                .await
+                .map(Some);
+        }
+
+        // No existing recap. Only create one if there's something to
+        // include — otherwise the post-save hook would generate empty
+        // recaps for days where nothing was captured (impossible by
+        // construction since the hook fires on save, but keeps the
+        // code defensive).
+        if other_memories.is_empty() {
+            return Ok(None);
+        }
+        let content = compose_daily_recap_content(
+            &title,
+            "",
+            &other_memories,
+            now_utc.to_rfc3339().as_str(),
+            now_utc.to_rfc3339().as_str(),
+            &date_label,
+        );
+        self.repository
+            .create(MemoryInput {
+                source_type: Some(MemorySourceType::Manual),
+                title: Some(title),
+                content,
+                note: None,
+                project_id: None,
+                url: None,
+                external_id: Some(external_id),
+                folder_path: None,
+                source_app: Some(TRANSCRIPT_SOURCE_APP.to_string()),
+                source_window: None,
+                created_at: Some(now_utc.to_rfc3339()),
+                updated_at: Some(now_utc.to_rfc3339()),
+            })
+            .await
+            .map(Some)
+    }
+
+    async fn list_day_memories(
+        &self,
+        now_local: &DateTime<Local>,
+    ) -> AppResult<Vec<Memory>> {
+        let day_start_local = local_day_start(now_local.date_naive());
+        let day_end_local = day_start_local + chrono::Duration::days(1);
+        let start_utc = day_start_local.with_timezone(&Utc).to_rfc3339();
+        let end_utc = day_end_local.with_timezone(&Utc).to_rfc3339();
+        self.repository
+            .list_memories_for_day(&start_utc, &end_utc)
+            .await
+    }
+}
+
+/// v0.5.18: take a NaiveDate (local) and return the local-tz
+/// midnight of that day as a DateTime<Local>. Handles ambiguous
+/// hours during DST transitions by falling back to the earliest
+/// valid moment for the date.
+fn local_day_start(date: NaiveDate) -> DateTime<Local> {
+    let naive = date
+        .and_hms_opt(0, 0, 0)
+        .expect("hms 0,0,0 always valid");
+    Local
+        .from_local_datetime(&naive)
+        .earliest()
+        .unwrap_or_else(|| {
+            // Spring-forward edge case (rare): the wall clock skips
+            // 00:00. Fall back to UTC midnight of that date — the
+            // boundary is approximate but the recap query is
+            // chronological-by-created_at, not exact-day-boundary.
+            Utc.from_utc_datetime(&naive).with_timezone(&Local)
+        })
 }
 
 /// Detects whether a known transcription/dictation app shows up in the
@@ -381,35 +541,191 @@ fn append_entry_block(existing_body: &str, next_entry: &str) -> String {
     }
 }
 
+/// Extract the spoken-transcript body from the content of a recap
+/// memory. Recognizes both the v0.5.18 `Spoken (N)\n\n` section
+/// header and the legacy `Transcript\n\n` marker so existing
+/// memories survive the upgrade without losing their snippets.
+/// Returns the section body (just the entries, no header) trimmed.
+/// Returns an EMPTY string when neither marker is present — this is
+/// the common case for a recap memory that was created by a
+/// non-spoken capture first (e.g. the day started with a screenshot,
+/// no spoken snippets yet). Returning the whole content would cause
+/// the next spoken snippet to get appended on top of an unrelated
+/// Summary/Screenshots block, corrupting the body.
+fn extract_spoken_body(content: &str) -> String {
+    // v0.5.18 marker first; falls through to v0.1.x marker.
+    if let Some((_, after_header)) = content.split_once(SPOKEN_SECTION_PREFIX) {
+        // Header is `Spoken (N)\n\n<body>` — strip up to first
+        // `\n\n` to drop the count line.
+        if let Some((_, body)) = after_header.split_once("\n\n") {
+            // Stop at the next section header (a bare `<Label> (N)`
+            // line preceded by `\n\n`). Anything after is a
+            // different section; only the spoken snippets belong
+            // here.
+            let trimmed_body = match find_next_section_start(body) {
+                Some(idx) => &body[..idx],
+                None => body,
+            };
+            return trimmed_body.trim().to_string();
+        }
+    }
+    if let Some((_, body)) = content.split_once(TRANSCRIPT_SECTION_MARKER) {
+        return body.trim().to_string();
+    }
+    // No spoken section yet — caller appends to an empty body.
+    String::new()
+}
+
+/// Pre-v0.5.18 alias kept so call sites and the test module stay
+/// terse. Identical to `extract_spoken_body`.
 fn extract_transcript_body(content: &str) -> String {
-    content
-        .split_once(TRANSCRIPT_SECTION_MARKER)
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_else(|| content.to_string())
-        .trim()
-        .to_string()
+    extract_spoken_body(content)
 }
 
-fn build_daily_document(
-    body: &str,
+/// Find the start of the next `<Label> (count)` section header
+/// inside the spoken-block tail. Returns the byte index of the
+/// preceding `\n\n` (so the spoken block ends cleanly without
+/// trailing whitespace). Used to bound `extract_spoken_body` when
+/// the recap has Screenshots/Bookmarks/etc. sections after Spoken.
+fn find_next_section_start(text: &str) -> Option<usize> {
+    let mut search_from = 0usize;
+    while let Some(idx) = text[search_from..].find("\n\n") {
+        let absolute = search_from + idx;
+        let after = &text[absolute + 2..];
+        if let Some(line_end) = after.find('\n') {
+            let header = &after[..line_end];
+            if is_section_header(header) {
+                return Some(absolute);
+            }
+        } else if is_section_header(after) {
+            return Some(absolute);
+        }
+        search_from = absolute + 2;
+    }
+    None
+}
+
+/// True when `line` looks like a section header — `<Label> (count)`
+/// with Label being one of our known sections. Strict on label set
+/// to avoid false-positive matches inside transcript content.
+fn is_section_header(line: &str) -> bool {
+    let labels = [
+        "Spoken",
+        "Screenshots",
+        "Bookmarks",
+        "From iPhone",
+        "Saved notes",
+    ];
+    labels.iter().any(|label| {
+        line.starts_with(label)
+            && line[label.len()..].trim_start().starts_with('(')
+            && line.trim_end().ends_with(')')
+    })
+}
+
+/// v0.5.18: compose the full Daily recap memory body. Sections:
+///
+///   ```
+///   {title}
+///
+///   Summary
+///   - 10 spoken snippets, 4 screenshots, 2 bookmarks today.
+///   - Active from 8:14 AM to 9:42 PM.
+///
+///   Spoken (10)
+///   [9:12 AM · Spoken]
+///   …entries…
+///
+///   Screenshots (4)
+///   - 9:14 AM · "Acme pricing tiers" — preview…
+///   …
+///   ```
+///
+/// Sections are emitted only when they have content; a day with
+/// no spoken snippets and 3 bookmarks shows just the Summary +
+/// Bookmarks blocks.
+fn compose_daily_recap_content(
     title: &str,
+    spoken_body: &str,
+    other_memories: &[Memory],
     first_captured_at: &str,
     last_captured_at: &str,
+    date_label: &str,
 ) -> String {
-    let summary = summarize_transcript_body(body, first_captured_at, last_captured_at);
+    let _ = date_label;
+    let summary = build_recap_summary(
+        spoken_body,
+        other_memories,
+        first_captured_at,
+        last_captured_at,
+    );
 
-    format!("{title}\n\nSummary\n{summary}\n\nTranscript\n\n{}", body.trim())
+    let mut sections: Vec<String> = Vec::new();
+    sections.push(format!("Summary\n{summary}"));
+
+    let spoken_count = count_spoken_entries(spoken_body);
+    if spoken_count > 0 {
+        sections.push(format!(
+            "Spoken ({spoken_count})\n\n{}",
+            spoken_body.trim()
+        ));
+    }
+
+    let groups = group_other_memories(other_memories);
+    for (label, items) in groups {
+        if items.is_empty() {
+            continue;
+        }
+        let lines: Vec<String> = items
+            .iter()
+            .map(|memory| format_other_memory_line(memory))
+            .collect();
+        sections.push(format!("{label} ({})\n{}", items.len(), lines.join("\n")));
+    }
+
+    format!("{title}\n\n{}", sections.join("\n\n"))
 }
 
-fn summarize_transcript_body(
-    body: &str,
+/// Rule-based summary used as a fallback when the LLM summary
+/// hasn't been generated yet (or the LLM is unavailable). Reads
+/// section counts + active span; no content-aware claims.
+fn build_recap_summary(
+    spoken_body: &str,
+    other_memories: &[Memory],
     first_captured_at: &str,
     last_captured_at: &str,
 ) -> String {
-    let entry_count = body
-        .lines()
-        .filter(|line| line.starts_with('[') && line.ends_with(']'))
-        .count();
+    let spoken_count = count_spoken_entries(spoken_body);
+    let groups = group_other_memories(other_memories);
+
+    let mut count_phrases: Vec<String> = Vec::new();
+    if spoken_count > 0 {
+        count_phrases.push(format!(
+            "{spoken_count} spoken snippet{}",
+            if spoken_count == 1 { "" } else { "s" }
+        ));
+    }
+    for (label, items) in &groups {
+        if items.is_empty() {
+            continue;
+        }
+        let n = items.len();
+        let phrase = match *label {
+            "Screenshots" => format!("{n} screenshot{}", if n == 1 { "" } else { "s" }),
+            "Bookmarks" => format!("{n} bookmark{}", if n == 1 { "" } else { "s" }),
+            "From iPhone" => format!("{n} from iPhone"),
+            "Saved notes" => format!("{n} saved note{}", if n == 1 { "" } else { "s" }),
+            other => format!("{n} {other}"),
+        };
+        count_phrases.push(phrase);
+    }
+
+    let count_line = if count_phrases.is_empty() {
+        "- Nothing captured yet.".to_string()
+    } else {
+        format!("- {}.", join_with_oxford_and(&count_phrases))
+    };
+
     let first_local = parse_rfc3339_to_local(first_captured_at);
     let last_local = parse_rfc3339_to_local(last_captured_at);
     let active_span = match (first_local, last_local) {
@@ -420,23 +736,165 @@ fn summarize_transcript_body(
         ),
         _ => "- Active throughout the day.".to_string(),
     };
-    let app_summary = extract_context_labels(body);
-    let topics = extract_top_topics(body, 4);
 
-    let mut lines = vec![
-        format!("- {entry_count} spoken snippet{} captured today.", if entry_count == 1 { "" } else { "s" }),
-        active_span,
-    ];
+    let mut lines = vec![count_line, active_span];
 
+    let app_summary = extract_context_labels(spoken_body);
     if !app_summary.is_empty() {
-        lines.push(format!("- Captured in {}.", app_summary.join(", ")));
+        lines.push(format!("- Spoken via {}.", app_summary.join(", ")));
     }
 
+    let topics = extract_top_topics(spoken_body, 4);
     if !topics.is_empty() {
         lines.push(format!("- Mentioned often: {}.", topics.join(", ")));
     }
 
     lines.join("\n")
+}
+
+/// Count `[time · app]` blocks in the spoken body. The blocks are
+/// the unit by which `build_entry_block` writes snippets, so this
+/// matches the actual snippet count.
+fn count_spoken_entries(body: &str) -> usize {
+    body.lines()
+        .filter(|line| line.starts_with('[') && line.ends_with(']'))
+        .count()
+}
+
+/// Categorize the day's non-spoken memories into sections. Order
+/// is fixed so the recap reads consistently day to day:
+/// Screenshots → Bookmarks → From iPhone → Saved notes.
+fn group_other_memories(memories: &[Memory]) -> Vec<(&'static str, Vec<&Memory>)> {
+    let mut screenshots: Vec<&Memory> = Vec::new();
+    let mut bookmarks: Vec<&Memory> = Vec::new();
+    let mut from_iphone: Vec<&Memory> = Vec::new();
+    let mut saved_notes: Vec<&Memory> = Vec::new();
+    for memory in memories {
+        if memory.source_type == MemorySourceType::Bookmark {
+            bookmarks.push(memory);
+            continue;
+        }
+        match memory.source_app.as_deref() {
+            Some(app) if app == SCREENSHOT_SOURCE_APP => screenshots.push(memory),
+            Some("mobile") => from_iphone.push(memory),
+            _ => saved_notes.push(memory),
+        }
+    }
+    vec![
+        ("Screenshots", screenshots),
+        ("Bookmarks", bookmarks),
+        ("From iPhone", from_iphone),
+        ("Saved notes", saved_notes),
+    ]
+}
+
+/// Render one non-spoken memory as a recap bullet:
+///   `- 9:14 AM · "Acme pricing tiers" — preview…`
+/// Bookmarks get the domain in parens after the title; everything
+/// else uses content/summary_text/preview_text as the preview.
+fn format_other_memory_line(memory: &Memory) -> String {
+    let local_time = parse_rfc3339_to_local(&memory.created_at)
+        .map(|dt| dt.format("%-I:%M %p").to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let title = display_title_for_memory(memory);
+    let domain_suffix = if memory.source_type == MemorySourceType::Bookmark {
+        memory
+            .resolved_domain
+            .as_deref()
+            .or(memory.domain.as_deref())
+            .map(|d| format!(" ({d})"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let preview = preview_for_memory(memory, 110);
+    if preview.is_empty() {
+        format!("- {local_time} · \"{title}\"{domain_suffix}")
+    } else {
+        format!("- {local_time} · \"{title}\"{domain_suffix} — {preview}")
+    }
+}
+
+/// Pick a displayable title for a memory. Prefers explicit title,
+/// then resolved_title (link enrichment), then the first line of
+/// content, then a generic fallback.
+fn display_title_for_memory(memory: &Memory) -> String {
+    if let Some(value) = memory
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+    if let Some(value) = memory
+        .resolved_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return value.to_string();
+    }
+    let first_line = memory
+        .content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if first_line.is_empty() {
+        "Untitled".to_string()
+    } else {
+        truncate_chars(first_line, 60)
+    }
+}
+
+/// Pick a short preview for a memory's bullet. Prefers the
+/// pre-computed `summary_text` (cheap, already cleaned), then
+/// `preview_text`, then content. Truncated to `max_chars` chars
+/// with ellipsis.
+fn preview_for_memory(memory: &Memory, max_chars: usize) -> String {
+    let candidate = memory
+        .summary_text
+        .as_deref()
+        .or(memory.preview_text.as_deref())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            memory
+                .content
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("")
+                .to_string()
+        });
+    if candidate.is_empty() {
+        return String::new();
+    }
+    truncate_chars(&candidate, max_chars)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{}…", truncated.trim_end())
+}
+
+/// Join phrases with Oxford-comma "and": `["a", "b", "c"]` →
+/// `"a, b, and c"`. Single phrase returned as-is; two phrases
+/// joined with " and " (no comma).
+fn join_with_oxford_and(phrases: &[String]) -> String {
+    match phrases.len() {
+        0 => String::new(),
+        1 => phrases[0].clone(),
+        2 => format!("{} and {}", phrases[0], phrases[1]),
+        _ => {
+            let head = phrases[..phrases.len() - 1].join(", ");
+            format!("{}, and {}", head, phrases[phrases.len() - 1])
+        }
+    }
 }
 
 fn parse_rfc3339_to_local(value: &str) -> Option<DateTime<Local>> {
@@ -515,7 +973,7 @@ mod tests {
     };
 
     use super::{
-        build_daily_document, detect_transcription_context_app, extract_transcript_body,
+        compose_daily_recap_content, detect_transcription_context_app, extract_transcript_body,
         SpokenTranscriptService,
     };
 
@@ -595,24 +1053,67 @@ mod tests {
 
         assert_eq!(first.id, second.id);
         assert_eq!(second.source_app.as_deref(), Some("spoken"));
+        assert!(second.content.starts_with("Daily recap · "));
         assert!(second.content.contains("Summary"));
-        assert!(second.content.contains("Transcript"));
+        // v0.5.18: spoken section header is `Spoken (N)` instead
+        // of the legacy `Transcript`. The extractor still reads
+        // legacy memories — verified separately below.
+        assert!(second.content.contains("Spoken (2)"));
         let body = extract_transcript_body(&second.content);
         assert!(body.contains("pricing page copy"));
         assert!(body.contains("revisit onboarding tomorrow"));
     }
 
     #[test]
-    fn daily_document_contains_summary_and_transcript_sections() {
-        let content = build_daily_document(
+    fn extract_spoken_body_handles_legacy_transcript_marker() {
+        // Pre-v0.5.18 daily-transcript memories used the
+        // `\n\nTranscript\n\n` marker. Existing rows need to
+        // round-trip through extract_transcript_body without
+        // losing their snippets after the upgrade.
+        let legacy = "Daily transcript · Apr 25\n\nSummary\n- 2 spoken \
+                      snippets captured today.\n\nTranscript\n\n[9:12 AM · \
+                      Spoken]\nFirst snippet\n\n[10:04 AM · Spoken]\nSecond \
+                      snippet";
+        let body = extract_transcript_body(legacy);
+        assert!(body.contains("First snippet"));
+        assert!(body.contains("Second snippet"));
+        assert!(!body.contains("Daily transcript"));
+        assert!(!body.contains("Summary"));
+    }
+
+    #[test]
+    fn recap_document_contains_summary_and_spoken_sections() {
+        let content = compose_daily_recap_content(
+            "Daily recap · Apr 25",
             "[9:12 AM · Spoken]\nTest snippet",
-            "Spoken transcript · Apr 25",
+            &[],
             "2026-04-25T03:42:00Z",
             "2026-04-25T04:12:00Z",
+            "Apr 25",
         );
 
+        assert!(content.starts_with("Daily recap · Apr 25"));
         assert!(content.contains("Summary"));
-        assert!(content.contains("Transcript"));
-        assert!(content.contains("spoken snippet"));
+        assert!(content.contains("Spoken (1)"));
+        assert!(content.contains("Test snippet"));
+        assert!(content.contains("1 spoken snippet"));
+    }
+
+    #[test]
+    fn recap_document_emits_zero_sections_when_empty() {
+        let content = compose_daily_recap_content(
+            "Daily recap · Apr 25",
+            "",
+            &[],
+            "2026-04-25T03:42:00Z",
+            "2026-04-25T04:12:00Z",
+            "Apr 25",
+        );
+
+        assert!(content.starts_with("Daily recap · Apr 25"));
+        assert!(content.contains("Summary"));
+        assert!(content.contains("Nothing captured yet"));
+        assert!(!content.contains("Spoken ("));
+        assert!(!content.contains("Screenshots ("));
     }
 }

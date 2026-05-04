@@ -72,6 +72,15 @@ export interface Memory {
   // uses it as the dependency for re-querying related results.
   embeddingModelVersion?: string | null;
   embeddingGeneratedAt?: string | null;
+  // v0.5.18 — LLM-generated summary cached on the memory row.
+  // Today populated only for Daily recap memories (`sourceApp = 'spoken'`
+  // AND `externalId` starting with `'spoken-daily:'`); the memory
+  // detail view renders this as the "Summary" block, falling back
+  // to the rule-based one in the body when absent. `aiSummaryGeneratedAt`
+  // lets the renderer detect staleness — when `updatedAt > aiSummaryGeneratedAt`,
+  // it kicks off a regeneration on detail-view open.
+  aiSummary?: string | null;
+  aiSummaryGeneratedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

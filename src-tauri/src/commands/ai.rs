@@ -2418,3 +2418,257 @@ pub async fn ask_recall_rename_session(
         .rename_session(&session_id, trimmed)
         .await
 }
+
+// ─── v0.5.18: Daily recap LLM summary + Save Q&A as memory ────────
+
+/// Result of `generate_daily_recap_summary`. The frontend calls
+/// this lazily when a Daily recap memory's detail view opens and
+/// either has no cached `ai_summary` or one that's older than the
+/// memory's `updated_at` (a new capture landed since the last
+/// generation, so the summary is stale).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyRecapSummaryPayload {
+    pub memory_id: String,
+    pub summary: String,
+    pub generated_at: String,
+    pub tokens_generated: u32,
+    pub latency_ms: u64,
+}
+
+/// v0.5.18: generate (or regenerate) the AI summary for a Daily
+/// recap memory. Loads the memory's body, builds a constrained
+/// prompt asking the LLM to summarize the day from the captures
+/// it sees, and persists the result into `ai_summary` +
+/// `ai_summary_generated_at`. The frontend renders that field in
+/// place of the rule-based "Summary" block when present.
+///
+/// Hard constraints in the prompt:
+///   * 3–5 sentences, plain text (no markdown headers / bullets).
+///   * Stay grounded in the captures shown — no editorializing.
+///   * Refer to the user in second person ("you saved X").
+///
+/// Errors: returns `Invalid` if no LLM is configured, the memory
+/// doesn't exist, or it isn't a Daily recap memory. The frontend
+/// surfaces the error and falls back to the rule-based summary.
+#[tauri::command]
+pub async fn generate_daily_recap_summary(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<DailyRecapSummaryPayload> {
+    let adapter = state
+        .llm_adapter()
+        .ok_or_else(|| {
+            AppError::Invalid(
+                "Local AI isn't ready yet. Open AI Settings and wait \
+                 for the model to finish loading."
+                    .into(),
+            )
+        })?
+        .clone();
+
+    if !adapter.is_ready().await {
+        return Err(AppError::Invalid(
+            "Local AI is still warming up. Try again in a few seconds.".into(),
+        ));
+    }
+
+    let memory = state
+        .memory_repository
+        .find(&memory_id)
+        .await?
+        .ok_or_else(|| AppError::Invalid("Memory not found.".into()))?;
+
+    // Daily recap memories are identified by `source_app = "spoken"`
+    // AND `external_id LIKE 'spoken-daily:%'`. We refuse to summarize
+    // anything else here — generic memory summarization is a future
+    // feature, not v0.5.18 scope.
+    let is_recap = memory.source_app.as_deref() == Some("spoken")
+        && memory
+            .external_id
+            .as_deref()
+            .map(|id| id.starts_with("spoken-daily:"))
+            .unwrap_or(false);
+    if !is_recap {
+        return Err(AppError::Invalid(
+            "AI summary is only available for Daily recap memories today.".into(),
+        ));
+    }
+
+    let body = memory.content.clone();
+    let prompt = build_daily_recap_prompt(&body);
+    let request = LlmGenerationRequest {
+        prompt,
+        pre_formatted: true,
+        max_tokens: 220,
+        temperature: 0.2,
+    };
+
+    let response = adapter
+        .generate(request)
+        .await
+        .map_err(|err| AppError::Invalid(format!("LLM call failed: {err}")))?;
+
+    let summary = clean_recap_summary(&response.text);
+    if summary.is_empty() {
+        return Err(AppError::Invalid(
+            "Model returned an empty summary. Try again.".into(),
+        ));
+    }
+
+    let generated_at = chrono::Utc::now().to_rfc3339();
+    state
+        .memory_repository
+        .set_ai_summary(&memory_id, &summary, &generated_at)
+        .await?;
+
+    Ok(DailyRecapSummaryPayload {
+        memory_id,
+        summary,
+        generated_at,
+        tokens_generated: response.tokens_generated,
+        latency_ms: response.latency_ms,
+    })
+}
+
+/// Build the Qwen2.5 chat-template prompt for daily recap
+/// summarization. The body is truncated to ~3000 chars so we stay
+/// well under the model's context window even for chatty days
+/// (10–20 spoken snippets + a dozen screenshots add up fast).
+/// Truncation is body-tail-first because the freshest captures
+/// matter more for the day's narrative.
+fn build_daily_recap_prompt(body: &str) -> String {
+    const MAX_BODY_CHARS: usize = 3000;
+    let trimmed_body = if body.chars().count() > MAX_BODY_CHARS {
+        let kept: String = body
+            .chars()
+            .skip(body.chars().count() - MAX_BODY_CHARS)
+            .collect();
+        format!("…\n{kept}")
+    } else {
+        body.to_string()
+    };
+
+    format!(
+        "<|im_start|>system\n\
+You write 3-5 sentence summaries of a user's day based on memories \
+they captured. Speak directly to the user (\"you saved\", \"you \
+reviewed\"). Stay grounded in the captures shown — never invent \
+facts, names, or actions. Output plain prose only — no headers, \
+bullets, markdown, or quotation marks.<|im_end|>\n\
+<|im_start|>user\nBelow is a list of memories the user captured \
+today, grouped by source. Write a single short paragraph (3-5 \
+sentences) summarizing the day. Focus on what they did or thought \
+about, not the count.\n\n{trimmed_body}<|im_end|>\n\
+<|im_start|>assistant\n"
+    )
+}
+
+/// Strip junk the model sometimes prepends/appends: leading
+/// labels like "Summary:" or "Here is a summary…", surrounding
+/// quotes, trailing chat-template tokens, multiple blank lines.
+/// Returns the cleaned single-paragraph summary, or empty string
+/// if nothing usable is left.
+fn clean_recap_summary(text: &str) -> String {
+    let mut cleaned = text.trim().to_string();
+    // Strip Qwen end-of-turn token if the model emitted one.
+    cleaned = cleaned.replace("<|im_end|>", "").trim().to_string();
+    // Drop a leading "Summary:" / "Here is a summary…" label.
+    for label in [
+        "Summary:",
+        "Here is a summary:",
+        "Here's a summary:",
+        "Here is a short summary:",
+    ] {
+        if let Some(rest) = cleaned.strip_prefix(label) {
+            cleaned = rest.trim().to_string();
+            break;
+        }
+    }
+    // Strip wrapping quotes (model occasionally treats the prose
+    // as a quoted block).
+    cleaned = cleaned
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    // Collapse runs of blank lines so the summary stays a single
+    // paragraph.
+    cleaned = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    cleaned
+}
+
+/// Result of `save_qa_as_memory`. Returns the new memory's id +
+/// title so the frontend can link the user to it ("Saved → open
+/// memory").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQaPayload {
+    pub memory_id: String,
+    pub title: String,
+}
+
+/// v0.5.18: save a completed Ask Recall Q&A as a regular memory.
+/// The frontend offers this as an opt-in button on every committed
+/// assistant bubble — useful answers become first-class memories
+/// the user can search and reference later.
+///
+/// Stored shape:
+///   * `source_type = Manual`
+///   * `source_app = "ask-recall"` (so they're recognizable as
+///     Q&A captures and the recap composer can route them to the
+///     "Saved notes" section)
+///   * `title` = first 60 chars of the question, "?" stripped
+///   * `content` = "Q: <question>\n\nA: <answer>"
+///
+/// Citations aren't linked yet (linked_memory_ids needs a v0.5.19
+/// schema addition). For now, the answer text retains its
+/// `[memory:<uuid>]` markers so the user can still trace back to
+/// sources by opening the memory and clicking through.
+#[tauri::command]
+pub async fn save_qa_as_memory(
+    question: String,
+    answer: String,
+    state: State<'_, AppState>,
+) -> AppResult<SavedQaPayload> {
+    let q_trimmed = question.trim();
+    let a_trimmed = answer.trim();
+    if q_trimmed.is_empty() {
+        return Err(AppError::Invalid("Question cannot be empty.".into()));
+    }
+    if a_trimmed.is_empty() {
+        return Err(AppError::Invalid("Answer cannot be empty.".into()));
+    }
+
+    let title = trim_to_title(q_trimmed, 60);
+    let content = format!("Q: {q_trimmed}\n\nA: {a_trimmed}");
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let memory = state
+        .capture_service
+        .create(crate::models::MemoryInput {
+            source_type: Some(crate::models::MemorySourceType::Manual),
+            title: Some(title.clone()),
+            content,
+            note: None,
+            project_id: None,
+            url: None,
+            external_id: None,
+            folder_path: None,
+            source_app: Some("ask-recall".to_string()),
+            source_window: None,
+            created_at: Some(now.clone()),
+            updated_at: Some(now),
+        })
+        .await?;
+
+    Ok(SavedQaPayload {
+        memory_id: memory.id,
+        title,
+    })
+}

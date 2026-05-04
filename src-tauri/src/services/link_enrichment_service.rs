@@ -2051,6 +2051,23 @@ mod tests {
             Ok(Default::default())
         }
 
+        async fn list_memories_for_day(
+            &self,
+            _start_utc: &str,
+            _end_utc: &str,
+        ) -> AppResult<Vec<crate::models::Memory>> {
+            Ok(Vec::new())
+        }
+
+        async fn set_ai_summary(
+            &self,
+            _memory_id: &str,
+            _summary: &str,
+            _generated_at: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn delete(&self, _id: &str) -> AppResult<()> {
             Ok(())
         }
@@ -2106,6 +2123,8 @@ mod tests {
             ocr_error: None,
             embedding_model_version: None,
             embedding_generated_at: None,
+            ai_summary: None,
+            ai_summary_generated_at: None,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         }

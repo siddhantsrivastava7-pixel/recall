@@ -661,6 +661,8 @@ mod tests {
             ocr_error: None,
             embedding_model_version: None,
             embedding_generated_at: None,
+            ai_summary: None,
+            ai_summary_generated_at: None,
             created_at: created_at.into(),
             updated_at: created_at.into(),
         }

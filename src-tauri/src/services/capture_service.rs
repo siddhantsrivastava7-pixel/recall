@@ -74,6 +74,14 @@ pub struct CaptureService {
     /// rather than `Option` so we can write through `&self` (the service
     /// is wrapped in `Arc` and shared across handlers).
     ai_scheduler: OnceLock<AiScheduler>,
+    /// v0.5.18: Daily recap composer. Installed at app boot via
+    /// [`Self::install_recap_service`] (after both services exist —
+    /// CaptureService is built before SpokenTranscriptService in
+    /// AppState::new). When present, every successful save fires a
+    /// fire-and-forget background rebuild of today's recap so it
+    /// stays in sync without the caller having to invoke it.
+    recap_service:
+        OnceLock<std::sync::Arc<crate::services::spoken_transcript_service::SpokenTranscriptService>>,
 }
 
 impl CaptureService {
@@ -82,6 +90,7 @@ impl CaptureService {
             pool,
             repository,
             ai_scheduler: OnceLock::new(),
+            recap_service: OnceLock::new(),
         }
     }
 
@@ -90,6 +99,52 @@ impl CaptureService {
     /// any new screenshot / imported-image memory it commits.
     pub fn install_ai_scheduler(&self, scheduler: AiScheduler) {
         let _ = self.ai_scheduler.set(scheduler);
+    }
+
+    /// v0.5.18: install the Daily recap composer. Idempotent. After
+    /// install, every successful create/update fires a background
+    /// rebuild of today's recap memory. The hook is silent on
+    /// errors — recap rebuild failures must never propagate to the
+    /// user's capture or break their save.
+    pub fn install_recap_service(
+        &self,
+        service: std::sync::Arc<
+            crate::services::spoken_transcript_service::SpokenTranscriptService,
+        >,
+    ) {
+        let _ = self.recap_service.set(service);
+    }
+
+    /// v0.5.18: post-save hook that keeps today's Daily recap in
+    /// sync with the memory store. Skips:
+    ///   * The recap memory itself (`source_app == "spoken"` AND
+    ///     `external_id LIKE 'spoken-daily:%'`) — saving the recap
+    ///     would otherwise re-fire this hook and infinite-loop.
+    ///   * Cases where no recap service is installed yet (early
+    ///     boot, or AppState wasn't fully wired).
+    /// Runs in `tauri::async_runtime::spawn` so the user's save
+    /// returns instantly; latency from the recap rebuild is
+    /// invisible to the capture path.
+    fn maybe_rebuild_daily_recap(&self, memory: &Memory) {
+        let Some(service) = self.recap_service.get() else {
+            return;
+        };
+        // Don't recurse on the recap memory itself.
+        if memory.source_app.as_deref() == Some("spoken")
+            && memory
+                .external_id
+                .as_deref()
+                .map(|id| id.starts_with("spoken-daily:"))
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let service = service.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = service.rebuild_recap_for_today().await {
+                eprintln!("[recall][capture] daily recap rebuild failed: {error}");
+            }
+        });
     }
 
     /// Chunk + enqueue-embed hook. Called after `repository.create` and
@@ -307,6 +362,8 @@ impl CaptureService {
                 // actually change, so a one-word edit triggers at most
                 // one re-embed.
                 self.maybe_chunk_and_embed(&memory);
+                // v0.5.18: keep today's Daily recap in sync.
+                self.maybe_rebuild_daily_recap(&memory);
                 Ok(memory)
             }
             Err(error) => {
@@ -378,6 +435,10 @@ impl CaptureService {
                 self.maybe_enqueue_ocr(&memory);
                 // v0.3.0: chunk + enqueue-embed hook.
                 self.maybe_chunk_and_embed(&memory);
+                // v0.5.18: rebuild today's Daily recap so it picks
+                // up this capture without the caller having to
+                // invoke the recap service explicitly.
+                self.maybe_rebuild_daily_recap(&memory);
                 Ok(memory)
             }
             Err(error) => {

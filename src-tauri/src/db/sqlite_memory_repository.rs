@@ -60,6 +60,8 @@ SELECT
   memories.ocr_error,
   memories.embedding_model_version,
   memories.embedding_generated_at,
+  memories.ai_summary,
+  memories.ai_summary_generated_at,
   memories.created_at,
   memories.updated_at
 FROM memories
@@ -1270,6 +1272,56 @@ impl MemoryRepository for SqliteMemoryRepository {
         .fetch_all(&self.pool)
         .await?;
         Ok(records)
+    }
+
+    async fn list_memories_for_day(
+        &self,
+        start_utc: &str,
+        end_utc: &str,
+    ) -> AppResult<Vec<Memory>> {
+        // Daily-recap composer uses this to roll up everything captured
+        // on a local-tz day (caller converts local-day boundaries to
+        // UTC RFC3339 strings before binding). Excludes the recap
+        // memory itself so it doesn't list itself in its own body —
+        // recap memories are identified by `source_app = 'spoken'` AND
+        // `external_id` starting with `'spoken-daily:'` (the prefix
+        // kept for backwards compat with v0.1.x users who already had
+        // a Daily transcript memory under that namespace).
+        let records = sqlx::query_as::<_, Memory>(&format!(
+            "{MEMORY_SELECT} \
+             WHERE datetime(memories.created_at) >= datetime(?1) \
+               AND datetime(memories.created_at) <  datetime(?2) \
+               AND NOT ( \
+                 memories.source_app = 'spoken' \
+                 AND memories.external_id LIKE 'spoken-daily:%' \
+               ) \
+             ORDER BY datetime(memories.created_at) ASC"
+        ))
+        .bind(start_utc)
+        .bind(end_utc)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
+    }
+
+    async fn set_ai_summary(
+        &self,
+        memory_id: &str,
+        summary: &str,
+        generated_at: &str,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE memories \
+             SET ai_summary = ?1, \
+                 ai_summary_generated_at = ?2 \
+             WHERE id = ?3",
+        )
+        .bind(summary)
+        .bind(generated_at)
+        .bind(memory_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn embedding_coverage(&self) -> AppResult<EmbeddingCoverage> {

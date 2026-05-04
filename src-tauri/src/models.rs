@@ -145,6 +145,19 @@ pub struct Memory {
     /// chunk of this memory. v0.3.0+.
     #[serde(default)]
     pub embedding_generated_at: Option<String>,
+    /// v0.5.18: LLM-generated summary cached on the memory row.
+    /// Today only populated for daily-recap memories — the
+    /// frontend renders this in place of the rule-based summary
+    /// when present + fresh (`ai_summary_generated_at >= updated_at`
+    /// modulo a small grace window). Generic shape so future
+    /// memory kinds (long bookmarks, voice notes) can reuse it.
+    #[serde(default)]
+    pub ai_summary: Option<String>,
+    /// v0.5.18: when the AI summary was generated. Used for
+    /// staleness detection — if the memory's `updated_at` is
+    /// newer, the renderer kicks off regeneration on detail open.
+    #[serde(default)]
+    pub ai_summary_generated_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

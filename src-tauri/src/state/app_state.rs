@@ -116,6 +116,12 @@ impl AppState {
         );
         let spoken_transcript_service =
             Arc::new(SpokenTranscriptService::new(memory_repository.clone()));
+        // v0.5.18: wire the post-save Daily recap rebuild hook into
+        // the capture service. After this point, every successful
+        // create/update fires a fire-and-forget rebuild of today's
+        // recap memory so it stays in sync as new captures land
+        // (screenshots, bookmarks, notes, etc.).
+        capture_service.install_recap_service(spoken_transcript_service.clone());
         let pairing_service = Arc::new(PairingService::new(pool.clone()));
         let receiver_service = Arc::new(DesktopReceiverService::new(
             pairing_service.clone(),

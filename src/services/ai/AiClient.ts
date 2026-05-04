@@ -139,6 +139,24 @@ export const aiClient = {
   renameAskRecallSession: (sessionId: string, title: string) =>
     invoke<void>("ask_recall_rename_session", { sessionId, title }),
 
+  /// v0.5.18: lazily generate (or regenerate) the LLM-backed
+  /// summary for a Daily recap memory. The backend calls Qwen2.5
+  /// with a constrained prompt and persists the result into the
+  /// memory's `aiSummary` column. The memory detail view calls
+  /// this when it opens a recap memory whose `aiSummary` is
+  /// missing or staler than `updatedAt` (a new capture landed
+  /// since last generation).
+  generateDailyRecapSummary: (memoryId: string) =>
+    invoke<DailyRecapSummaryPayload>("generate_daily_recap_summary", { memoryId }),
+
+  /// v0.5.18: save a completed Ask Recall Q&A as a regular memory.
+  /// Surfaced as a "Save as memory" button on every committed
+  /// assistant bubble. The new memory is stamped with
+  /// `sourceApp = "ask-recall"` so it's recognizable and gets
+  /// routed to the "Saved notes" section of the Daily recap.
+  saveQaAsMemory: (question: string, answer: string) =>
+    invoke<SavedQaPayload>("save_qa_as_memory", { question, answer }),
+
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
   /// regardless of the persisted "backfill done" flag, and returns a
@@ -291,6 +309,23 @@ export interface AskRecallSessionSummary {
 /// trimmed). Centralized so every surface renders the same way.
 export function chatDisplayTitle(s: { title: string; llmTitle: string | null }): string {
   return s.llmTitle && s.llmTitle.trim().length > 0 ? s.llmTitle : s.title;
+}
+
+/// v0.5.18: response shape from `generate_daily_recap_summary`.
+/// The frontend writes the summary into the rendered "Summary"
+/// block of a Daily recap memory in place of the rule-based one.
+export interface DailyRecapSummaryPayload {
+  memoryId: string;
+  summary: string;
+  generatedAt: string;
+  tokensGenerated: number;
+  latencyMs: number;
+}
+
+/// v0.5.18: response shape from `save_qa_as_memory`.
+export interface SavedQaPayload {
+  memoryId: string;
+  title: string;
 }
 
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full

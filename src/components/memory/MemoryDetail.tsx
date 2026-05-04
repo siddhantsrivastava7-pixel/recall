@@ -45,6 +45,7 @@ import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { ScreenshotPreview, isScreenshotMemory } from "./ScreenshotPreview";
 import { RelatedMemories } from "./RelatedMemories";
+import { AiSummaryPanel, isDailyRecapMemory } from "./AiSummaryPanel";
 
 export function MemoryDetail({
   memory,
@@ -659,6 +660,17 @@ export function MemoryDetail({
             <section style={{ marginBottom: 22 }}>
               <ScreenshotPreview memory={currentMemory} />
             </section>
+          )}
+
+          {/*
+            v0.5.18 — Daily recap LLM summary panel. Sits above the
+            content body so the user sees the AI overview first; the
+            full sectioned body (Spoken / Screenshots / Bookmarks /
+            Saved notes) reads underneath. Fires lazily — first open
+            after a fresh capture re-runs the LLM.
+          */}
+          {isDailyRecapMemory(currentMemory) && (
+            <AiSummaryPanel memory={currentMemory} />
           )}
 
           <section style={{ marginBottom: normalizedNote ? 26 : 0 }}>
