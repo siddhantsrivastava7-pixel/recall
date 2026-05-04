@@ -69,6 +69,20 @@ interface ChatStoreState {
   /// without a full refetch round-trip.
   appendMessageToActive: (message: AskRecallMessage) => void;
 
+  /// v0.5.17: append a message to a SPECIFIC session. If that
+  /// session is currently active, the message is mirrored into
+  /// `activeMessages` for instant render. Otherwise we just
+  /// bump the sidebar row's count + last_used_at — the next
+  /// `openChat` for that session will refetch from SQLite and
+  /// pick up the persisted message.
+  ///
+  /// This exists because Ask Recall turns can outlive a session
+  /// switch: a user can ask a question in chat A, switch to
+  /// chat B mid-stream, and the completion handler must persist
+  /// to A — never to whichever session happens to be active
+  /// when the await resolves.
+  appendMessageToSession: (sessionId: string, message: AskRecallMessage) => void;
+
   /// Apply a server-side title rename event (LLM-generated title
   /// landed). Updates the matching sidebar row in place.
   applyTitleEvent: (sessionId: string, title: string) => void;
@@ -189,6 +203,26 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
           : s,
       ),
     }));
+  },
+
+  appendMessageToSession(sessionId, message) {
+    set((state) => {
+      const isActive = state.activeSessionId === sessionId;
+      return {
+        activeMessages: isActive
+          ? [...state.activeMessages, message]
+          : state.activeMessages,
+        sessions: state.sessions.map((s) =>
+          s.sessionId === sessionId
+            ? {
+                ...s,
+                lastUsedAt: new Date().toISOString(),
+                messageCount: s.messageCount + 1,
+              }
+            : s,
+        ),
+      };
+    });
   },
 
   applyTitleEvent(sessionId, title) {

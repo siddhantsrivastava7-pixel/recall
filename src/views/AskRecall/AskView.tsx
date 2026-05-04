@@ -221,16 +221,29 @@ function AskViewInner({ setView }: AskViewProps) {
   const sessionId = useChatStore((s) => s.activeSessionId);
   const messages = useChatStore((s) => s.activeMessages);
   const newChatAction = useChatStore((s) => s.newChat);
-  const appendMessageToActive = useChatStore((s) => s.appendMessageToActive);
+  const appendMessageToSession = useChatStore((s) => s.appendMessageToSession);
   const refreshChats = useChatStore((s) => s.refresh);
 
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [streamedText, setStreamedText] = useState("");
   const [streaming, setStreaming] = useState(false);
+  // v0.5.17: which session the in-flight turn was started for.
+  // The user can switch chats mid-stream; if they do, we want to
+  // hide the streaming bubble in the new chat (it doesn't belong
+  // there) and route the completed messages back to the original
+  // session — never to whichever session happens to be active
+  // when the await resolves.
+  const [turnSessionId, setTurnSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<AskPhase>({ kind: "idle" });
   const [question, setQuestion] = useState("");
   const threadEndRef = useRef<HTMLDivElement | null>(null);
+
+  // True when the in-flight turn (if any) belongs to the currently
+  // viewed session. Gates pending+streaming bubble rendering so a
+  // mid-stream session switch doesn't leak the OCR turn's bubble
+  // into the License Keys chat.
+  const turnInThisChat = streaming && turnSessionId === sessionId;
 
   const selectMemory = useMemoryStore((state) => state.selectMemory);
 
@@ -324,7 +337,14 @@ function AskViewInner({ setView }: AskViewProps) {
       setError("Conversation session not ready yet — try again in a moment.");
       return;
     }
+    // v0.5.17: capture the originating session id in a closure.
+    // If the user switches chats mid-stream, the await below
+    // resolves with `useChatStore.activeSessionId` pointing at
+    // the WRONG session — we must persist locally to `turnSid`,
+    // never to whatever's active at completion time.
+    const turnSid = sessionId;
     setStreaming(true);
+    setTurnSessionId(turnSid);
     setError(null);
     setStreamedText("");
     setPendingUser(trimmed);
@@ -333,19 +353,26 @@ function AskViewInner({ setView }: AskViewProps) {
     try {
       const result: AskRecallResponse = await aiClient.askRecall(
         trimmed,
-        sessionId,
+        turnSid,
       );
       // v0.5.15: append both messages to the shared store so the
       // sidebar's last_used_at + message_count stay in sync. The
       // backend has already persisted them; we mirror locally so
       // the thread renders in order without a session refetch.
+      //
+      // v0.5.17: route to `turnSid` (the originating session),
+      // not the currently-active session. The store's
+      // `appendMessageToSession` mirrors into `activeMessages`
+      // only when `turnSid` IS the active session; otherwise it
+      // just bumps the sidebar row's count + last_used_at, and
+      // the next `openChat` for `turnSid` refetches the truth.
       const ts = new Date().toISOString();
-      appendMessageToActive({
+      appendMessageToSession(turnSid, {
         role: "user",
         content: trimmed,
         timestamp: ts,
       });
-      appendMessageToActive({
+      appendMessageToSession(turnSid, {
         role: "assistant",
         content: result.text,
         retrievedSources: result.retrievedSources,
@@ -366,9 +393,10 @@ function AskViewInner({ setView }: AskViewProps) {
       setStreaming(false);
       setStreamedText("");
       setPendingUser(null);
+      setTurnSessionId(null);
       setPhase({ kind: "idle" });
     }
-  }, [question, streaming, sessionId, appendMessageToActive, refreshChats]);
+  }, [question, streaming, sessionId, appendMessageToSession, refreshChats]);
 
   const cancel = useCallback(async () => {
     if (!streaming) return;
@@ -410,8 +438,16 @@ function AskViewInner({ setView }: AskViewProps) {
     [selectMemory, setView],
   );
 
+  // v0.5.17: empty-state vs thread-state. Pending/streaming bubbles
+  // only count toward "has content" when the in-flight turn belongs
+  // to the currently viewed session — otherwise switching to an
+  // empty chat mid-stream would briefly hide the empty-state tips
+  // even though nothing renders here.
   const hasContent =
-    messages.length > 0 || pendingUser !== null || streaming || error !== null;
+    messages.length > 0 ||
+    (pendingUser !== null && turnInThisChat) ||
+    turnInThisChat ||
+    error !== null;
 
   // v0.5.13: layout restructured to put the input at the bottom
   // (Claude/ChatGPT pattern). Outer container is a flex column
@@ -494,8 +530,10 @@ function AskViewInner({ setView }: AskViewProps) {
                 onOpenMemory={openMemory}
               />
             ))}
-            {pendingUser ? <UserBubble content={pendingUser} /> : null}
-            {streaming ? (
+            {pendingUser && turnInThisChat ? (
+              <UserBubble content={pendingUser} />
+            ) : null}
+            {turnInThisChat ? (
               <AssistantStreamingBubble
                 text={streamedText}
                 onOpenMemory={openMemory}
@@ -566,10 +604,19 @@ function AskViewInner({ setView }: AskViewProps) {
           }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* v0.5.17: when a turn is in flight in another chat, the
+              user has switched away mid-stream. Cancel only makes
+              sense for the originating chat (the partial answer
+              belongs there), so we hide it here and surface a
+              hint that something is generating elsewhere. */}
           <span style={{ fontSize: 11, color: "var(--t-4)" }}>
-            {streaming ? phaseCopy(phase) : "⌘ + Enter to ask"}
+            {turnInThisChat
+              ? phaseCopy(phase)
+              : streaming
+                ? "Generating in another chat…"
+                : "⌘ + Enter to ask"}
           </span>
-          {streaming ? (
+          {turnInThisChat ? (
             <button
               type="button"
               className="btn btn-ghost"
