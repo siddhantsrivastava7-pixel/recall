@@ -22,7 +22,7 @@
 //! The engine never silently re-creates a dismissed card. Dismissal
 //! is the user saying "not this one"; we don't fight that.
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 
 use crate::{
@@ -86,22 +86,30 @@ async fn weekly_recap_active(
     now_utc: DateTime<Utc>,
     now_local: DateTime<Local>,
 ) -> AppResult<Option<ActiveSurface>> {
-    // Window starts at this week's Monday 00:00 local. We use
-    // `has_recorded_since(week_start)` to detect "have we already
-    // surfaced this week's recap?"
-    let (monday_local, next_monday_local) = weekly_recap::week_window(now_local);
-    let week_start_iso = monday_local.with_timezone(&Utc).to_rfc3339();
-    let week_end_iso = next_monday_local.with_timezone(&Utc).to_rfc3339();
+    // The surface card surfaces LAST week's completed recap (see
+    // `weekly_recap::ensure_recap_for_last_week` for the rationale —
+    // tl;dr "this week from Monday" is empty Monday morning, which
+    // is exactly when users open the app expecting to see what they
+    // did last week).
+    //
+    // The "have we surfaced this card yet?" gate is keyed off
+    // THIS week's Monday, not last week's. Each new calendar week
+    // gets one chance to surface last week's recap; once shown
+    // (and possibly dismissed) we stay quiet until the next
+    // calendar week rolls over.
+    let (this_week_monday_local, this_week_next_monday_local) =
+        weekly_recap::this_week_window(now_local);
+    let this_week_monday_iso = this_week_monday_local.with_timezone(&Utc).to_rfc3339();
 
-    // If we've already recorded a card for this week and it's
-    // still active (not dismissed, not expired), use it. This
-    // covers the multi-open-per-week case: the same card sticks
-    // around until the user dismisses or the week rolls over.
+    let now_iso = now_utc.to_rfc3339();
+
+    // If we've already recorded a card for this calendar week and
+    // it's still active (not dismissed, not expired), use it.
     if let Some(existing) = surface_repo
-        .latest_active_for_kind("weekly_recap", &now_utc.to_rfc3339())
+        .latest_active_for_kind("weekly_recap", &now_iso)
         .await?
     {
-        if existing.surfaced_at >= week_start_iso && existing.surfaced_at < week_end_iso {
+        if existing.surfaced_at >= this_week_monday_iso {
             if let Some(memory) = memory_repo.find(&existing.memory_id).await? {
                 return Ok(Some(ActiveSurface {
                     surface: existing,
@@ -111,32 +119,36 @@ async fn weekly_recap_active(
         }
     }
 
-    // Decide whether to PICK a weekly recap card right now:
-    //   * It's Monday, OR
-    //   * The user hasn't seen this week's recap yet (no row
-    //     recorded for kind=weekly_recap since this Monday).
+    // If we recorded a card already this week but it's no longer
+    // active, the user dismissed it. Dismissal sticks for the rest
+    // of the calendar week — we don't re-pick after the user said
+    // "not this one." Next Monday reopens the slot.
     let already_recorded = surface_repo
-        .has_recorded_since("weekly_recap", &week_start_iso)
+        .has_recorded_since("weekly_recap", &this_week_monday_iso)
         .await?;
-    let is_monday = matches!(now_local.weekday(), Weekday::Mon);
-    let should_pick = is_monday || !already_recorded;
-    if !should_pick {
+    if already_recorded {
         return Ok(None);
     }
 
-    // Compose / read the weekly recap memory. None when the week
-    // has zero captures — we don't surface an empty card.
-    let memory = match weekly_recap::ensure_recap_for_current_week(memory_repo).await? {
+    // First Home open of the calendar week. Pick last week's recap
+    // memory — composing it on the fly if we haven't seen this
+    // week-key before. Returns None when last week was empty
+    // (fresh installs, or genuinely quiet weeks); engine then
+    // falls through to Forgotten Gold.
+    let memory = match weekly_recap::ensure_recap_for_last_week(memory_repo).await? {
         Some(memory) => memory,
         None => return Ok(None),
     };
 
+    let (last_monday_local, last_next_monday_local) = weekly_recap::last_week_window(now_local);
     let reason = format!(
         "Your week from {} to {}.",
-        monday_local.format("%b %-d"),
-        (next_monday_local - chrono::Duration::seconds(1)).format("%b %-d")
+        last_monday_local.format("%b %-d"),
+        (last_next_monday_local - chrono::Duration::seconds(1)).format("%b %-d")
     );
-    let expires_at = next_monday_local.with_timezone(&Utc).to_rfc3339();
+    // Card auto-expires when next calendar week starts — past that
+    // point we want to surface a different last-week memory.
+    let expires_at = this_week_next_monday_local.with_timezone(&Utc).to_rfc3339();
 
     let surface_id = surface_repo
         .record_surface(

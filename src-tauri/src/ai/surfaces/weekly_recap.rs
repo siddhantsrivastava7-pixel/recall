@@ -31,9 +31,10 @@ const WEEKLY_SOURCE_APP: &str = "weekly";
 const WEEKLY_EXTERNAL_ID_PREFIX: &str = "weekly:";
 
 /// Compute the local-tz Monday 00:00 / next-Monday 00:00 boundary
-/// pair for the calendar week containing `now_local`. Used as the
-/// `[start, end)` window for the recap body query.
-pub fn week_window(now_local: DateTime<Local>) -> (DateTime<Local>, DateTime<Local>) {
+/// pair for the calendar week containing `now_local`. Used by the
+/// engine to bracket "this week's surface activity" (i.e. has the
+/// user already seen this week's recap card?).
+pub fn this_week_window(now_local: DateTime<Local>) -> (DateTime<Local>, DateTime<Local>) {
     let weekday = now_local.weekday();
     let days_since_monday = match weekday {
         Weekday::Mon => 0,
@@ -50,11 +51,24 @@ pub fn week_window(now_local: DateTime<Local>) -> (DateTime<Local>, DateTime<Loc
     (monday_local, next_monday_local)
 }
 
-/// Build the `external_id` for the week containing `now_local`.
-/// ISO week-of-year ensures a stable per-week key regardless of
-/// what calendar fragment the week straddles.
-pub fn week_external_id(now_local: DateTime<Local>) -> String {
-    let iso = now_local.iso_week();
+/// v0.5.24: window for the **previous** completed week — the one
+/// the surface card actually summarizes. On Monday morning of
+/// week N, the recap card shows week N-1's content; without this
+/// shift the card would be empty for the first few days of every
+/// new week (this week hasn't accumulated anything yet).
+pub fn last_week_window(now_local: DateTime<Local>) -> (DateTime<Local>, DateTime<Local>) {
+    let (this_monday, _) = this_week_window(now_local);
+    let last_monday = this_monday - Duration::days(7);
+    (last_monday, this_monday)
+}
+
+/// Build the `external_id` for the LAST completed week (the one
+/// the recap card surfaces). v0.5.24 shifted from this-week to
+/// last-week framing; the prefix stays the same so any v0.5.23
+/// rows continue to round-trip cleanly through `is_weekly_recap`.
+pub fn last_week_external_id(now_local: DateTime<Local>) -> String {
+    let (last_monday_local, _) = last_week_window(now_local);
+    let iso = last_monday_local.iso_week();
     format!("{}{}-{:02}", WEEKLY_EXTERNAL_ID_PREFIX, iso.year(), iso.week())
 }
 
@@ -68,28 +82,35 @@ fn week_title(monday: DateTime<Local>, sunday: DateTime<Local>) -> String {
     )
 }
 
-/// Ensure today's weekly-recap memory exists. Returns the memory
-/// — creating it from a fresh DB query when missing, or reading
-/// the existing row otherwise. Idempotent, safe to call from any
-/// surface engine entrypoint.
+/// Ensure last week's weekly-recap memory exists. Returns the
+/// memory — creating it from a fresh DB query when missing, or
+/// reading the existing row otherwise. Idempotent, safe to call
+/// from any surface engine entrypoint.
 ///
-/// `Ok(None)` only when the current week has zero captures across
-/// any source — there's nothing to recap, no card should render.
-pub async fn ensure_recap_for_current_week(
+/// v0.5.24: shifted from this-week to last-week framing. The
+/// surface card on Home is meant to answer "what did I do?" not
+/// "what am I doing?" — and on Monday morning of a new week the
+/// "this week" window is necessarily empty (the week just
+/// started). Showing last week's completed roll-up gives the
+/// user useful context the moment they open the app.
+///
+/// `Ok(None)` only when last week has zero captures across any
+/// source — there's nothing to recap, no card should render.
+pub async fn ensure_recap_for_last_week(
     repo: &SharedMemoryRepository,
 ) -> AppResult<Option<Memory>> {
     let now_utc = Utc::now();
     let now_local = now_utc.with_timezone(&Local);
-    let (monday_local, next_monday_local) = week_window(now_local);
+    let (monday_local, next_monday_local) = last_week_window(now_local);
     let sunday_local = next_monday_local - Duration::seconds(1);
-    let external_id = week_external_id(now_local);
+    let external_id = last_week_external_id(now_local);
     let title = week_title(monday_local, sunday_local);
 
     let start_utc = monday_local.with_timezone(&Utc).to_rfc3339();
     let end_utc = next_monday_local.with_timezone(&Utc).to_rfc3339();
     let week_memories = repo.list_memories_for_day(&start_utc, &end_utc).await?;
 
-    // No captures this week → no recap. Don't create an empty
+    // No captures last week → no recap. Don't create an empty
     // memory; the surface engine will skip the weekly slot and
     // the next surface kind (Forgotten Gold) takes over.
     if week_memories.is_empty() {
