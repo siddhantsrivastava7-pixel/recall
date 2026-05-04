@@ -253,8 +253,12 @@ pub struct AppSettings {
     pub bookmark_last_synced_at: Option<String>,
     pub widget_position_x: Option<f64>,
     pub widget_position_y: Option<f64>,
-    /// Master AI subsystem switch. **Off by default** — every AI feature
-    /// (OCR in v0.2.0; embeddings/Ask Recall later) gates on this flag.
+    /// Master AI subsystem switch. v0.5.21 flipped the default to
+    /// **true** for fresh installs — by this point OCR + embeddings +
+    /// Ask Recall + recap have all baked, and "open the app, AI just
+    /// works" is the right out-of-box experience for new users.
+    /// Existing users keep whatever they had persisted; this only
+    /// affects the initial settings row.
     pub ai_enabled: bool,
     /// Pause background AI work while the host is on battery. The
     /// scheduler still drains in-flight items; only new claims are blocked.
@@ -263,6 +267,24 @@ pub struct AppSettings {
     /// model downloads) only runs while plugged into AC. Independent from
     /// `ai_pause_on_battery` — both defaults to `true`.
     pub ai_heavy_only_on_ac: bool,
+    /// v0.5.21: how long the LLM stays loaded after the last call
+    /// before the idle reaper unloads it. `0` = never unload (model
+    /// stays resident). The reaper reads this value at the start of
+    /// each tick so changes take effect within ~60 seconds without
+    /// a restart. Default 5 minutes — cheap-enough cold reload but
+    /// frees ~3.5 GB RAM when the user walks away.
+    #[serde(default = "default_ai_llm_idle_minutes")]
+    pub ai_llm_idle_minutes: u32,
+    /// v0.5.21: optional override for the auto-detected hardware
+    /// tier. `None` = use whatever `ai::hardware::detect()` reports;
+    /// `Some(tier)` = pin to that tier (forces the matching LLM
+    /// model on next app launch). Set from the AI Settings tab.
+    /// Persisted as a lowercase letter ("a" / "b" / "c") in the
+    /// flat key-value settings table; absence is treated as None.
+    /// Changing this requires a restart to take effect because the
+    /// LLM adapter is selected at boot from the tier value.
+    #[serde(default)]
+    pub ai_tier_override: Option<crate::ai::hardware::HardwareTier>,
     /// v0.5.6: one-shot backfill that re-runs the auto-tagger
     /// (with URL/UUID guards) and the new entity extractor against
     /// every memory. `None` on first launch of v0.5.6 (triggers
@@ -293,15 +315,30 @@ impl Default for AppSettings {
             bookmark_last_synced_at: None,
             widget_position_x: None,
             widget_position_y: None,
-            // AI is opt-in. Existing users updating to v0.2.0 see zero
-            // behavior change until they flip the master toggle.
-            ai_enabled: false,
+            // v0.5.21: AI is **on by default** for fresh installs.
+            // The features have baked through 20+ patch releases; the
+            // out-of-box experience should be "open the app, AI just
+            // works." Existing users who explicitly turned it off keep
+            // their setting — the persisted row overrides this default
+            // on settings load, so this flip only applies when there
+            // is no `ai_enabled` key in the DB yet (= new install).
+            ai_enabled: true,
             ai_pause_on_battery: true,
             ai_heavy_only_on_ac: true,
+            ai_llm_idle_minutes: default_ai_llm_idle_minutes(),
+            ai_tier_override: None,
             ai_v0_5_6_backfill_done: None,
             ai_v0_5_7_backfill_done: None,
         }
     }
+}
+
+/// v0.5.21: serde default for `ai_llm_idle_minutes`. Five minutes
+/// is the empirical sweet spot — long enough to span follow-up
+/// Ask Recall turns, short enough that walking away frees the
+/// 3.5 GB resident model promptly.
+fn default_ai_llm_idle_minutes() -> u32 {
+    5
 }
 
 /// One chunk row from `memory_chunks`. v0.3.0+. The `embedding_vector`

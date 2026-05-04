@@ -126,12 +126,23 @@ export interface AppSettings {
   bookmarkSyncIntervalMinutes: number;
   bookmarkSyncBrowsers: BookmarkBrowser[];
   bookmarkLastSyncedAt: string | null;
-  // v0.2.0 — AI subsystem master switches. All default to safe values
-  // (off / pause-on-battery / heavy-only-on-AC) so existing users see
-  // zero behavior change after the update until they opt in.
+  // v0.2.0 — AI subsystem master switches.
+  // v0.5.21 — `aiEnabled` now defaults to TRUE on fresh installs.
+  // Existing users keep whatever they had persisted; the flip only
+  // affects rows that don't yet have an `ai_enabled` key in the DB.
   aiEnabled: boolean;
   aiPauseOnBattery: boolean;
   aiHeavyOnlyOnAc: boolean;
+  // v0.5.21 — how long the LLM stays loaded after the last call
+  // before the idle reaper unloads it. `0` = never unload (model
+  // stays resident). Read by the reaper per-tick so changes from
+  // the AI Settings tab take effect within ~60 seconds.
+  aiLlmIdleMinutes: number;
+  // v0.5.21 — optional override for the auto-detected hardware tier.
+  // `null` = use whatever the hardware probe reports. Otherwise, the
+  // chosen tier pins the LLM model on next app launch (restart
+  // required because the adapter is selected at boot).
+  aiTierOverride: HardwareTier | null;
 }
 
 // ── AI subsystem (v0.2.0+) ───────────────────────────────────────────

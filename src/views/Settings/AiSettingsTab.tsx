@@ -24,6 +24,8 @@ import {
   Clipboard,
   Download,
   Layers,
+  Timer,
+  Zap,
 } from "lucide-react";
 import {
   aiClient,
@@ -521,6 +523,73 @@ export function AiSettingsTab() {
         value={settings.aiHeavyOnlyOnAc}
         onChange={(v) => void updateSettings({ ...settings, aiHeavyOnlyOnAc: v })}
       />
+
+      {/*
+        v0.5.21 — Performance subsection. Two new controls land
+        here: idle reaper threshold (live, takes effect within 60s)
+        and hardware tier override (requires restart). Anything
+        more advanced (model swap UI with download progress) is
+        v0.5.22 scope.
+      */}
+      <div
+        style={{
+          paddingTop: 24,
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          marginTop: 8,
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>
+          Performance
+        </div>
+
+        <DropdownRow
+          icon={<Timer size={14} />}
+          label="Unload LLM after"
+          description="Free RAM by unloading the model after this idle period. Next Ask Recall pays a 5–10s cold reload cost. Takes effect within ~60 seconds — no restart."
+          value={String(settings.aiLlmIdleMinutes)}
+          onChange={(value) => {
+            const minutes = Number.parseInt(value, 10);
+            if (Number.isNaN(minutes)) return;
+            void updateSettings({ ...settings, aiLlmIdleMinutes: minutes });
+          }}
+          options={[
+            { value: "1", label: "1 minute" },
+            { value: "5", label: "5 minutes" },
+            { value: "15", label: "15 minutes" },
+            { value: "30", label: "30 minutes" },
+            { value: "60", label: "1 hour" },
+            { value: "0", label: "Never (keep loaded)" },
+          ]}
+        />
+
+        <DropdownRow
+          icon={<Zap size={14} />}
+          label="Hardware tier"
+          description={
+            status
+              ? `Auto-detected as ${tierLabel(status.hardware.tier)}. Override to force a specific model size — restart required to apply.`
+              : "Override the auto-detected tier to force a specific model size. Restart required to apply."
+          }
+          value={settings.aiTierOverride ?? "auto"}
+          onChange={(value) => {
+            const override =
+              value === "auto" ? null : (value as "a" | "b" | "c");
+            void updateSettings({ ...settings, aiTierOverride: override });
+          }}
+          options={[
+            {
+              value: "auto",
+              label: status
+                ? `Auto (${tierLabel(status.hardware.tier)})`
+                : "Auto",
+            },
+            { value: "a", label: "Tier A — 1.5B model (~1 GB)" },
+            { value: "b", label: "Tier B — 3B model (~2 GB)" },
+            { value: "c", label: "Tier C — 7B model (~4 GB)" },
+          ]}
+        />
+      </div>
 
       <div
         style={{
@@ -1062,6 +1131,84 @@ function ReadoutRow({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+/// v0.5.21: row with a label + description on the left and a
+/// `<select>` dropdown on the right. Same layout language as
+/// `Toggle` / `ReadoutRow` so the new Performance subsection
+/// doesn't visually drift from the rest of the tab.
+function DropdownRow({
+  icon,
+  label,
+  description,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  description: string;
+  value: string;
+  onChange: (next: string) => void;
+  options: Array<{ value: string; label: string }>;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+        padding: "16px 0",
+        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            color: "var(--text-primary)",
+            marginBottom: 2,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ color: "var(--blue)" }}>{icon}</span>
+          {label}
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>
+          {description}
+        </div>
+      </div>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        style={{
+          flexShrink: 0,
+          minWidth: 180,
+          padding: "8px 10px",
+          borderRadius: 8,
+          background: "var(--panel)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          color: "var(--text-primary)",
+          fontSize: 13,
+          cursor: disabled ? "not-allowed" : "pointer",
+        }}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

@@ -332,7 +332,25 @@ fn start_ai_scheduler(
     // always install one so commands can answer "is the model
     // ready / which one would I get?" — actual download + load
     // is opt-in via the AI Settings tab.
-    let llm_entry = llm_registry::entry_for_tier(hardware.tier);
+    //
+    // v0.5.21: tier override. The user can pin a specific tier
+    // from the AI Settings tab (e.g. force the 1.5B model on a
+    // 32 GB machine to keep idle RAM lower, or force the 7B on
+    // a marginal-tier-A machine if they're willing to swap).
+    // The override is read at boot and used to pick the LLM
+    // entry; switching it requires a restart because reloading
+    // the adapter live would mean unloading the in-flight model
+    // mid-call. The Settings UI is explicit about the restart.
+    let effective_tier = settings.ai_tier_override.unwrap_or(hardware.tier);
+    if let Some(override_tier) = settings.ai_tier_override {
+        eprintln!(
+            "[recall][ai] tier override active: detected={} override={} effective={}",
+            hardware.tier.label(),
+            override_tier.label(),
+            effective_tier.label()
+        );
+    }
+    let llm_entry = llm_registry::entry_for_tier(effective_tier);
     // v0.5.0: boxed() now returns AppResult because llama.cpp's
     // backend init can fail on unsupported CPUs. We log + skip
     // installation rather than panic — the rest of the AI subsystem
@@ -344,16 +362,21 @@ fn start_ai_scheduler(
             // resident once loaded; for users who run a turn or
             // two and walk away, that's a lot of RAM sitting idle.
             // Background tick checks every 60s — if `last_used_at`
-            // is more than IDLE_THRESHOLD_SECS old AND the model
-            // is still loaded, call unload(). Next ask_recall pays
-            // the ~5-10s cold reload cost which is acceptable for
-            // a fresh question.
+            // is more than the configured threshold old AND the
+            // model is still loaded, call unload(). Next ask_recall
+            // pays the ~5-10s cold reload cost which is acceptable
+            // for a fresh question.
             //
-            // Hardcoded threshold for v0.5.13; v0.5.14+ surfaces
-            // it in Settings (1/5/15/never).
-            const IDLE_THRESHOLD_SECS: u64 = 5 * 60;
+            // v0.5.21: threshold is now configurable via
+            // `settings.ai_llm_idle_minutes` (1 / 5 / 15 / 30 / 60
+            // minutes, or `0` = never unload). Read per-tick so
+            // changes from the Settings tab take effect within
+            // ~60 seconds without a restart. `0` skips the unload
+            // check entirely so users who want the model resident
+            // permanently get exactly that.
             const TICK_SECS: u64 = 60;
             let reaper_adapter = adapter;
+            let reaper_settings = state.settings_repository.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_secs(TICK_SECS));
@@ -363,6 +386,25 @@ fn start_ai_scheduler(
                 interval.tick().await;
                 loop {
                     interval.tick().await;
+                    // Read the current threshold each tick. Falls
+                    // back to 5 minutes if the settings query fails
+                    // (transient SQLite contention) — same as the
+                    // pre-v0.5.21 hardcoded default.
+                    let threshold_minutes = match reaper_settings.get().await {
+                        Ok(s) => s.ai_llm_idle_minutes,
+                        Err(err) => {
+                            eprintln!(
+                                "[recall][llm-reaper] settings read failed; using 5min default: {err}"
+                            );
+                            5
+                        }
+                    };
+                    if threshold_minutes == 0 {
+                        // "Never unload" — the user has explicitly
+                        // pinned the model resident.
+                        continue;
+                    }
+                    let threshold_secs = (threshold_minutes as u64).saturating_mul(60);
                     let Some(last) = reaper_adapter.last_used_at().await else {
                         // Either unloaded or never used; nothing to do.
                         continue;
@@ -371,9 +413,9 @@ fn start_ai_scheduler(
                         .duration_since(last)
                         .unwrap_or_default()
                         .as_secs();
-                    if idle >= IDLE_THRESHOLD_SECS {
+                    if idle >= threshold_secs {
                         eprintln!(
-                            "[recall][llm-reaper] model idle for {idle}s (threshold {IDLE_THRESHOLD_SECS}s); unloading"
+                            "[recall][llm-reaper] model idle for {idle}s (threshold {threshold_secs}s); unloading"
                         );
                         if let Err(err) = reaper_adapter.unload().await {
                             eprintln!("[recall][llm-reaper] unload failed: {err}");

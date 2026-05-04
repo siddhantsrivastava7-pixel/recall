@@ -101,6 +101,23 @@ impl SettingsRepository for SqliteSettingsRepository {
                 "ai_enabled" => settings.ai_enabled = value == "true",
                 "ai_pause_on_battery" => settings.ai_pause_on_battery = value == "true",
                 "ai_heavy_only_on_ac" => settings.ai_heavy_only_on_ac = value == "true",
+                // v0.5.21: parse u32; clamp invalid rows to the
+                // default rather than panicking. `0` is a real
+                // value that means "never unload."
+                "ai_llm_idle_minutes" => {
+                    settings.ai_llm_idle_minutes = value.parse::<u32>().unwrap_or(5)
+                }
+                // v0.5.21: stored as "a" / "b" / "c" or empty for
+                // None. Anything else is treated as None — defensive
+                // against a hand-edited DB.
+                "ai_tier_override" => {
+                    settings.ai_tier_override = match value.as_str() {
+                        "a" => Some(crate::ai::hardware::HardwareTier::A),
+                        "b" => Some(crate::ai::hardware::HardwareTier::B),
+                        "c" => Some(crate::ai::hardware::HardwareTier::C),
+                        _ => None,
+                    };
+                }
                 "ai_v0_5_6_backfill_done" => {
                     settings.ai_v0_5_6_backfill_done = Some(value == "true")
                 }
@@ -207,6 +224,29 @@ impl SettingsRepository for SqliteSettingsRepository {
                 .execute(&mut *transaction)
                 .await?;
         }
+
+        // v0.5.21: idle-reaper threshold (u32 minutes; 0 = never unload).
+        sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+            .bind("ai_llm_idle_minutes")
+            .bind(settings.ai_llm_idle_minutes.to_string())
+            .execute(&mut *transaction)
+            .await?;
+
+        // v0.5.21: hardware tier override. Stored as a single lowercase
+        // letter ("a" / "b" / "c") when set, empty string when None.
+        // Empty roundtrips to None on read, so toggling back to "auto"
+        // doesn't leave a stale row.
+        let tier_value = match settings.ai_tier_override {
+            Some(crate::ai::hardware::HardwareTier::A) => "a",
+            Some(crate::ai::hardware::HardwareTier::B) => "b",
+            Some(crate::ai::hardware::HardwareTier::C) => "c",
+            None => "",
+        };
+        sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+            .bind("ai_tier_override")
+            .bind(tier_value)
+            .execute(&mut *transaction)
+            .await?;
 
         // v0.5.6 / v0.5.7: backfill completion flags. Optional —
         // only written once the corresponding backfill finishes;
