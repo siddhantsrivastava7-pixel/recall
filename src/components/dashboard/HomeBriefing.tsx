@@ -20,6 +20,7 @@ import {
 } from "@/domain/formatters";
 import { getDueResurfaceMemories } from "@/services/resurface/memoryResurface";
 import { tauriClient } from "@/services/api/tauri-client";
+import { ProactiveSurface } from "@/components/dashboard/ProactiveSurface";
 import type { MainView } from "@/windows/MainWindow";
 
 interface HomeBriefingProps {
@@ -110,6 +111,17 @@ export function HomeBriefing({ setView }: HomeBriefingProps) {
           </div>
         </div>
       </div>
+
+      {/*
+        v0.5.25 — Proactive surface slot. Sits above the Daily
+        recap card so the Weekly recap (or Forgotten gold) is the
+        first thing the user sees on Monday morning of a new week.
+        Renders ONE card at most, or nothing. Lives inside
+        HomeBriefing because that's the actual Home component
+        rendered from MainWindow — v0.5.23 mistakenly attached it
+        to the unused Dashboard.tsx.
+      */}
+      <ProactiveSurface setView={setView} />
 
       {/* Today's transcript summary — inline preview of the daily memory */}
       {todayDailyTranscript ? (
