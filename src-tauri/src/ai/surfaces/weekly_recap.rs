@@ -210,9 +210,13 @@ fn compose_weekly_body(
     let mut sections: Vec<String> = vec![summary];
 
     // Order matches Daily recap's section order so users see the
-    // same layout language. We intentionally inline a small bullet
-    // list per section (up to 8 items) — beyond that, the body
-    // becomes unreadable and the LLM context overflows.
+    // same layout language. v0.5.27: switched bullet builder to
+    // `filter_map` because some memories don't have a useful
+    // bullet line (e.g. a screenshot whose OCR hasn't completed —
+    // its body is just placeholder text). The section header
+    // always reflects the FULL count from `items.len()`, even
+    // when individual bullets get dropped — counts stay
+    // accurate, only the per-bullet noise gets filtered.
     for label in ["Screenshots", "Bookmarks", "From iPhone", "Saved notes"] {
         let Some(items) = by_section.get(label) else {
             continue;
@@ -220,19 +224,30 @@ fn compose_weekly_body(
         if items.is_empty() {
             continue;
         }
+        let total_count = items.len();
         let lines: Vec<String> = items
             .iter()
-            .take(8)
-            .map(|m| format_memory_bullet(m))
+            .filter_map(|m| format_memory_bullet(m))
+            .take(6)
             .collect();
-        let more = if items.len() > 8 {
-            format!("\n- … and {} more", items.len() - 8)
+        let shown = lines.len();
+        let more = if total_count > shown {
+            format!("\n- … and {} more", total_count - shown)
         } else {
             String::new()
         };
+        // Skip the section entirely if every item filtered out
+        // (e.g. all screenshots pre-OCR) AND the section
+        // wouldn't otherwise add information beyond the count
+        // line in Summary.
+        if shown == 0 {
+            sections.push(format!(
+                "{label} ({total_count})\n- (details pending — OCR or enrichment still running)"
+            ));
+            continue;
+        }
         sections.push(format!(
-            "{label} ({})\n{}{}",
-            items.len(),
+            "{label} ({total_count})\n{}{}",
             lines.join("\n"),
             more
         ));
@@ -265,10 +280,20 @@ fn section_for_memory(memory: &Memory) -> &'static str {
     }
 }
 
-/// Render a single bullet for the per-section list. Title +
-/// short preview; mirrors Daily recap's `format_other_memory_line`
-/// but trimmed for the weekly view (less detail per item).
-fn format_memory_bullet(memory: &Memory) -> String {
+/// Render a single bullet for the per-section list. Returns None
+/// when the memory has nothing useful to show in a recap context
+/// (most commonly: a screenshot whose OCR hasn't completed yet,
+/// whose preview text is just placeholder boilerplate). The
+/// section header keeps the FULL count even when bullets get
+/// dropped — accuracy over completeness.
+///
+/// v0.5.27 polish:
+///   * Screenshots: prefer OCR text over the placeholder body;
+///     skip entirely if OCR isn't `done` yet.
+///   * Title/preview dedup: when the preview is essentially the
+///     title with truncation noise, skip the preview half so the
+///     bullet doesn't show "Foo bar baz" — "Foo bar baz…".
+fn format_memory_bullet(memory: &Memory) -> Option<String> {
     let title = memory
         .title
         .as_deref()
@@ -281,22 +306,80 @@ fn format_memory_bullet(memory: &Memory) -> String {
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
         })
-        .unwrap_or("Untitled");
+        .unwrap_or("Untitled")
+        .to_string();
     let date = DateTime::parse_from_rfc3339(&memory.created_at)
         .map(|dt| dt.with_timezone(&Local).format("%a").to_string())
         .unwrap_or_else(|_| "—".to_string());
-    let preview = memory
-        .summary_text
-        .as_deref()
-        .or(memory.preview_text.as_deref())
-        .map(|s| s.trim())
-        .unwrap_or("");
-    let preview = truncate_chars(preview, 90);
-    if preview.is_empty() {
-        format!("- {date} · \"{title}\"")
+
+    let is_screenshot = memory.source_app.as_deref() == Some("screenshot");
+    let raw_preview = if is_screenshot {
+        // Pre-OCR screenshots: skip from the bullet list. Their
+        // preview is just `Screenshot from clipboard (W×H). OCR
+        // will fill in the text once it runs.` — pure noise in
+        // a recap. They still count toward the section total.
+        let ocr_done = memory.ocr_status.as_deref() == Some("done");
+        if !ocr_done {
+            return None;
+        }
+        memory
+            .ocr_text
+            .as_deref()
+            .or(memory.summary_text.as_deref())
+            .or(memory.preview_text.as_deref())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
     } else {
-        format!("- {date} · \"{title}\" — {preview}")
+        memory
+            .summary_text
+            .as_deref()
+            .or(memory.preview_text.as_deref())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+
+    let preview = truncate_chars(&raw_preview, 110);
+    let preview = if is_redundant_with_title(&title, &preview) {
+        String::new()
+    } else {
+        preview
+    };
+
+    if preview.is_empty() {
+        Some(format!("- {date} · \"{title}\""))
+    } else {
+        Some(format!("- {date} · \"{title}\" — {preview}"))
     }
+}
+
+/// True when the preview text is essentially the same as the
+/// title — i.e. one is a prefix of the other (modulo truncation
+/// ellipses). Skips the preview side of the bullet so the user
+/// doesn't see "Foo bar" — "Foo bar…" twice on the same line.
+/// Comparison is case-sensitive (titles are typically already
+/// case-normalized) and ignores trailing ellipses on either side.
+fn is_redundant_with_title(title: &str, preview: &str) -> bool {
+    if preview.is_empty() {
+        return false;
+    }
+    let t = title.trim().trim_end_matches('…').trim_end_matches("...");
+    let p = preview.trim().trim_end_matches('…').trim_end_matches("...");
+    if t.is_empty() || p.is_empty() {
+        return false;
+    }
+    if t == p {
+        return true;
+    }
+    // Either side a prefix of the other (handles
+    // "Foo bar baz quux" title vs "Foo bar baz qu…" preview).
+    let shorter_len = t.len().min(p.len());
+    if shorter_len < 20 {
+        // For short titles, exact match only — avoids dropping
+        // a real preview just because it shares a prefix with a
+        // 12-char title.
+        return false;
+    }
+    t.starts_with(p) || p.starts_with(t)
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
