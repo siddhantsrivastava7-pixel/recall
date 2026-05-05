@@ -142,45 +142,52 @@ function pickVariant(status: AiStatusPayload): Variant | null {
     };
   }
 
-  const queue = status.queue;
+  // SchedulerStatus is split per-kind (OCR vs embed). Today we
+  // collapse them for the pill — the user just wants to know
+  // "is the AI worker stuck?" not which kind. Sum the counts;
+  // labels still emphasize OCR because that's the dominant case
+  // (every screenshot enqueues OCR; embeds are throttled separately).
+  const totalQueued = status.queue.ocrQueued + status.queue.embedQueued;
+  const totalRunning = status.queue.ocrRunning + status.queue.embedRunning;
+  const totalFailed = status.queue.ocrFailed + status.queue.embedFailed;
 
   // 3. Failed jobs at max retries. Users care about this because
   // the data is broken — failed memories never get OCR'd unless
   // someone clicks rebuild.
-  if (queue.failed > 0) {
+  if (totalFailed > 0) {
     return {
       background: "rgba(245, 158, 11, 0.08)",
       borderColor: "rgba(245, 158, 11, 0.25)",
       textColor: "rgba(245, 158, 11, 0.95)",
       icon: <AlertCircle size={11} strokeWidth={2} />,
-      label: `${queue.failed} OCR job${queue.failed === 1 ? "" : "s"} failed — open Settings`,
+      label: `${totalFailed} AI job${totalFailed === 1 ? "" : "s"} failed — open Settings`,
     };
   }
 
   // 4. Active processing. Neutral — just informational.
-  if (queue.running > 0) {
+  if (totalRunning > 0) {
     return {
       background: "rgba(99, 102, 241, 0.08)",
       borderColor: "rgba(99, 102, 241, 0.25)",
       textColor: "rgba(99, 102, 241, 0.95)",
       icon: <Loader2 size={11} strokeWidth={2} className="spin" />,
       label:
-        queue.queued > 0
-          ? `Processing ${queue.running} · ${queue.queued} queued`
-          : `Processing ${queue.running} capture${queue.running === 1 ? "" : "s"}…`,
+        totalQueued > 0
+          ? `Processing ${totalRunning} · ${totalQueued} queued`
+          : `Processing ${totalRunning} capture${totalRunning === 1 ? "" : "s"}…`,
     };
   }
 
   // 5. Queue has work but worker isn't claiming. Could be a gate
   // (battery / pause-on-battery / heavy-only-on-AC / low-battery)
   // or a stuck worker. Either way the user wants to know.
-  if (queue.queued > 0) {
+  if (totalQueued > 0) {
     return {
       background: "rgba(245, 158, 11, 0.08)",
       borderColor: "rgba(245, 158, 11, 0.25)",
       textColor: "rgba(245, 158, 11, 0.95)",
       icon: <Pause size={11} strokeWidth={2} />,
-      label: `${queue.queued} capture${queue.queued === 1 ? "" : "s"} waiting — paused?`,
+      label: `${totalQueued} capture${totalQueued === 1 ? "" : "s"} waiting — paused?`,
     };
   }
 
