@@ -321,6 +321,29 @@ impl CaptureService {
             _ => return,
         }
 
+        // v0.5.31: pre-flight check — only enqueue when the memory
+        // points at a readable image. The OCR worker reads bytes
+        // via `tokio::fs::read(memory.url)`; without a `file://`
+        // url there's nothing to recognize. Without this gate, a
+        // legacy screenshot row (created before the url field was
+        // wired, or one whose url got cleared by retention GC)
+        // gets enqueued, retried 3×, and dead-letters with the
+        // "Memory does not carry an image path" error. The bulk
+        // rebuild already filters `m.url IS NOT NULL`; this gate
+        // closes the same door on the per-memory path.
+        let has_readable_image = memory
+            .url
+            .as_deref()
+            .map(|u| u.starts_with("file://"))
+            .unwrap_or(false);
+        if !has_readable_image {
+            eprintln!(
+                "[recall][capture] OCR enqueue skipped for {} — no readable image path",
+                memory.id
+            );
+            return;
+        }
+
         let memory_id = memory.id.clone();
         let scheduler = scheduler.clone();
         // Fire-and-forget: the enqueue is a single SQL INSERT OR IGNORE,

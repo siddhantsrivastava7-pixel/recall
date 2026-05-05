@@ -27,9 +27,10 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Loader2, Pause, X } from "lucide-react";
+import { AlertCircle, ArrowRight, Loader2, Pause, X } from "lucide-react";
 
 import { aiClient, type AiFailedJob } from "@/services/ai/AiClient";
+import { useMemoryStore } from "@/stores/memoryStore";
 import type { AiStatusPayload } from "@/domain/types";
 import type { MainView } from "@/windows/MainWindow";
 
@@ -41,6 +42,7 @@ const POLL_INTERVAL_MS = 5000;
 
 export function AiActivityPill({ setView }: AiActivityPillProps) {
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
+  const selectMemory = useMemoryStore((state) => state.selectMemory);
   // v0.5.29: when the failed-jobs modal opens, we fetch the most
   // recent failures and render their `lastError` strings inline so
   // the user can see the actual cause (file missing / unsupported
@@ -106,6 +108,19 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
   const handleCloseModal = useCallback(() => {
     setShowFailures(false);
   }, []);
+
+  // v0.5.31: clicking a failure row jumps to the affected
+  // memory's detail view. Lets the user see what the orphan
+  // actually is (legacy capture, manual test row, etc.) before
+  // deciding to clear it.
+  const handleViewMemory = useCallback(
+    (memoryId: string) => {
+      selectMemory(memoryId);
+      setView("memories");
+      setShowFailures(false);
+    },
+    [selectMemory, setView],
+  );
 
   const handleClearFailed = useCallback(async () => {
     if (clearing) return;
@@ -260,7 +275,11 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {failures.map((failure) => (
-                  <FailureRow key={failure.id} failure={failure} />
+                  <FailureRow
+                    key={failure.id}
+                    failure={failure}
+                    onViewMemory={handleViewMemory}
+                  />
                 ))}
               </div>
             )}
@@ -323,7 +342,13 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
   );
 }
 
-function FailureRow({ failure }: { failure: AiFailedJob }) {
+function FailureRow({
+  failure,
+  onViewMemory,
+}: {
+  failure: AiFailedJob;
+  onViewMemory: (memoryId: string) => void;
+}) {
   // Parse memory_id out of the dedupe_key for OCR jobs so we can
   // hint at which capture failed. dedupe_key shape:
   // `ocr:<memory_id>:<engine>` → split on `:` and take index 1.
@@ -383,10 +408,39 @@ function FailureRow({ failure }: { failure: AiFailedJob }) {
           wordBreak: "break-word",
           userSelect: "text",
           WebkitUserSelect: "text",
+          marginBottom: memoryId ? 8 : 0,
         }}
       >
         {failure.lastError ?? "(no error message recorded)"}
       </div>
+      {/*
+        v0.5.31: link to the memory whose OCR job failed. Critical
+        for diagnosing what KIND of orphan we're dealing with — a
+        legacy capture, a manual test row, or something else
+        entirely. Click closes the modal and navigates to detail.
+      */}
+      {memoryId ? (
+        <button
+          type="button"
+          onClick={() => onViewMemory(memoryId)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "5px 10px",
+            borderRadius: 8,
+            background: "transparent",
+            border: "1px solid rgba(255,255,255,0.10)",
+            color: "var(--t-2)",
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+          title="Open this memory to see what kind of orphan it is"
+        >
+          View memory
+          <ArrowRight size={11} strokeWidth={1.9} />
+        </button>
+      ) : null}
     </div>
   );
 }
