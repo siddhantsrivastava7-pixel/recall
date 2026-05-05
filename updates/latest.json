@@ -1,15 +1,15 @@
 {
-  "version": "0.5.28",
-  "notes": "Release v0.5.28",
-  "pub_date": "2026-05-05T08:26:59Z",
+  "version": "0.5.29",
+  "notes": "Release v0.5.29",
+  "pub_date": "2026-05-05T10:03:01Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyejZXYk8vcDVzVlNZeEYvaUR3WXF4eGdzOVo1ZTV5OTczVmJqcGZWWGRMTTRTeXZwMVJodlE3OEtPMklaTzUweFNkN0dkVzU5bU82SkxaV2ZHRDl2R0E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3OTY5NTk4CWZpbGU6UmVjYWxsXzAuNS4yOF94NjRfZW4tVVMubXNpCjNvZXBYZkNpVCt0cU50aTZkTG1ySGY2UC9NYnY3NnViRFkrU2w4clRSczVhV1lUVm1WdE5UMGhhQ0VTYnFWck9PR2JHSmVKcTZDTkNyaXM3ZXRWRENRPT0K",
-      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.5.28/Recall_0.5.28_x64_en-US.msi"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyejdEMm04NEptbkdXR1dieFFWVHh2T1dXVS9EY3FpMGo5WUpYRFkwWWNzWnBLT0JVK3VPVDdkMEZVR2dwVkdjaUZROVE1UDZvQ1F3T3ZFLzIzbXU1OXcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3OTc1MzY1CWZpbGU6UmVjYWxsXzAuNS4yOV94NjRfZW4tVVMubXNpCnRYM0RzNDJWd0ZWK01qR3NuNmM3cVFEaURvVXRVS3gycHZ5QWM4WFlUem9uVnQzaXRrT2lNNDJNNnhkSlpEWHp0eVBNZTVBb0ZqaVZpcjVaNnB5VUF3PT0K",
+      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.5.29/Recall_0.5.29_x64_en-US.msi"
     },
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyejVXem9NM0MrM204d1U2MjlISEF3RmNDVTRYbTEwclBhcGhsSkhKbmdCTTg4VGk5SGRZQVk2OUIwNVQ2cm90aTNocElvL0dMY2FpN3JqZ3ZzYUJUM0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3OTY5MDIxCWZpbGU6UmVjYWxsLmFwcC50YXIuZ3oKZTVHMHJTU3N1WFdYZzcyaEZGcXd5WWlscWZuSDByQzQyaUEvQTJXK01FZXIxYmxNbENOVThnTlhEOEk5SGNzWlV2U3FsTEFheUNReG5YQkQ5ZFJJRGc9PQo=",
-      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.5.28/Recall.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTSldtZUIzNVpyenp5K281Z05CTmJTY0RTcU5LSWJ6L1NIVzI4TTJDc2dYNklFVklsN1lhc1cxRVdNTi9TZWg1VzU0STgxWThGN2FyNHcvVEQ2RWp0RFpUVjN2b0QvU3dFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3OTc0OTc3CWZpbGU6UmVjYWxsLmFwcC50YXIuZ3oKcHFlc0I2SERFbC85a1lRT1pFSXdaRHQ4VTRJUFFSRlpqNElHQ2lRK0VoQTRoVlAvVWx3clI1ZUF0b3pKcmdaNHUvMjJkekFZZ0NSbXVSbGN6Qm9DQWc9PQo=",
+      "url": "https://github.com/siddhantsrivastava7-pixel/recall/releases/download/v0.5.29/Recall.app.tar.gz"
     }
   }
 }
