@@ -318,18 +318,6 @@ async fn process_ocr(
         )
         .await?;
 
-    if is_self_capture {
-        eprintln!(
-            "[recall][ai-scheduler] skipping self-capture screenshot {} (matches Recall UI markers)",
-            payload.memory_id
-        );
-        let _ = app.emit(
-            "recall://memory-ocr-updated",
-            serde_json::json!({ "memoryId": payload.memory_id }),
-        );
-        return Ok(());
-    }
-
     // v0.2.3: promote the OCR text to be the memory's primary content.
     // Once we have searchable text, the placeholder body
     // ("Screenshot from clipboard (...). OCR will fill in the text once
@@ -338,6 +326,20 @@ async fn process_ocr(
     // feel like text memories that happen to have an image attached.
     // The repository method preserves user edits (only matches the
     // exact placeholder pattern).
+    //
+    // v0.5.33: self-captures (screenshots of Recall's own UI) used to
+    // RETURN early here without promoting, on the theory that we
+    // shouldn't surface Recall's chrome as memory content. The side
+    // effect was much worse than the original concern — those memories
+    // showed "OCR will fill in the text once it runs." in the timeline
+    // and daily recap forever, even though OCR had already run hours
+    // earlier. Users couldn't tell whether OCR was broken or whether
+    // the screenshot was just being weird. The retrieval-skip story is
+    // keyed off `ocr_engine = "<engine>+self-capture"` (set above) so
+    // search and Ask Recall already exclude self-captures regardless
+    // of what's in `content`. Promoting the OCR text into `content`
+    // and `title` is purely a display concern — it makes the timeline
+    // read naturally without changing what surfaces in retrieval.
     if let Some(text) = ocr_text.as_deref() {
         let derived_title = derive_screenshot_title(text);
         if let Err(error) = memory_repo
@@ -358,14 +360,28 @@ async fn process_ocr(
         // skips placeholder content), so this is the moment the
         // screenshot becomes embeddable. Hash-aware replace means
         // we never re-embed unchanged chunks if OCR re-runs later.
-        if let Err(error) =
-            chunk_and_enqueue_embeds(inner, memory_repo, &payload.memory_id, text).await
-        {
-            eprintln!(
-                "[recall][ai-scheduler] post-OCR chunk-embed failed for {}: {error}",
-                payload.memory_id
-            );
+        //
+        // v0.5.33: self-captures still SKIP the embed enqueue. The
+        // engine sentinel handles retrieval-time exclusion already,
+        // but skipping embed at write-time means we don't waste
+        // CPU/RAM building vectors that retrieval will never use.
+        if !is_self_capture {
+            if let Err(error) =
+                chunk_and_enqueue_embeds(inner, memory_repo, &payload.memory_id, text).await
+            {
+                eprintln!(
+                    "[recall][ai-scheduler] post-OCR chunk-embed failed for {}: {error}",
+                    payload.memory_id
+                );
+            }
         }
+    }
+
+    if is_self_capture {
+        eprintln!(
+            "[recall][ai-scheduler] self-capture screenshot {} promoted (retrieval still excluded via engine sentinel)",
+            payload.memory_id
+        );
     }
 
     // Notify the UI so any open detail panes refresh their search match

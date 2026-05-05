@@ -123,6 +123,39 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     ensure_column(pool, "memories", "ai_summary", "TEXT").await?;
     ensure_column(pool, "memories", "ai_summary_generated_at", "TEXT").await?;
 
+    // v0.5.33 — backfill: promote OCR text to content/title for
+    // self-capture screenshots that got stuck on the placeholder.
+    //
+    // Pre-v0.5.33, the OCR worker recognized screenshots of Recall's
+    // own UI as self-captures and exited early without calling
+    // `promote_ocr_to_content`. Result: ocr_status = 'done' but
+    // content still reads "Screenshot from clipboard (W×H). OCR
+    // will fill in the text once it runs." — visible in the
+    // timeline, daily recap, and detail view as if OCR had failed.
+    //
+    // The retrieval-skip these self-captures need is keyed off
+    // `ocr_engine = "<engine>+self-capture"`, so promoting content
+    // doesn't pollute search results. v0.5.33 removed the early
+    // return; this migration cleans up rows that already got stuck.
+    //
+    // Idempotent — the LIKE filter only matches the literal
+    // placeholder, so re-running this migration is a no-op once
+    // promotion has happened.
+    sqlx::query(
+        r#"
+        UPDATE memories
+        SET content = ocr_text,
+            title = substr(replace(ocr_text, char(13), ''), 1, 96)
+        WHERE source_app = 'screenshot'
+          AND ocr_status = 'done'
+          AND ocr_text IS NOT NULL
+          AND trim(ocr_text) != ''
+          AND content LIKE 'Screenshot from clipboard%OCR will fill in the text once it runs.'
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // v0.5.23 — proactive surfaces table. Each row is one card
     // shown at the top of Home: forgotten gold, weekly recap, etc.
     // The selection logic in `ai/surfaces/engine.rs` picks one
