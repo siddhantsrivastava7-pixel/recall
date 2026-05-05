@@ -21,6 +21,7 @@ import {
 import { getDueResurfaceMemories } from "@/services/resurface/memoryResurface";
 import { tauriClient } from "@/services/api/tauri-client";
 import { ProactiveSurface } from "@/components/dashboard/ProactiveSurface";
+import { AiActivityPill } from "@/components/dashboard/AiActivityPill";
 import type { MainView } from "@/windows/MainWindow";
 
 interface HomeBriefingProps {
@@ -69,6 +70,13 @@ export function HomeBriefing({ setView }: HomeBriefingProps) {
         <div className="page-eyebrow">{greeting.eyebrow}</div>
         <h1 className="page-title">{greeting.title}</h1>
         <p className="page-sub">{greeting.sub}</p>
+        {/*
+          v0.5.28 — AI activity pill. Hidden when AI is happy and
+          idle; surfaces only when there's something the user
+          should know about (queue paused, jobs failing, OCR
+          unavailable, AI master off). Click jumps to AI Settings.
+        */}
+        <AiActivityPill setView={setView} />
       </div>
 
       <div className="qs-row">
