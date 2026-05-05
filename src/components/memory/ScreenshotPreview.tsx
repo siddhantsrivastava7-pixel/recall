@@ -14,13 +14,20 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMemo } from "react";
-import { AlertTriangle, CheckCircle, Clock3, Eye } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle, Clock3, Eye } from "lucide-react";
 import type { Memory } from "@/domain/types";
 
 const SCREENSHOT_SOURCE = "screenshot";
 
+/// True for any memory that originated as a screenshot — whether or
+/// not the backing image file is still on disk. Pre-v0.5.32 this
+/// also required a non-null `url`, which meant a purged screenshot
+/// (60+ days old, file deleted by retention GC) silently dropped its
+/// preview section entirely. Now the section ALWAYS renders for
+/// screenshot memories; the component itself decides whether to show
+/// the image, the OCR-only state, or a "purged" placeholder.
 export function isScreenshotMemory(memory: Memory): boolean {
-  return memory.sourceApp === SCREENSHOT_SOURCE && Boolean(memory.url);
+  return memory.sourceApp === SCREENSHOT_SOURCE;
 }
 
 function fileUrlToPath(url: string): string | null {
@@ -46,8 +53,68 @@ export function ScreenshotPreview({ memory }: { memory: Memory }) {
     }
   }, [memory.url]);
 
+  // v0.5.32 — purged-image placeholder. When `url` is null on a
+  // screenshot memory, the file has been removed (retention GC) but
+  // the OCR text + content + title are still on the row. Show an
+  // explicit panel saying so, instead of silently rendering nothing,
+  // so the user understands the body below IS the screenshot's
+  // content (extracted text), not a corrupted record.
   if (!src) {
-    return null;
+    const hasOcrText = Boolean(memory.ocrText && memory.ocrText.trim().length > 0);
+    return (
+      <div style={{ marginBottom: 22 }}>
+        <div
+          style={{
+            borderRadius: 12,
+            border: "1px dashed rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.02)",
+            padding: "18px 20px",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 14,
+          }}
+        >
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 8,
+              background: "rgba(255,255,255,0.04)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--t-3)",
+              flexShrink: 0,
+            }}
+          >
+            <Archive size={18} strokeWidth={1.7} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--text-primary)",
+                marginBottom: 4,
+              }}
+            >
+              Original screenshot was archived
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--t-3)",
+                lineHeight: 1.5,
+              }}
+            >
+              {hasOcrText
+                ? "The image file was removed by retention to save disk space, but the recognized text is preserved below — fully searchable. Disable retention in Settings → AI to keep image previews longer."
+                : "The image file was removed by retention to save disk space, and OCR didn't capture any recognized text. The memory is still in your library. Disable retention in Settings → AI to keep image previews longer."}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

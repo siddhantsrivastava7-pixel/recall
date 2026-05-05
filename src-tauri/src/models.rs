@@ -295,6 +295,16 @@ pub struct AppSettings {
     /// without batteries).
     #[serde(default = "default_ai_pause_below_battery_pct")]
     pub ai_pause_below_battery_pct: u32,
+    /// v0.5.32: days a screenshot file lives on disk before the
+    /// retention GC purges it. Memory rows + OCR text + content
+    /// stay forever — only `memory.url` is cleared so the detail
+    /// view stops trying to render a missing image. Default 60
+    /// matches the v0.2.3-v0.5.31 hardcoded behavior. `0` =
+    /// disabled (never purge), for power users who value image
+    /// previews over disk space. Read by the GC loop on each
+    /// pass — changes apply on the next 24-hour cycle.
+    #[serde(default = "default_ai_screenshot_retention_days")]
+    pub ai_screenshot_retention_days: u32,
     /// v0.5.6: one-shot backfill that re-runs the auto-tagger
     /// (with URL/UUID guards) and the new entity extractor against
     /// every memory. `None` on first launch of v0.5.6 (triggers
@@ -338,6 +348,7 @@ impl Default for AppSettings {
             ai_llm_idle_minutes: default_ai_llm_idle_minutes(),
             ai_tier_override: None,
             ai_pause_below_battery_pct: default_ai_pause_below_battery_pct(),
+            ai_screenshot_retention_days: default_ai_screenshot_retention_days(),
             ai_v0_5_6_backfill_done: None,
             ai_v0_5_7_backfill_done: None,
         }
@@ -356,6 +367,14 @@ fn default_ai_llm_idle_minutes() -> u32 {
 /// matches the threshold most OS "low battery" warnings fire at.
 fn default_ai_pause_below_battery_pct() -> u32 {
     20
+}
+
+/// v0.5.32: serde default for `ai_screenshot_retention_days`. 60
+/// matches the v0.2.3-v0.5.31 hardcoded `RETENTION_DAYS`. Power
+/// users who flip the dropdown to "Never" get the value `0`
+/// stored, which the GC interprets as "skip the pass entirely."
+fn default_ai_screenshot_retention_days() -> u32 {
+    60
 }
 
 /// One chunk row from `memory_chunks`. v0.3.0+. The `embedding_vector`

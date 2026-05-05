@@ -113,6 +113,13 @@ impl SettingsRepository for SqliteSettingsRepository {
                     let parsed = value.parse::<u32>().unwrap_or(20);
                     settings.ai_pause_below_battery_pct = parsed.min(100);
                 }
+                // v0.5.32: screenshot retention window in days.
+                // `0` = never purge. Cap at a sane high bound to
+                // prevent overflow in the cutoff calculation.
+                "ai_screenshot_retention_days" => {
+                    let parsed = value.parse::<u32>().unwrap_or(60);
+                    settings.ai_screenshot_retention_days = parsed.min(36500);
+                }
                 // v0.5.21: stored as "a" / "b" / "c" or empty for
                 // None. Anything else is treated as None — defensive
                 // against a hand-edited DB.
@@ -242,6 +249,13 @@ impl SettingsRepository for SqliteSettingsRepository {
         sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
             .bind("ai_pause_below_battery_pct")
             .bind(settings.ai_pause_below_battery_pct.to_string())
+            .execute(&mut *transaction)
+            .await?;
+
+        // v0.5.32: screenshot retention window in days (u32; 0 = never purge).
+        sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+            .bind("ai_screenshot_retention_days")
+            .bind(settings.ai_screenshot_retention_days.to_string())
             .execute(&mut *transaction)
             .await?;
 

@@ -26,6 +26,7 @@ import {
   Layers,
   Timer,
   Zap,
+  Archive,
 } from "lucide-react";
 import {
   aiClient,
@@ -549,6 +550,34 @@ export function AiSettingsTab() {
           { value: "20", label: "Below 20%" },
           { value: "30", label: "Below 30%" },
           { value: "50", label: "Below 50%" },
+        ]}
+      />
+
+      {/*
+        v0.5.32 — screenshot retention window. Power users who care
+        more about complete memory than disk space flip this to
+        "Never" and keep every screenshot file forever. Memory rows +
+        OCR text are NEVER touched regardless of this setting; only
+        the image files on disk are affected. Default 60 matches the
+        v0.2.3-v0.5.31 hardcoded behavior.
+      */}
+      <DropdownRow
+        icon={<Archive size={14} />}
+        label="Screenshot retention"
+        description="Image files older than this get archived from disk. The OCR text and memory itself are kept forever — only the original image preview goes. Choose Never if you'd rather hold disk than ever lose an image preview."
+        value={String(settings.aiScreenshotRetentionDays)}
+        onChange={(value) => {
+          const days = Number.parseInt(value, 10);
+          if (Number.isNaN(days)) return;
+          void updateSettings({ ...settings, aiScreenshotRetentionDays: days });
+        }}
+        options={[
+          { value: "30", label: "30 days" },
+          { value: "60", label: "60 days (default)" },
+          { value: "90", label: "90 days" },
+          { value: "180", label: "180 days" },
+          { value: "365", label: "1 year" },
+          { value: "0", label: "Never (keep forever)" },
         ]}
       />
 

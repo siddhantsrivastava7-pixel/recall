@@ -149,6 +149,13 @@ export interface AppSettings {
   // level). Has no effect on platforms where battery percent isn't
   // readable (macOS today; desktops without batteries).
   aiPauseBelowBatteryPct: number;
+  // v0.5.32 — screenshot retention window in days. `0` = never purge
+  // (power-user mode — keep every screenshot file forever). Default
+  // 60. The retention GC reads this on each pass; changes apply on
+  // the next 24-hour cycle without restart. Memory rows + OCR text
+  // never get touched regardless of this setting; only the on-disk
+  // image files are affected.
+  aiScreenshotRetentionDays: number;
 }
 
 // ── AI subsystem (v0.2.0+) ───────────────────────────────────────────

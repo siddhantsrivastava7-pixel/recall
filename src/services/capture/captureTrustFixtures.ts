@@ -92,6 +92,8 @@ const settings: AppSettings = {
   aiTierOverride: null,
   // v0.5.22 — low-battery pause threshold (%). 0 = disabled.
   aiPauseBelowBatteryPct: 20,
+  // v0.5.32 — screenshot retention window (days). 0 = never purge.
+  aiScreenshotRetentionDays: 60,
 };
 
 const shortcuts: ShortcutBinding[] = [];

@@ -602,7 +602,17 @@ pub fn run() {
                 // immediately (so a freshly upgraded install processes
                 // any backlog) then sleeps 24h between passes. Best-
                 // effort — IO errors are logged and skipped.
-                start_retention_loop(handle.clone(), managed.memory_repository.clone());
+                //
+                // v0.5.32: window is per-user. Reads
+                // `settings.ai_screenshot_retention_days` each pass
+                // so the AI Settings dropdown applies live; `0`
+                // disables the GC entirely for power users who
+                // value memory completeness over disk usage.
+                start_retention_loop(
+                    handle.clone(),
+                    managed.memory_repository.clone(),
+                    managed.settings_repository.clone(),
+                );
 
                 start_bookmark_sync_loop(handle.clone());
                 start_clipboard_watcher(handle.clone());
