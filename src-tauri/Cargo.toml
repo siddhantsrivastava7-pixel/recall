@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.5.25"
+version = "0.5.26"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"

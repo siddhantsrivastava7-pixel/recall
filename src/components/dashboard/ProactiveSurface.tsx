@@ -34,6 +34,7 @@ export function ProactiveSurface({ setView }: ProactiveSurfaceProps) {
   const [active, setActive] = useState<ActiveProactiveSurface | null>(null);
   const [loaded, setLoaded] = useState(false);
   const selectMemory = useMemoryStore((state) => state.selectMemory);
+  const upsertMemory = useMemoryStore((state) => state.upsertMemory);
 
   // Fetch on mount. The backend caches per day for Forgotten Gold
   // and per week for Weekly recap, so re-fetching on every Home
@@ -45,6 +46,19 @@ export function ProactiveSurface({ setView }: ProactiveSurfaceProps) {
       try {
         const result = await aiClient.getProactiveSurface();
         if (!disposed) {
+          // v0.5.26 fix — push the surface's memory into the
+          // memory store so MemoriesView's `find(id)` lookup
+          // resolves when "Open recap" navigates over. Without
+          // this, the recap memory exists in SQLite but not in
+          // the frontend store — the bookkeeping side-effect of
+          // the engine creating a memory through `repo.create`
+          // (which goes around `capture_service` and its
+          // post-save event) leaves the store unaware. The user
+          // saw "Open recap" → All Memories list with no detail
+          // panel because the memory was found in neither.
+          if (result) {
+            upsertMemory(result.memory);
+          }
           setActive(result ?? null);
           setLoaded(true);
         }
@@ -60,7 +74,7 @@ export function ProactiveSurface({ setView }: ProactiveSurfaceProps) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [upsertMemory]);
 
   const handleOpen = useCallback(() => {
     if (!active) return;
