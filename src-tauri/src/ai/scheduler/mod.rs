@@ -309,6 +309,14 @@ impl AiScheduler {
         self.inner.queue.list_recent_failures(limit).await
     }
 
+    /// v0.5.30: pass-through to the queue's `delete_failed_ocr_rows`.
+    /// Surfaced as a "Clear failed jobs" action so the user can
+    /// dismiss orphan failures (typically screenshots whose
+    /// backing files were purged) without poking the DB.
+    pub async fn clear_failed_ocr(&self) -> AppResult<u64> {
+        self.inner.queue.delete_failed_ocr_rows().await
+    }
+
     /// Stats for the AI status command.
     pub async fn status_snapshot(&self) -> AppResult<SchedulerStatus> {
         let ocr = self.inner.queue.counts_by_kind(WorkKind::Ocr).await?;

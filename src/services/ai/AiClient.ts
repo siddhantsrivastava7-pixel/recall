@@ -30,6 +30,11 @@ export const aiClient = {
   /// 3-5 but a few extras lets the modal page without round-trip.
   recentAiFailures: () => invoke<AiFailedJob[]>("ai_recent_failures"),
 
+  /// v0.5.30: drop every dead-lettered OCR row from the queue.
+  /// Used by the "Clear failed jobs" action in the failure modal.
+  /// Returns the count cleared so the UI can confirm visually.
+  clearFailedOcr: () => invoke<number>("ai_clear_failed_ocr"),
+
   /// Master toggle. Persists `aiEnabled` in `app_settings` and flips the
   /// scheduler atomic so workers wake/sleep accordingly.
   setEnabled: (enabled: boolean) =>

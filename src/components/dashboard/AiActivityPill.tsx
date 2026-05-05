@@ -48,6 +48,10 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
   const [showFailures, setShowFailures] = useState(false);
   const [failures, setFailures] = useState<AiFailedJob[]>([]);
   const [failuresLoading, setFailuresLoading] = useState(false);
+  // v0.5.30: clear-failed-jobs action state. We track in-flight
+  // separately so the button can disable itself + show a "Clearing…"
+  // label without disabling the rest of the modal.
+  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -102,6 +106,27 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
   const handleCloseModal = useCallback(() => {
     setShowFailures(false);
   }, []);
+
+  const handleClearFailed = useCallback(async () => {
+    if (clearing) return;
+    setClearing(true);
+    try {
+      await aiClient.clearFailedOcr();
+      // Refresh both views: the modal list (now empty) and the
+      // pill itself (so the count drops to 0 immediately, which
+      // hides the pill on the happy-idle path).
+      setFailures([]);
+      const fresh = await aiClient.status();
+      setStatus(fresh);
+      // Auto-close the modal when the queue is now clean — the
+      // user just acted on it; no point staring at an empty list.
+      setShowFailures(false);
+    } catch (error) {
+      console.error("[recall] clear failed jobs failed:", error);
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing]);
 
   if (!status) return null;
 
@@ -243,15 +268,53 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
             <div
               style={{
                 marginTop: 18,
-                fontSize: 12,
-                color: "var(--t-3)",
-                lineHeight: 1.5,
+                display: "flex",
+                gap: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
               }}
             >
-              Tip: clicking <strong>Run OCR rebuild</strong> in
-              Settings → AI re-enqueues failed memories with their
-              attempt counter reset. Useful when the error was
-              transient (file briefly locked, engine warming up).
+              {/*
+                v0.5.30 — primary action. Clears every dead-lettered
+                OCR row from the queue. The most common cause is
+                orphan screenshots (memory rows whose backing image
+                file got purged), which can never be re-OCR'd.
+                Clearing the count is the right action; the
+                memories themselves stay and remain searchable.
+              */}
+              <button
+                type="button"
+                onClick={() => void handleClearFailed()}
+                disabled={clearing || failures.length === 0}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 10,
+                  background: "rgba(244, 63, 94, 0.12)",
+                  border: "1px solid rgba(244, 63, 94, 0.30)",
+                  color: "rgba(244, 63, 94, 0.95)",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: clearing ? "not-allowed" : "pointer",
+                  opacity: failures.length === 0 ? 0.55 : 1,
+                }}
+              >
+                {clearing ? "Clearing…" : "Clear failed jobs"}
+              </button>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--t-4)",
+                  lineHeight: 1.5,
+                  flex: 1,
+                  minWidth: 240,
+                }}
+              >
+                Removes failed jobs from the queue. The memories
+                themselves stay — you can still find them in your
+                library. Use Settings → AI →{" "}
+                <strong>Run OCR rebuild</strong> if you want to
+                retry transient failures.
+              </div>
             </div>
           </div>
         </div>

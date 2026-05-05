@@ -110,6 +110,18 @@ pub async fn ai_recent_failures(
     scheduler.recent_failures(10).await
 }
 
+/// v0.5.30: drop every dead-lettered OCR row from the queue.
+/// Surfaced as the "Clear failed jobs" action in the activity
+/// pill's failure modal. Returns the number of rows cleared so
+/// the frontend can confirm the action visually.
+#[tauri::command]
+pub async fn ai_clear_failed_ocr(state: State<'_, AppState>) -> AppResult<u64> {
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+    scheduler.clear_failed_ocr().await
+}
+
 #[tauri::command]
 pub async fn ai_set_enabled(
     enabled: bool,

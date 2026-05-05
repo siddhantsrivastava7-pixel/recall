@@ -9,10 +9,10 @@ mod state;
 
 use commands::{
     ai::{
-        ai_diagnose_clipboard_image, ai_diagnose_llm, ai_download_embedding_model,
-        ai_download_llm, ai_force_scrub, ai_llm_status, ai_recent_failures,
-        ai_set_enabled, ai_set_mode, ai_status, ai_unload_llm, ask_recall,
-        ask_recall_cancel,
+        ai_clear_failed_ocr, ai_diagnose_clipboard_image, ai_diagnose_llm,
+        ai_download_embedding_model, ai_download_llm, ai_force_scrub,
+        ai_llm_status, ai_recent_failures, ai_set_enabled, ai_set_mode,
+        ai_status, ai_unload_llm, ask_recall, ask_recall_cancel,
         ask_recall_delete_session, ask_recall_get_session, ask_recall_list_sessions,
         ask_recall_new_session, ask_recall_rename_session, embed_all_memories,
         find_related, generate_daily_recap_summary, list_entities_for_memory,
@@ -688,6 +688,7 @@ pub fn run() {
             ai_diagnose_llm,
             ai_force_scrub,
             ai_recent_failures,
+            ai_clear_failed_ocr,
             ask_recall,
             ask_recall_cancel,
             ask_recall_new_session,

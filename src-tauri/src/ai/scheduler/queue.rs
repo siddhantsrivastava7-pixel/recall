@@ -307,6 +307,27 @@ impl AiWorkQueue {
         Ok(())
     }
 
+    /// v0.5.30: drop every dead-lettered OCR row from the queue.
+    /// Used by the "Clear failed jobs" action surfaced in the
+    /// activity-pill modal — once the user has seen the failures
+    /// and confirmed they're acceptable to drop (typical case:
+    /// orphan screenshot memories whose backing files were
+    /// purged), this clears the count so the pill stops nagging.
+    /// Returns the number of rows removed.
+    ///
+    /// Only removes `kind = 'ocr'` because that's the only kind
+    /// surfaced to the user today; embed failures are handled
+    /// separately via `reset_failed_embed_chunk_jobs`.
+    pub async fn delete_failed_ocr_rows(&self) -> AppResult<u64> {
+        let result = sqlx::query(
+            "DELETE FROM ai_work_queue \
+             WHERE kind = 'ocr' AND status = 'failed'",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// v0.5.29: read the most recent failed rows for diagnostic
     /// surfacing. Returns rows ordered by `finished_at DESC` so the
     /// freshest failure shows first; capped at `limit` to keep the
