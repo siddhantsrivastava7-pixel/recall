@@ -24,6 +24,12 @@ export const aiClient = {
   /// Read-only snapshot for the AI Settings tab + status badges.
   status: () => invoke<AiStatusPayload>("ai_status"),
 
+  /// v0.5.29: list the most recent failed AI work-queue rows so
+  /// the activity-pill modal can render their actual error text.
+  /// Backend default is 10 entries; the modal usually shows top
+  /// 3-5 but a few extras lets the modal page without round-trip.
+  recentAiFailures: () => invoke<AiFailedJob[]>("ai_recent_failures"),
+
   /// Master toggle. Persists `aiEnabled` in `app_settings` and flips the
   /// scheduler atomic so workers wake/sleep accordingly.
   setEnabled: (enabled: boolean) =>
@@ -369,6 +375,20 @@ export interface ProactiveSurfaceRow {
 export interface ActiveProactiveSurface {
   surface: ProactiveSurfaceRow;
   memory: import("@/domain/types").Memory;
+}
+
+/// v0.5.29: one failed AI work-queue row, surfaced to the
+/// activity-pill modal so the user can see why something failed.
+export interface AiFailedJob {
+  id: string;
+  /// `'ocr'` or `'embed_chunk'`.
+  kind: string;
+  /// `dedupe_key` carries the underlying memory_id for OCR jobs
+  /// (`ocr:<memory_id>:<engine>`).
+  dedupeKey: string;
+  attempts: number;
+  lastError: string | null;
+  finishedAt: string | null;
 }
 
 /// v0.4.3: response shape from `ask_recall`. The `text` is the full

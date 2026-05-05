@@ -95,6 +95,21 @@ pub async fn ai_status(state: State<'_, AppState>) -> AppResult<AiStatusPayload>
     })
 }
 
+/// v0.5.29: read the most recent failed AI work-queue rows so the
+/// frontend can render their error messages in the activity-pill
+/// modal. Defaults to 10 entries; the frontend usually shows top
+/// 3-5 but reading a few extras is cheap and lets the modal page
+/// without another round-trip.
+#[tauri::command]
+pub async fn ai_recent_failures(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::ai::scheduler::queue::FailedJobRow>> {
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+    scheduler.recent_failures(10).await
+}
+
 #[tauri::command]
 pub async fn ai_set_enabled(
     enabled: bool,

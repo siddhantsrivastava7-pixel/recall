@@ -298,6 +298,17 @@ impl AiScheduler {
         Ok(vectors.pop())
     }
 
+    /// v0.5.29: pass-through to the queue's `list_recent_failures`.
+    /// Surfaced by the `ai_recent_failures` command so the
+    /// activity-pill modal can render the actual error text from
+    /// dead-lettered jobs.
+    pub async fn recent_failures(
+        &self,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ai::scheduler::queue::FailedJobRow>> {
+        self.inner.queue.list_recent_failures(limit).await
+    }
+
     /// Stats for the AI status command.
     pub async fn status_snapshot(&self) -> AppResult<SchedulerStatus> {
         let ocr = self.inner.queue.counts_by_kind(WorkKind::Ocr).await?;

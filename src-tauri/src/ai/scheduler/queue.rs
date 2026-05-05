@@ -85,6 +85,29 @@ pub struct KindCounts {
     pub failed: u64,
 }
 
+/// v0.5.29: shape for a single failed job row, surfaced to the
+/// frontend so the user can see the actual error message that
+/// caused the failure. Without this, a "3 OCR jobs failed" pill
+/// is just an alert with no path forward — the user can't tell
+/// whether the cause is a missing image file, an unsupported
+/// format, or a transient engine error.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedJobRow {
+    pub id: String,
+    /// `'ocr'` or `'embed_chunk'`. Frontend renders different
+    /// suggestions per kind ("re-run OCR" vs "re-embed").
+    pub kind: String,
+    /// `dedupe_key` carries the underlying memory_id for OCR jobs
+    /// (`ocr:<memory_id>:<engine>`); the frontend can parse it to
+    /// link back to the affected memory. Embed jobs use a
+    /// different shape but the kind discriminator covers it.
+    pub dedupe_key: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub finished_at: Option<String>,
+}
+
 /// Database-backed queue. Cheap to clone (just the pool handle).
 #[derive(Clone)]
 pub struct AiWorkQueue {
@@ -282,6 +305,29 @@ impl AiWorkQueue {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// v0.5.29: read the most recent failed rows for diagnostic
+    /// surfacing. Returns rows ordered by `finished_at DESC` so the
+    /// freshest failure shows first; capped at `limit` to keep the
+    /// response payload bounded. Includes `last_error` so callers
+    /// can render the actual error string the worker captured —
+    /// without this, "3 jobs failed" is unactionable.
+    pub async fn list_recent_failures(&self, limit: u32) -> AppResult<Vec<FailedJobRow>> {
+        let rows = sqlx::query_as::<_, FailedJobRow>(
+            r#"
+            SELECT id, kind, dedupe_key, attempts, last_error, finished_at
+            FROM ai_work_queue
+            WHERE status = 'failed'
+              AND last_error IS NOT NULL
+            ORDER BY datetime(COALESCE(finished_at, '')) DESC
+            LIMIT ?1
+            "#,
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     /// Mark a running item failed. If `attempts < MAX_ATTEMPTS` the item

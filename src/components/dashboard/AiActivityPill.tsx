@@ -27,9 +27,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Loader2, Pause, Sparkles } from "lucide-react";
+import { AlertCircle, Loader2, Pause, X } from "lucide-react";
 
-import { aiClient } from "@/services/ai/AiClient";
+import { aiClient, type AiFailedJob } from "@/services/ai/AiClient";
 import type { AiStatusPayload } from "@/domain/types";
 import type { MainView } from "@/windows/MainWindow";
 
@@ -41,6 +41,13 @@ const POLL_INTERVAL_MS = 5000;
 
 export function AiActivityPill({ setView }: AiActivityPillProps) {
   const [status, setStatus] = useState<AiStatusPayload | null>(null);
+  // v0.5.29: when the failed-jobs modal opens, we fetch the most
+  // recent failures and render their `lastError` strings inline so
+  // the user can see the actual cause (file missing / unsupported
+  // format / engine error / etc.).
+  const [showFailures, setShowFailures] = useState(false);
+  const [failures, setFailures] = useState<AiFailedJob[]>([]);
+  const [failuresLoading, setFailuresLoading] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -67,9 +74,34 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
     };
   }, []);
 
-  const handleClick = useCallback(() => {
+  // Modal opens on click WHEN we have failed jobs to show.
+  // Otherwise the click jumps to Settings (no failures = the
+  // user is here for a different reason — gates, AI off, etc.).
+  const failedCount = status
+    ? status.queue.ocrFailed + status.queue.embedFailed
+    : 0;
+
+  const handleClick = useCallback(async () => {
+    if (failedCount > 0) {
+      setShowFailures(true);
+      setFailuresLoading(true);
+      try {
+        const rows = await aiClient.recentAiFailures();
+        setFailures(rows);
+      } catch (error) {
+        console.error("[recall] recent failures fetch failed:", error);
+        setFailures([]);
+      } finally {
+        setFailuresLoading(false);
+      }
+      return;
+    }
     setView("settings");
-  }, [setView]);
+  }, [failedCount, setView]);
+
+  const handleCloseModal = useCallback(() => {
+    setShowFailures(false);
+  }, []);
 
   if (!status) return null;
 
@@ -80,30 +112,219 @@ export function AiActivityPill({ setView }: AiActivityPillProps) {
   if (!variant) return null;
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
+    <>
+      <button
+        type="button"
+        onClick={() => void handleClick()}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 12px",
+          borderRadius: 999,
+          background: variant.background,
+          border: `1px solid ${variant.borderColor}`,
+          color: variant.textColor,
+          fontSize: 12,
+          fontWeight: 500,
+          cursor: "pointer",
+          // Inline so this can be slotted into a flex row without
+          // extra wrapping containers.
+          marginTop: 14,
+        }}
+        title={
+          failedCount > 0
+            ? "Click to see why these failed"
+            : "Open AI Settings"
+        }
+      >
+        {variant.icon}
+        {variant.label}
+      </button>
+
+      {/*
+        v0.5.29 — failure-error modal. Fixed position over the
+        page when open. Renders the actual `lastError` string from
+        each failed job row so the user can see what's actually
+        broken instead of just seeing "3 jobs failed."
+      */}
+      {showFailures ? (
+        <div
+          onClick={handleCloseModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              maxWidth: 720,
+              width: "100%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              background: "var(--panel)",
+              border: "1px solid var(--border-default)",
+              borderRadius: 14,
+              padding: 22,
+              color: "var(--text-primary)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 14,
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 650,
+                    letterSpacing: "0.12em",
+                    textTransform: "uppercase",
+                    color: "rgba(245, 158, 11, 0.95)",
+                    marginBottom: 6,
+                  }}
+                >
+                  Recent AI failures
+                </div>
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {failedCount} job{failedCount === 1 ? "" : "s"} failed
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={handleCloseModal}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--t-3)",
+                  cursor: "pointer",
+                  padding: 6,
+                  borderRadius: 6,
+                }}
+              >
+                <X size={16} strokeWidth={1.8} />
+              </button>
+            </div>
+
+            {failuresLoading ? (
+              <div style={{ fontSize: 13, color: "var(--t-3)" }}>
+                Loading failure details…
+              </div>
+            ) : failures.length === 0 ? (
+              <div style={{ fontSize: 13, color: "var(--t-3)" }}>
+                No failure details available.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {failures.map((failure) => (
+                  <FailureRow key={failure.id} failure={failure} />
+                ))}
+              </div>
+            )}
+
+            <div
+              style={{
+                marginTop: 18,
+                fontSize: 12,
+                color: "var(--t-3)",
+                lineHeight: 1.5,
+              }}
+            >
+              Tip: clicking <strong>Run OCR rebuild</strong> in
+              Settings → AI re-enqueues failed memories with their
+              attempt counter reset. Useful when the error was
+              transient (file briefly locked, engine warming up).
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function FailureRow({ failure }: { failure: AiFailedJob }) {
+  // Parse memory_id out of the dedupe_key for OCR jobs so we can
+  // hint at which capture failed. dedupe_key shape:
+  // `ocr:<memory_id>:<engine>` → split on `:` and take index 1.
+  const memoryId =
+    failure.kind === "ocr" && failure.dedupeKey.startsWith("ocr:")
+      ? failure.dedupeKey.split(":")[1] ?? null
+      : null;
+  return (
+    <div
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 12px",
-        borderRadius: 999,
-        background: variant.background,
-        border: `1px solid ${variant.borderColor}`,
-        color: variant.textColor,
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: "pointer",
-        // Inline so this can be slotted into a flex row without
-        // extra wrapping containers.
-        marginTop: 14,
+        padding: 12,
+        borderRadius: 10,
+        background: "var(--surface-2, rgba(255,255,255,0.03))",
+        border: "1px solid rgba(255,255,255,0.06)",
       }}
-      title="Open AI Settings"
     >
-      {variant.icon}
-      {variant.label}
-    </button>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+          marginBottom: 6,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 650,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "var(--t-4)",
+          }}
+        >
+          {failure.kind === "ocr" ? "OCR" : failure.kind}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--t-4)" }}>
+          {failure.attempts} attempt{failure.attempts === 1 ? "" : "s"}
+        </span>
+        {memoryId ? (
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--t-4)",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            }}
+          >
+            · {memoryId.slice(0, 8)}
+          </span>
+        ) : null}
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          color: "var(--text-primary)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          userSelect: "text",
+          WebkitUserSelect: "text",
+        }}
+      >
+        {failure.lastError ?? "(no error message recorded)"}
+      </div>
+    </div>
   );
 }
 
