@@ -258,6 +258,73 @@ async fn run_v0_5_7_backfill(state: &AppState) -> crate::errors::app_error::AppR
     Ok(())
 }
 
+/// v0.5.42 — idempotent boot-time backfill that guarantees the
+/// "Twitter bookmarks" project exists and that every previously-
+/// synced tweet memory lives inside it. v0.5.41 wired the project
+/// auto-assign into the sync command itself, but users who updated
+/// without immediately re-syncing reported the project never
+/// appeared. This boot-time pass closes that gap so the project
+/// shows up on the next launch regardless of whether they re-sync.
+///
+/// Cheap on the steady state: a single `COUNT(1)` early-out skips
+/// everything when there are no unassigned tweet memories left, so
+/// every boot after the first is essentially free. No settings flag
+/// because the SQL itself is the idempotency gate.
+async fn run_v0_5_42_twitter_backfill(state: &AppState) -> crate::errors::app_error::AppResult<()> {
+    const PROJECT_NAME: &str = "Twitter bookmarks";
+
+    // Short-circuit when there's nothing to do. Without this, every
+    // boot would do a pointless `projects.list()` round-trip plus a
+    // no-op UPDATE — small but unnecessary.
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(1) FROM memories \
+         WHERE source_app = 'twitter' \
+           AND (project_id IS NULL OR project_id = '')",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    if row.0 == 0 {
+        return Ok(());
+    }
+
+    // Resolve (or create) the project. Case-insensitive match so a
+    // user who created their own "twitter bookmarks" project by hand
+    // earlier reuses theirs instead of getting a duplicate.
+    let projects = state.project_repository.list().await?;
+    let project_id = if let Some(found) = projects
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(PROJECT_NAME))
+    {
+        found.id.clone()
+    } else {
+        state
+            .project_repository
+            .create(
+                PROJECT_NAME,
+                Some("Synced bookmarks from X (Twitter).".to_string()),
+            )
+            .await?
+            .id
+    };
+
+    let res = sqlx::query(
+        "UPDATE memories \
+         SET project_id = ?1 \
+         WHERE source_app = 'twitter' \
+           AND (project_id IS NULL OR project_id = '')",
+    )
+    .bind(&project_id)
+    .execute(&state.pool)
+    .await?;
+
+    eprintln!(
+        "[recall][v0.5.42] twitter backfill: {} memories assigned to '{}'",
+        res.rows_affected(),
+        PROJECT_NAME
+    );
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -679,6 +746,24 @@ pub fn run() {
                         }
                     });
                 }
+
+                // v0.5.42: ensure the "Twitter bookmarks" project
+                // exists and every tweet memory lives inside it.
+                // Idempotent — see helper comment for details. Lives
+                // here (not gated on a settings flag) because the
+                // helper's COUNT short-circuit is cheaper than the
+                // settings round-trip.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_42_twitter_backfill(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.42] twitter backfill failed: {err}"
+                        );
+                    }
+                });
             }
 
             Ok(())
