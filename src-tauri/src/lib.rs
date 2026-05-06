@@ -22,7 +22,10 @@ use commands::{
         semantic_search,
     },
     app::{bootstrap_app, get_runtime_info},
-    bookmarks::{import_bookmarks, list_bookmark_sources, sync_bookmarks_now},
+    bookmarks::{
+        import_bookmarks, list_bookmark_sources, sync_bookmarks_now, x_connection_status,
+        x_oauth_disconnect, x_oauth_start, x_sync_bookmarks_now,
+    },
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
         create_memory, delete_memory, dismiss_memory_resurface, duplicate_memory, get_memory,
@@ -724,6 +727,10 @@ pub fn run() {
             list_bookmark_sources,
             import_bookmarks,
             sync_bookmarks_now,
+            x_connection_status,
+            x_oauth_start,
+            x_sync_bookmarks_now,
+            x_oauth_disconnect,
             list_memories,
             get_memory,
             create_memory,

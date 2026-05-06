@@ -16,3 +16,5 @@ pub mod screenshot_store;
 pub mod settings_service;
 pub mod spoken_transcript_service;
 pub mod shortcut_service;
+pub mod x_bookmark_sync;
+pub mod x_oauth_repository;

@@ -46,6 +46,13 @@ export const tauriClient = {
   importBookmarks: (browsers: BookmarkBrowser[]) =>
     invoke<BookmarkSyncSummary>("import_bookmarks", { browsers }),
   syncBookmarksNow: () => invoke<BookmarkSyncSummary>("sync_bookmarks_now"),
+
+  // v0.5.37 — X (Twitter) bookmark sync via OAuth 2.0 PKCE.
+  xConnectionStatus: () => invoke<XOAuthRow | null>("x_connection_status"),
+  xOauthStart: () => invoke<XOAuthRow>("x_oauth_start"),
+  xSyncBookmarksNow: () =>
+    invoke<XBookmarkSyncResult>("x_sync_bookmarks_now"),
+  xOauthDisconnect: () => invoke<void>("x_oauth_disconnect"),
   readClipboardText: () => invoke<string | null>("read_clipboard_text"),
   writeClipboardText: (text: string) => invoke<void>("write_clipboard_text", { text }),
   detectAppContext: () => invoke<AppContextSnapshot>("detect_app_context"),
@@ -73,3 +80,27 @@ export const tauriClient = {
   saveWidgetPosition: () => invoke<void>("save_widget_position"),
   seedSampleData: () => invoke<void>("seed_sample_data"),
 };
+
+// v0.5.37 — X OAuth shapes mirrored from
+// `src-tauri/src/services/x_bookmark_sync.rs::XOAuthRow` and
+// `BookmarkSyncResult`. Camel-case field names match the
+// `#[serde(rename_all = "camelCase")]` annotation on the Rust
+// structs.
+export interface XOAuthRow {
+  id: string;
+  xUserId: string;
+  xUsername: string | null;
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: string | null;
+  scope: string | null;
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  lastSyncCount: number;
+}
+
+export interface XBookmarkSyncResult {
+  fetched: number;
+  created: number;
+  alreadySaved: number;
+}

@@ -156,6 +156,39 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     .execute(pool)
     .await?;
 
+    // v0.5.37 — X (Twitter) OAuth 2.0 token storage.
+    //
+    // One row per connected X account. Today there's at most one
+    // row (single-user desktop app), but the schema supports
+    // multiple in case a future "multi-account" feature lands —
+    // x_user_id is the natural PK at that point.
+    //
+    // Tokens are stored in plain text for v0.5.37; a future patch
+    // can wrap them with OS-keychain or stronghold encryption.
+    // Threat model today: local file system attacker. Same model
+    // applies to every other piece of user data Recall stores
+    // (ocr_text, project notes, ask-recall sessions). Encrypting
+    // just the OAuth tokens while leaving everything else plain
+    // would be security theater.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS x_oauth_tokens (
+            id              TEXT PRIMARY KEY,
+            x_user_id       TEXT NOT NULL UNIQUE,
+            x_username      TEXT,
+            access_token    TEXT NOT NULL,
+            refresh_token   TEXT,
+            expires_at      TEXT,
+            scope           TEXT,
+            connected_at    TEXT NOT NULL,
+            last_synced_at  TEXT,
+            last_sync_count INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // v0.5.23 — proactive surfaces table. Each row is one card
     // shown at the top of Home: forgotten gold, weekly recap, etc.
     // The selection logic in `ai/surfaces/engine.rs` picks one

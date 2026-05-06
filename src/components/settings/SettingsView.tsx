@@ -6,7 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
 import { usePairingStore } from "@/features/pairing/pairingStore";
-import { tauriClient } from "@/services/api/tauri-client";
+import { tauriClient, type XOAuthRow } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
 import { getBookmarkBrowserOptions } from "@/domain/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
@@ -301,9 +301,179 @@ function BookmarksTab() {
           </div>
         )}
       </div>
+
+      {/*
+        v0.5.37 — X (Twitter) bookmark sync. Lives inside the
+        same Bookmarks tab because it's the same conceptual job
+        (pull bookmarks from a source into Recall) but surfaced
+        as its own card so users instantly see this is a
+        separate connection vs the browser-bookmark sync above.
+      */}
+      <XConnectionCard />
     </Section>
   );
 }
+
+/* X (Twitter) connection card — v0.5.37 */
+function XConnectionCard() {
+  // Local state so we don't ferry through a global store —
+  // there's only one consumer (this card) and a global write
+  // would just add lifecycle complexity. Hydrate from backend
+  // on mount + after each action.
+  const [status, setStatus] = useState<XConnectionState>({ kind: "loading" });
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    void hydrate();
+  }, []);
+
+  async function hydrate() {
+    try {
+      const row = await tauriClient.xConnectionStatus();
+      setStatus(row ? { kind: "connected", row } : { kind: "disconnected" });
+    } catch (error) {
+      setStatus({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function connect() {
+    setStatus({ kind: "connecting" });
+    setActionMsg(null);
+    try {
+      const row = await tauriClient.xOauthStart();
+      setStatus({ kind: "connected", row });
+      setActionMsg(`Connected as @${row.xUsername ?? row.xUserId}.`);
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+      // Re-hydrate so we don't get stuck on a "connecting" state
+      // if the user closed the browser before authorizing.
+      await hydrate();
+    }
+  }
+
+  async function syncNow() {
+    if (status.kind !== "connected") return;
+    setActionMsg("Syncing…");
+    try {
+      const result = await tauriClient.xSyncBookmarksNow();
+      const parts: string[] = [];
+      if (result.created > 0) parts.push(`${result.created} new`);
+      if (result.alreadySaved > 0) parts.push(`${result.alreadySaved} already saved`);
+      const summary = parts.length > 0 ? parts.join(" · ") : "Nothing new.";
+      setActionMsg(`Synced ${result.fetched} bookmark${result.fetched === 1 ? "" : "s"}: ${summary}`);
+      await hydrate();
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function disconnect() {
+    setActionMsg(null);
+    try {
+      await tauriClient.xOauthDisconnect();
+      setStatus({ kind: "disconnected" });
+      setActionMsg("Disconnected from X. Tweets you already imported stay in your library.");
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 28,
+        paddingTop: 22,
+        borderTop: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 650,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "rgba(102,153,255,0.95)",
+          marginBottom: 8,
+        }}
+      >
+        X (Twitter)
+      </div>
+      <div
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--text-primary)",
+          marginBottom: 4,
+        }}
+      >
+        {status.kind === "connected"
+          ? `Connected as @${status.row.xUsername ?? status.row.xUserId}`
+          : status.kind === "connecting"
+            ? "Connecting…"
+            : "Sync your X bookmarks"}
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55, maxWidth: 540 }}>
+        {status.kind === "connected"
+          ? `Bookmarked tweets become searchable memories. ${
+              status.row.lastSyncedAt
+                ? `Last synced ${formatLongTimestamp(status.row.lastSyncedAt)} · ${status.row.lastSyncCount} total imported.`
+                : "Click Sync to pull your bookmarks for the first time."
+            }`
+          : status.kind === "connecting"
+            ? "Sign in on the page that just opened. This window will update once you authorize."
+            : "Recall opens X in your browser, you authorize once, and your bookmarked tweets appear in your library — fully searchable, with the original tweet text on each memory."}
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
+        {status.kind === "connected" ? (
+          <>
+            <button className="btn-primary" onClick={() => void syncNow()}>
+              <RefreshCw size={13} />
+              Sync bookmarks now
+            </button>
+            <button className="btn-ghost" onClick={() => void disconnect()}>
+              <XCircle size={13} />
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <button
+            className="btn-primary"
+            onClick={() => void connect()}
+            disabled={status.kind === "connecting"}
+          >
+            <CheckCircle size={13} />
+            {status.kind === "connecting" ? "Waiting for X…" : "Connect X"}
+          </button>
+        )}
+      </div>
+
+      {actionMsg && (
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 12,
+            color: "var(--t-3)",
+            lineHeight: 1.5,
+            maxWidth: 540,
+          }}
+        >
+          {actionMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type XConnectionState =
+  | { kind: "loading" }
+  | { kind: "disconnected" }
+  | { kind: "connecting" }
+  | { kind: "connected"; row: XOAuthRow }
+  | { kind: "error"; message: string };
 
 /* Pairing */
 function PairingTab() {
