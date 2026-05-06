@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone, Sparkles } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
@@ -344,30 +345,104 @@ function PairingTab() {
           </button>
         </div>
 
+        {/*
+          v0.5.35 — actual scannable QR code. Pre-v0.5.35 this section
+          rendered the raw JSON payload as text, which was unscannable
+          — the user had to manually transcribe or share the string
+          to the phone, which defeats the QR pairing UX entirely. The
+          QRCodeSVG component encodes the same JSON as a real 2D
+          barcode. Error correction level "M" (15% recovery) is the
+          right balance: enough resilience for camera shake / poor
+          lighting, without inflating module count and shrinking
+          the per-module size.
+        */}
         <div
           style={{
             marginTop: 18,
-            padding: 14,
+            padding: 18,
             borderRadius: 14,
             background: "rgba(255,255,255,0.035)",
             border: "1px solid rgba(255,255,255,0.06)",
+            display: "flex",
+            gap: 22,
+            alignItems: "flex-start",
+            flexWrap: "wrap",
           }}
         >
-          <div style={{ fontSize: 12, color: "var(--t-3)", marginBottom: 8 }}>
-            QR payload for mobile
+          {info?.qrPayload ? (
+            <div
+              style={{
+                background: "white",
+                padding: 14,
+                borderRadius: 10,
+                flexShrink: 0,
+                lineHeight: 0,
+              }}
+            >
+              <QRCodeSVG
+                value={info.qrPayload}
+                size={188}
+                level="M"
+                marginSize={0}
+              />
+            </div>
+          ) : (
+            <div
+              style={{
+                width: 216,
+                height: 216,
+                borderRadius: 10,
+                background: "rgba(255,255,255,0.04)",
+                border: "1px dashed rgba(255,255,255,0.10)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--t-3)",
+                fontSize: 12,
+                flexShrink: 0,
+              }}
+            >
+              Generating QR…
+            </div>
+          )}
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>
+              Scan with the Recall iOS app
+            </div>
+            <div style={{ fontSize: 12, color: "var(--t-3)", lineHeight: 1.6 }}>
+              Both devices must be on the same Wi-Fi network. The QR
+              encodes a one-time secret — once scanned, the phone
+              pushes memories straight to this desktop. Reset pairing
+              if the QR is shown on a screen anyone else can see.
+            </div>
+            <details style={{ marginTop: 10 }}>
+              <summary
+                style={{
+                  fontSize: 11,
+                  color: "var(--t-4)",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                Show raw payload (debug)
+              </summary>
+              <code
+                style={{
+                  display: "block",
+                  marginTop: 8,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: "var(--t-3)",
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, monospace",
+                }}
+              >
+                {info?.qrPayload ?? "Generating pairing payload..."}
+              </code>
+            </details>
           </div>
-          <code
-            style={{
-              display: "block",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              fontSize: 12,
-              lineHeight: 1.6,
-              color: "var(--t-2)",
-            }}
-          >
-            {info?.qrPayload ?? "Generating pairing payload..."}
-          </code>
         </div>
 
         {error && (
