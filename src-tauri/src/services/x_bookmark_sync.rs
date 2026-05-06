@@ -490,9 +490,15 @@ pub struct BookmarkSyncResult {
 /// Pull every bookmark for the connected user and persist new
 /// ones as memories. Idempotent — re-running this against the
 /// same bookmarks dedupes by `external_id = tweet_id`.
+///
+/// v0.5.41 — `project_id` lets the caller pin every newly-created
+/// tweet memory into a project so tweets get their own pinned
+/// sidebar entry instead of scattering through All Memories.
+/// Pass `None` for the legacy behavior (no project).
 pub async fn sync_bookmarks(
     token: &XOAuthRow,
     memory_repo: &SharedMemoryRepository,
+    project_id: Option<String>,
 ) -> AppResult<BookmarkSyncResult> {
     let mut result = BookmarkSyncResult::default();
     let mut next_token: Option<String> = None;
@@ -585,7 +591,7 @@ pub async fn sync_bookmarks(
                     title: Some(title),
                     content,
                     note: None,
-                    project_id: None,
+                    project_id: project_id.clone(),
                     url: Some(canonical_url),
                     external_id: Some(tweet.id.clone()),
                     folder_path: None,

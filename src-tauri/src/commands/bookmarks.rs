@@ -100,6 +100,13 @@ pub async fn x_oauth_start(
 /// bookmarked tweet for the connected user and creates memory
 /// rows for new ones. Idempotent (dedup by tweet_id stored as
 /// `external_id` on the memory row).
+///
+/// v0.5.41: every tweet is auto-assigned to a "Twitter bookmarks"
+/// project (auto-created on first sync). Existing tweet memories
+/// from earlier syncs that landed without a project get
+/// retroactively assigned in the same call. Tweets become
+/// findable as a pinned sidebar entry instead of disappearing
+/// into All Memories.
 #[tauri::command]
 pub async fn x_sync_bookmarks_now(
     state: State<'_, AppState>,
@@ -111,9 +118,61 @@ pub async fn x_sync_bookmarks_now(
                 "Not connected to X. Connect from Settings → Bookmarks first.".into(),
             )
         })?;
-    let result = x_bookmark_sync::sync_bookmarks(&token, &state.memory_repository).await?;
+
+    // Resolve (or create) the "Twitter bookmarks" project. We
+    // list all projects + match by name rather than adding a
+    // dedicated find_by_name method — there are typically <50
+    // projects and this runs once per sync.
+    let project_id = ensure_twitter_bookmarks_project(&state).await?;
+
+    // Backfill: any earlier-synced tweet memories that landed
+    // before v0.5.41 (no project_id) get retroactively assigned.
+    // Idempotent — the WHERE clause won't touch already-assigned
+    // rows.
+    sqlx::query(
+        "UPDATE memories \
+         SET project_id = ?1 \
+         WHERE source_app = 'twitter' \
+           AND (project_id IS NULL OR project_id = '')",
+    )
+    .bind(&project_id)
+    .execute(&state.pool)
+    .await?;
+
+    let result = x_bookmark_sync::sync_bookmarks(
+        &token,
+        &state.memory_repository,
+        Some(project_id),
+    )
+    .await?;
     x_oauth_repository::record_sync(&state.pool, &token.id, result.created).await?;
     Ok(result)
+}
+
+/// v0.5.41 — find or create the dedicated "Twitter bookmarks"
+/// project. Returns its id. Cheap; called once per sync. Match
+/// is case-insensitive so a user who had created a project named
+/// "twitter bookmarks" or "Twitter Bookmarks" by hand earlier
+/// reuses theirs instead of getting a duplicate.
+async fn ensure_twitter_bookmarks_project(
+    state: &State<'_, AppState>,
+) -> AppResult<String> {
+    const PROJECT_NAME: &str = "Twitter bookmarks";
+    let projects = state.project_repository.list().await?;
+    if let Some(found) = projects
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(PROJECT_NAME))
+    {
+        return Ok(found.id.clone());
+    }
+    let created = state
+        .project_repository
+        .create(
+            PROJECT_NAME,
+            Some("Synced bookmarks from X (Twitter).".to_string()),
+        )
+        .await?;
+    Ok(created.id)
 }
 
 /// v0.5.37 — drop the X connection. Removes the token row but
