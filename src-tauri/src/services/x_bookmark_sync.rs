@@ -167,6 +167,20 @@ fn pkce_challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
+/// Build an `application/x-www-form-urlencoded` body from key-value
+/// pairs. We can't use `RequestBuilder::form` because that method
+/// requires reqwest features we don't enable (we run with
+/// default-features = false + rustls only). One small helper keeps
+/// the dep budget tight without pulling in serde_urlencoded just
+/// for the OAuth flow.
+fn build_urlencoded_form(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// Spawn the loopback listener and wait for X's redirect. Times
 /// out after 5 minutes — the user shouldn't take longer than
 /// that to sign in and click Authorize, and parking forever on a
@@ -332,16 +346,23 @@ pub async fn exchange_code_for_tokens(
     code_verifier: &str,
 ) -> AppResult<XOAuthRow> {
     let client = reqwest::Client::new();
-    let params = [
+    // We deliberately don't use `RequestBuilder::form` here — that
+    // method requires a reqwest feature enabled by default-features
+    // which we keep off (rustls only). Hand-build the
+    // application/x-www-form-urlencoded body. urlencoding handles
+    // the per-pair escape; same crate already pulled in for the
+    // authorize URL builder.
+    let form_body = build_urlencoded_form(&[
         ("code", code),
         ("grant_type", "authorization_code"),
         ("client_id", X_OAUTH_CLIENT_ID),
         ("redirect_uri", X_OAUTH_CALLBACK_URL),
         ("code_verifier", code_verifier),
-    ];
+    ]);
     let response = client
         .post(X_TOKEN_URL)
-        .form(&params)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form_body)
         .send()
         .await
         .map_err(|err| AppError::Invalid(format!("X token request failed: {err}")))?;
