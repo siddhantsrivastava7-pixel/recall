@@ -5,6 +5,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
+import { useProjectStore } from "@/stores/projectStore";
 import { usePairingStore } from "@/features/pairing/pairingStore";
 import { tauriClient, type SuggestedLocation, type XOAuthRow } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
@@ -549,6 +550,19 @@ function XConnectionCard() {
       const summary = parts.length > 0 ? parts.join(" · ") : "Nothing new.";
       setActionMsg(`Synced ${result.fetched} bookmark${result.fetched === 1 ? "" : "s"}: ${summary}`);
       await hydrate();
+      // v0.5.43: backend creates a "Twitter bookmarks" project on first
+      // sync (and assigns every tweet memory to it). The project store
+      // is hydrated once at boot from bootstrap_app, so without this
+      // refresh the new project doesn't appear in the sidebar until the
+      // user restarts. Pulling listProjects + hydrate is cheap (a single
+      // round-trip, typically <50 projects).
+      try {
+        const fresh = await tauriClient.listProjects();
+        useProjectStore.getState().hydrate(fresh);
+      } catch {
+        // Non-fatal — sync result already reported. The project will
+        // appear on next app boot via the bootstrap_app hydration.
+      }
     } catch (error) {
       setActionMsg(error instanceof Error ? error.message : String(error));
     }
