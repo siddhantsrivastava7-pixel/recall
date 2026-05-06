@@ -94,6 +94,11 @@ const settings: AppSettings = {
   aiPauseBelowBatteryPct: 20,
   // v0.5.32 — screenshot retention window (days). 0 = never purge.
   aiScreenshotRetentionDays: 60,
+  // v0.5.38 — file & folder ingestion caps.
+  fileIngestSizeCapMb: 50,
+  folderIngestFileCap: 500,
+  folderIngestDepthCap: 8,
+  skipHiddenFolders: true,
 };
 
 const shortcuts: ShortcutBinding[] = [];

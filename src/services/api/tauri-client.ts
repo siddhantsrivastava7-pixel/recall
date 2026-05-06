@@ -53,6 +53,16 @@ export const tauriClient = {
   xSyncBookmarksNow: () =>
     invoke<XBookmarkSyncResult>("x_sync_bookmarks_now"),
   xOauthDisconnect: () => invoke<void>("x_oauth_disconnect"),
+
+  // v0.5.38 — file & folder ingestion. Drag-drop lands here via
+  // ingestPaths (Tauri delivers a string[]); the Add buttons in
+  // Quick Save use ingestPath (single path).
+  ingestPath: (path: string) =>
+    invoke<FileIngestResult>("ingest_path", { path }),
+  ingestPaths: (paths: string[]) =>
+    invoke<FileIngestResult>("ingest_paths", { paths }),
+  suggestedLocations: () =>
+    invoke<SuggestedLocation[]>("suggested_locations"),
   readClipboardText: () => invoke<string | null>("read_clipboard_text"),
   writeClipboardText: (text: string) => invoke<void>("write_clipboard_text", { text }),
   detectAppContext: () => invoke<AppContextSnapshot>("detect_app_context"),
@@ -103,4 +113,27 @@ export interface XBookmarkSyncResult {
   fetched: number;
   created: number;
   alreadySaved: number;
+}
+
+// v0.5.38 — file ingestion shapes.
+export interface FileIngestResult {
+  filesSeen: number;
+  filesImported: number;
+  filesSkippedSize: number;
+  filesSkippedHidden: number;
+  filesSkippedError: number;
+  foldersImported: number;
+  stoppedAtCountCap: boolean;
+  stoppedAtDepthCap: boolean;
+  /// Pre-built one-line summary the UI can show inline ("Imported
+  /// 47 files · skipped 3 too large").
+  message: string;
+}
+
+export interface SuggestedLocation {
+  /// User-facing label ("Desktop", "Downloads", "Documents").
+  label: string;
+  path: string;
+  /// Best-effort 1-level file count, capped at 9999.
+  approxFileCount: number;
 }

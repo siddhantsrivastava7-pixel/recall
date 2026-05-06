@@ -156,6 +156,70 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
     .execute(pool)
     .await?;
 
+    // v0.5.38 — file & folder ingestion, structured.
+    //
+    // Files and folders aren't memories. They have filesystem
+    // lifecycle, richer metadata, and need aggregate signals at
+    // the folder level. Cramming them into the memories table
+    // would lose all of that.
+    //
+    // The bridge to existing search/recap/Ask Recall: each
+    // ingested file ALSO gets a memory row with
+    // `source_app = "file"` and `external_id = file.id` (the
+    // "shadow memory" pattern). Native multi-source retrieval
+    // ships in v0.5.41 alongside search filters; until then,
+    // shadows let the existing engine do its job without
+    // refactoring.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS files (
+            id              TEXT PRIMARY KEY,
+            path            TEXT UNIQUE NOT NULL,
+            filename        TEXT NOT NULL,
+            extension       TEXT,
+            parent_folder   TEXT NOT NULL,
+            size_bytes      INTEGER,
+            file_created_at TEXT,
+            file_modified_at TEXT,
+            indexed_at      TEXT NOT NULL,
+            content_hash    TEXT,
+            extracted_text  TEXT,
+            summary_text    TEXT,
+            source_app      TEXT,
+            project_id      TEXT,
+            shadow_memory_id TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_folder)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS folders (
+            id              TEXT PRIMARY KEY,
+            path            TEXT UNIQUE NOT NULL,
+            name            TEXT NOT NULL,
+            parent_path     TEXT,
+            child_count     INTEGER NOT NULL DEFAULT 0,
+            dominant_extensions TEXT,
+            indexed_at      TEXT NOT NULL,
+            project_id      TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_path)")
+        .execute(pool)
+        .await?;
+
     // v0.5.37 — X (Twitter) OAuth 2.0 token storage.
     //
     // One row per connected X account. Today there's at most one

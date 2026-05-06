@@ -6,7 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
 import { usePairingStore } from "@/features/pairing/pairingStore";
-import { tauriClient, type XOAuthRow } from "@/services/api/tauri-client";
+import { tauriClient, type SuggestedLocation, type XOAuthRow } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
 import { getBookmarkBrowserOptions } from "@/domain/bookmarks";
 import { formatLongTimestamp } from "@/domain/formatters";
@@ -310,7 +310,191 @@ function BookmarksTab() {
         separate connection vs the browser-bookmark sync above.
       */}
       <XConnectionCard />
+
+      {/*
+        v0.5.38 — file & folder ingestion. Drop a file onto the
+        Recall window, or use these buttons. Suggested locations
+        below let the user opt-in to common folders without us
+        ever auto-scanning anything.
+      */}
+      <FileIngestionCard />
     </Section>
+  );
+}
+
+/* File & folder ingestion card — v0.5.38 */
+function FileIngestionCard() {
+  const [suggestions, setSuggestions] = useState<SuggestedLocation[]>([]);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const list = await tauriClient.suggestedLocations();
+        setSuggestions(list);
+      } catch (error) {
+        console.error("[recall][file-ingest] suggested fetch failed:", error);
+      }
+    })();
+  }, []);
+
+  async function importPath(path: string) {
+    setBusy(true);
+    setActionMsg(null);
+    try {
+      const result = await tauriClient.ingestPath(path);
+      setActionMsg(result.message);
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pickFile() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ multiple: false, directory: false });
+      if (typeof selected === "string") {
+        void importPath(selected);
+      }
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function pickFolder() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ multiple: false, directory: true });
+      if (typeof selected === "string") {
+        void importPath(selected);
+      }
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 28,
+        paddingTop: 22,
+        borderTop: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 650,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "rgba(155,123,255,0.95)",
+          marginBottom: 8,
+        }}
+      >
+        Files & folders
+      </div>
+      <div
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--text-primary)",
+          marginBottom: 4,
+        }}
+      >
+        Make any file or folder searchable
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55, maxWidth: 540 }}>
+        Drop files onto the Recall window, or pick from your disk.
+        Recall extracts text from documents, code, PDFs, and other
+        supported formats — the file itself stays where it is. Only
+        your selected files are indexed; nothing happens
+        automatically.
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
+        <button
+          className="btn-primary"
+          onClick={() => void pickFile()}
+          disabled={busy}
+        >
+          <Upload size={13} />
+          {busy ? "Importing…" : "Import a file"}
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => void pickFolder()}
+          disabled={busy}
+        >
+          <PackageCheck size={13} />
+          Import a folder
+        </button>
+      </div>
+
+      {suggestions.length > 0 && (
+        <div
+          style={{
+            marginTop: 18,
+            padding: 14,
+            borderRadius: 12,
+            background: "rgba(155,123,255,0.05)",
+            border: "1px solid rgba(155,123,255,0.18)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 650,
+              letterSpacing: "0.10em",
+              textTransform: "uppercase",
+              color: "var(--t-3)",
+              marginBottom: 8,
+            }}
+          >
+            Suggested locations
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+            Common starting points. Recall scans these only when
+            you click — never automatically.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {suggestions.map((s) => (
+              <button
+                key={s.path}
+                className="btn-ghost"
+                onClick={() => void importPath(s.path)}
+                disabled={busy}
+                style={{ fontSize: 12 }}
+                title={s.path}
+              >
+                {s.label}
+                {s.approxFileCount > 0 && (
+                  <span style={{ marginLeft: 6, color: "var(--t-4)" }}>
+                    ~{s.approxFileCount} files
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {actionMsg && (
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 12,
+            color: "var(--t-3)",
+            lineHeight: 1.5,
+            maxWidth: 540,
+          }}
+        >
+          {actionMsg}
+        </div>
+      )}
+    </div>
   );
 }
 

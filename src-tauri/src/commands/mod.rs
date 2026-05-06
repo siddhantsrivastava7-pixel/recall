@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod app;
 pub mod bookmarks;
+pub mod files;
 pub mod license;
 pub mod memories;
 pub mod pairing;

@@ -156,6 +156,11 @@ export interface AppSettings {
   // never get touched regardless of this setting; only the on-disk
   // image files are affected.
   aiScreenshotRetentionDays: number;
+  // v0.5.38 — file & folder ingestion caps.
+  fileIngestSizeCapMb: number;
+  folderIngestFileCap: number;
+  folderIngestDepthCap: number;
+  skipHiddenFolders: boolean;
 }
 
 // ── AI subsystem (v0.2.0+) ───────────────────────────────────────────

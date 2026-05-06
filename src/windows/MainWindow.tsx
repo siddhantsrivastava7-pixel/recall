@@ -68,6 +68,53 @@ export function MainWindow() {
     };
   }, [selectMemory]);
 
+  // v0.5.38 — drag-and-drop file ingestion. Tauri 2 emits
+  // `tauri://drag-drop` events on the active webview when files
+  // are dropped onto the window. We capture the drop, hand the
+  // string[] of absolute paths to the backend, and emit a small
+  // toast with the result (`recall://instant-capture-saved`
+  // already exists for similar purposes).
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void (async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const webview = getCurrentWebview();
+      const fn = await webview.onDragDropEvent(async (event) => {
+        if (disposed) return;
+        if (event.payload.type !== "drop") return;
+        const paths = event.payload.paths;
+        if (!paths || paths.length === 0) return;
+        try {
+          const result = await tauriClient.ingestPaths(paths);
+          // Small inline toast — reuse the existing instant-capture
+          // event so HomeBriefing's status pill doesn't need a new
+          // listener for v0.5.38.
+          const message = result.message || "Imported.";
+          await listen("recall://instant-capture-saved", () => {});
+          // Emit synthetically. The toast component listens on
+          // window events; cleanest path is a custom DOM event.
+          window.dispatchEvent(
+            new CustomEvent("recall:file-ingest-result", {
+              detail: { message },
+            }),
+          );
+        } catch (error) {
+          console.error("[recall][drag-drop] ingest failed:", error);
+        }
+      });
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   useEffect(() => {
     void maybeCheckOnStartup(settings.updateAutoCheckEnabled);
   }, [settings.updateAutoCheckEnabled, maybeCheckOnStartup]);

@@ -120,6 +120,22 @@ impl SettingsRepository for SqliteSettingsRepository {
                     let parsed = value.parse::<u32>().unwrap_or(60);
                     settings.ai_screenshot_retention_days = parsed.min(36500);
                 }
+                // v0.5.38: file/folder ingestion caps.
+                "file_ingest_size_cap_mb" => {
+                    settings.file_ingest_size_cap_mb =
+                        value.parse::<u32>().unwrap_or(50);
+                }
+                "folder_ingest_file_cap" => {
+                    settings.folder_ingest_file_cap =
+                        value.parse::<u32>().unwrap_or(500);
+                }
+                "folder_ingest_depth_cap" => {
+                    settings.folder_ingest_depth_cap =
+                        value.parse::<u32>().unwrap_or(8);
+                }
+                "skip_hidden_folders" => {
+                    settings.skip_hidden_folders = value == "true";
+                }
                 // v0.5.21: stored as "a" / "b" / "c" or empty for
                 // None. Anything else is treated as None — defensive
                 // against a hand-edited DB.
@@ -256,6 +272,24 @@ impl SettingsRepository for SqliteSettingsRepository {
         sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
             .bind("ai_screenshot_retention_days")
             .bind(settings.ai_screenshot_retention_days.to_string())
+            .execute(&mut *transaction)
+            .await?;
+
+        // v0.5.38: file/folder ingestion caps.
+        for (key, value) in [
+            ("file_ingest_size_cap_mb", settings.file_ingest_size_cap_mb.to_string()),
+            ("folder_ingest_file_cap", settings.folder_ingest_file_cap.to_string()),
+            ("folder_ingest_depth_cap", settings.folder_ingest_depth_cap.to_string()),
+        ] {
+            sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+                .bind(key)
+                .bind(value)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        sqlx::query("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)")
+            .bind("skip_hidden_folders")
+            .bind(if settings.skip_hidden_folders { "true" } else { "false" })
             .execute(&mut *transaction)
             .await?;
 

@@ -305,6 +305,32 @@ pub struct AppSettings {
     /// pass — changes apply on the next 24-hour cycle.
     #[serde(default = "default_ai_screenshot_retention_days")]
     pub ai_screenshot_retention_days: u32,
+    /// v0.5.38: per-file size cap for the file ingestion path.
+    /// Files larger than this are skipped (no extraction
+    /// attempted). Default 50 MB — bigger PDFs are usually
+    /// scanned images where extraction is slow + low-value.
+    /// `0` disables the cap.
+    #[serde(default = "default_file_ingest_size_cap_mb")]
+    pub file_ingest_size_cap_mb: u32,
+    /// v0.5.38: max files imported on a single one-shot folder
+    /// ingest. Beyond this we stop walking and report the
+    /// remainder. Default 500. Watched-folder mode (v0.5.39+)
+    /// has no equivalent cap — it streams over time, not in
+    /// one go.
+    #[serde(default = "default_folder_ingest_file_cap")]
+    pub folder_ingest_file_cap: u32,
+    /// v0.5.38: how deep we recurse into a folder on one-shot
+    /// ingest. Default 8. Beyond this, the user should add the
+    /// nested location separately rather than letting one
+    /// ingest run blow up.
+    #[serde(default = "default_folder_ingest_depth_cap")]
+    pub folder_ingest_depth_cap: u32,
+    /// v0.5.38: skip dot-prefixed (Unix hidden) and `Library/`,
+    /// `node_modules/`, etc. (system-ish) folders on walk. The
+    /// user can opt out per-walk later if needed; default-on
+    /// is the safer trust posture.
+    #[serde(default = "default_skip_hidden_folders")]
+    pub skip_hidden_folders: bool,
     /// v0.5.6: one-shot backfill that re-runs the auto-tagger
     /// (with URL/UUID guards) and the new entity extractor against
     /// every memory. `None` on first launch of v0.5.6 (triggers
@@ -349,6 +375,10 @@ impl Default for AppSettings {
             ai_tier_override: None,
             ai_pause_below_battery_pct: default_ai_pause_below_battery_pct(),
             ai_screenshot_retention_days: default_ai_screenshot_retention_days(),
+            file_ingest_size_cap_mb: default_file_ingest_size_cap_mb(),
+            folder_ingest_file_cap: default_folder_ingest_file_cap(),
+            folder_ingest_depth_cap: default_folder_ingest_depth_cap(),
+            skip_hidden_folders: default_skip_hidden_folders(),
             ai_v0_5_6_backfill_done: None,
             ai_v0_5_7_backfill_done: None,
         }
@@ -377,6 +407,22 @@ fn default_ai_screenshot_retention_days() -> u32 {
     60
 }
 
+/// v0.5.38 file/folder ingestion caps. Defaults locked in
+/// design discussion: 50 MB per file, 500 files per one-shot
+/// folder, 8 levels of recursion, hidden/system folders skipped.
+fn default_file_ingest_size_cap_mb() -> u32 {
+    50
+}
+fn default_folder_ingest_file_cap() -> u32 {
+    500
+}
+fn default_folder_ingest_depth_cap() -> u32 {
+    8
+}
+fn default_skip_hidden_folders() -> bool {
+    true
+}
+
 /// One chunk row from `memory_chunks`. v0.3.0+. The `embedding_vector`
 /// is the raw little-endian f32 BLOB; callers decode via
 /// `EmbeddingVector::from_bytes`.
@@ -396,6 +442,61 @@ pub struct MemoryChunkRow {
     pub embedding_vector: Option<Vec<u8>>,
     pub embedding_generated_at: Option<String>,
     pub created_at: String,
+}
+
+/// v0.5.38: File row from the `files` table.
+///
+/// Files aren't memories — they have filesystem lifecycle,
+/// rich metadata, and (later) chunk-level embeddings. But they
+/// surface in the existing search/recap/Ask Recall paths via
+/// the shadow-memory bridge: each file row has a sibling
+/// memory row with `source_app = "file"` and
+/// `external_id = file.id`.
+///
+/// `path` is normalized + absolute. `parent_folder` is the
+/// directory containing this file (also normalized). Hashing
+/// content lets us detect "file touched but not actually
+/// changed" so re-ingest doesn't re-embed unnecessarily.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRow {
+    pub id: String,
+    pub path: String,
+    pub filename: String,
+    pub extension: Option<String>,
+    pub parent_folder: String,
+    pub size_bytes: Option<i64>,
+    pub file_created_at: Option<String>,
+    pub file_modified_at: Option<String>,
+    pub indexed_at: String,
+    pub content_hash: Option<String>,
+    pub extracted_text: Option<String>,
+    pub summary_text: Option<String>,
+    pub source_app: Option<String>,
+    pub project_id: Option<String>,
+    /// Bridge id back to the corresponding `memories` row. Null
+    /// only during a brief window between file insert and
+    /// shadow-memory create — repaired on next ingest cycle.
+    pub shadow_memory_id: Option<String>,
+}
+
+/// v0.5.38: Folder row from the `folders` table. Aggregate
+/// fields (top entities, centroid embedding, summary) land in
+/// v0.5.39 — v0.5.38 ships only the structural columns so the
+/// schema is stable from day one.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRow {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub parent_path: Option<String>,
+    pub child_count: i64,
+    /// JSON array of the most common file extensions inside this
+    /// folder, sorted by count descending. e.g. `[".pdf",".md"]`.
+    pub dominant_extensions: Option<String>,
+    pub indexed_at: String,
+    pub project_id: Option<String>,
 }
 
 /// v0.5.23: One row in the `proactive_surfaces` table — a card
