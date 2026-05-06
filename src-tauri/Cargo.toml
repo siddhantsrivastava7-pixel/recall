@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.5.39"
+version = "0.5.40"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"
@@ -10,7 +10,16 @@ name = "recall_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0.6", features = [] }
+# v0.5.40 — pinned to the exact version that succeeded on
+# v0.5.39's iter 4 build. Caret-range version specifiers caused
+# 4 build failures in the v0.5.37 → v0.5.39 chain because Cargo
+# and npm independently picked latest-compatible Tauri packages,
+# drifting the JS↔Rust major.minor pair that Tauri's own
+# pre-build sanity check enforces. Exact pins on both sides plus
+# the workflow sanity check (release-updater.yml) end the
+# whack-a-mole. Any Tauri upgrade is now a deliberate two-side
+# version bump in one commit.
+tauri-build = { version = "= 2.5.6", features = [] }
 
 [dependencies]
 async-trait = "0.1.89"
@@ -52,14 +61,18 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "macros"] }
 sysinfo = { version = "0.32.1", default-features = false, features = ["system"] }
-tauri = { version = "2.9.3", features = ["macos-private-api", "protocol-asset"] }
-tauri-plugin-clipboard-manager = "2.3.2"
-tauri-plugin-dialog = "2.6.0"
-tauri-plugin-global-shortcut = "2.3.1"
-tauri-plugin-notification = "2.3.2"
-tauri-plugin-opener = "2.5.3"
-tauri-plugin-process = "2.3.1"
-tauri-plugin-updater = "2.10.1"
+# v0.5.40 — every tauri* crate is now exact-pinned (= X.Y.Z) so
+# Cargo can't drift to a higher patch and break the JS↔Rust
+# major.minor sync. See the build-dependencies tauri-build
+# comment above for the full rationale.
+tauri = { version = "= 2.10.3", features = ["macos-private-api", "protocol-asset"] }
+tauri-plugin-clipboard-manager = "= 2.3.2"
+tauri-plugin-dialog = "= 2.7.0"
+tauri-plugin-global-shortcut = "= 2.3.1"
+tauri-plugin-notification = "= 2.3.3"
+tauri-plugin-opener = "= 2.5.3"
+tauri-plugin-process = "= 2.3.1"
+tauri-plugin-updater = "= 2.10.1"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 url = "2.5.8"

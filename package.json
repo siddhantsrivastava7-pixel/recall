@@ -1,7 +1,7 @@
 {
   "name": "recall",
   "private": true,
-  "version": "0.5.39",
+  "version": "0.5.40",
   "type": "module",
   "scripts": {
     "ai": "node .claude/codex-wrapper.js",
@@ -18,12 +18,12 @@
     "release:github": "powershell -ExecutionPolicy Bypass -File scripts/release-github.ps1"
   },
   "dependencies": {
-    "@tauri-apps/api": "~2.10.0",
-    "@tauri-apps/plugin-dialog": "~2.7.0",
-    "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-opener": "^2.5.3",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/plugin-dialog": "2.7.1",
+    "@tauri-apps/plugin-notification": "2.3.3",
+    "@tauri-apps/plugin-opener": "2.5.3",
+    "@tauri-apps/plugin-process": "2.3.1",
+    "@tauri-apps/plugin-updater": "2.10.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
     "lucide-react": "^0.511.0",
@@ -34,7 +34,7 @@
     "zustand": "^5.0.5"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.3.0",
+    "@tauri-apps/cli": "2.10.1",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",

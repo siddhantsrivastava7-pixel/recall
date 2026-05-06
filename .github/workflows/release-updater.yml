@@ -47,6 +47,29 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # v0.5.40 — fail fast on Tauri JS↔Rust major.minor drift.
+      # Cargo and npm both used to use caret-range version specs,
+      # picking the latest-compatible Tauri packages independently.
+      # Drift between the two sides tripped Tauri's own pre-build
+      # sanity check 5+ minutes into compile (4 build failures in
+      # the v0.5.37 → v0.5.39 chain). v0.5.40 exact-pinned every
+      # tauri* package on both sides; this step double-checks the
+      # invariant before we burn 20+ minutes on Rust compile.
+      - name: Verify Tauri JS↔Rust version sync
+        shell: bash
+        run: |
+          set -e
+          rust_v=$(grep -E '^name = "tauri"$' src-tauri/Cargo.lock -A1 | tail -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          js_v=$(node -e "console.log(require('./package.json').dependencies['@tauri-apps/api'])")
+          rust_mm="${rust_v%.*}"
+          js_mm="${js_v%.*}"
+          if [ "$rust_mm" != "$js_mm" ]; then
+            echo "::error::Tauri version mismatch: Rust ${rust_mm}.x ($rust_v) vs JS @tauri-apps/api ${js_mm}.x ($js_v)"
+            echo "::error::Pin both sides to the same major.minor in Cargo.toml + package.json before retrying."
+            exit 1
+          fi
+          echo "Tauri sync OK: Rust $rust_v ↔ JS @tauri-apps/api $js_v (both $rust_mm.x)"
+
       - name: Build Windows MSI
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -100,6 +123,29 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      # v0.5.40 — fail fast on Tauri JS↔Rust major.minor drift.
+      # Cargo and npm both used to use caret-range version specs,
+      # picking the latest-compatible Tauri packages independently.
+      # Drift between the two sides tripped Tauri's own pre-build
+      # sanity check 5+ minutes into compile (4 build failures in
+      # the v0.5.37 → v0.5.39 chain). v0.5.40 exact-pinned every
+      # tauri* package on both sides; this step double-checks the
+      # invariant before we burn 20+ minutes on Rust compile.
+      - name: Verify Tauri JS↔Rust version sync
+        shell: bash
+        run: |
+          set -e
+          rust_v=$(grep -E '^name = "tauri"$' src-tauri/Cargo.lock -A1 | tail -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          js_v=$(node -e "console.log(require('./package.json').dependencies['@tauri-apps/api'])")
+          rust_mm="${rust_v%.*}"
+          js_mm="${js_v%.*}"
+          if [ "$rust_mm" != "$js_mm" ]; then
+            echo "::error::Tauri version mismatch: Rust ${rust_mm}.x ($rust_v) vs JS @tauri-apps/api ${js_mm}.x ($js_v)"
+            echo "::error::Pin both sides to the same major.minor in Cargo.toml + package.json before retrying."
+            exit 1
+          fi
+          echo "Tauri sync OK: Rust $rust_v ↔ JS @tauri-apps/api $js_v (both $rust_mm.x)"
 
       - name: Build macOS app updater artifact
         env:
