@@ -122,6 +122,85 @@ pub async fn ai_clear_failed_ocr(state: State<'_, AppState>) -> AppResult<u64> {
     scheduler.clear_failed_ocr().await
 }
 
+/// v0.5.34: regenerate a recap memory's body from current data.
+///
+/// Recap memories (daily + weekly) cache a sectioned snapshot of
+/// what existed at the moment the recap was composed. When the
+/// underlying memories' content changes (e.g. v0.5.33's OCR
+/// backfill promoted real text into screenshot memories that the
+/// recap had bulleted with placeholder text), the recap stays
+/// stale until something forces a re-compose.
+///
+/// This command is the explicit re-compose trigger. The frontend
+/// calls it when a recap memory's detail view mounts so the user
+/// always sees current data. Idempotent — the composer compares
+/// the new body to the existing content and skips the write when
+/// they match, so re-opening the same recap repeatedly is cheap.
+///
+/// Returns the (possibly-updated) Memory so the frontend can
+/// upsert the fresh row into its store without a separate refetch.
+/// Returns Err for non-recap memories — generic memory refresh is
+/// out of scope.
+#[tauri::command]
+pub async fn refresh_recap_memory(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::models::Memory> {
+    let memory = state
+        .memory_repository
+        .find(&memory_id)
+        .await?
+        .ok_or_else(|| AppError::Invalid("Memory not found.".into()))?;
+
+    let is_daily = memory.source_app.as_deref() == Some("spoken")
+        && memory
+            .external_id
+            .as_deref()
+            .map(|id| id.starts_with("spoken-daily:"))
+            .unwrap_or(false);
+    let is_weekly = crate::ai::surfaces::weekly_recap::is_weekly_recap(&memory);
+
+    if !is_daily && !is_weekly {
+        return Err(AppError::Invalid(
+            "Refresh is only available for Daily or Weekly recap memories.".into(),
+        ));
+    }
+
+    if is_weekly {
+        // Weekly composer only knows how to rebuild "last week's"
+        // recap. If this memory is for a more-distant week, it's
+        // genuinely frozen — the composer can't recover the right
+        // window. Return as-is without erroring.
+        if let Some(updated) =
+            crate::ai::surfaces::weekly_recap::ensure_recap_for_last_week(
+                &state.memory_repository,
+            )
+            .await?
+        {
+            if updated.id == memory.id {
+                return Ok(updated);
+            }
+        }
+        return Ok(memory);
+    }
+
+    // Daily recap. The composer only knows how to rebuild TODAY's
+    // recap; older daily recaps are frozen (their spoken-section
+    // content is stored only on the recap memory itself, no longer
+    // accessible from a query). For today's recap we route through
+    // the existing post-save rebuild path.
+    if let Some(updated) = state
+        .spoken_transcript_service
+        .rebuild_recap_for_today()
+        .await?
+    {
+        if updated.id == memory.id {
+            return Ok(updated);
+        }
+    }
+    Ok(memory)
+}
+
 #[tauri::command]
 pub async fn ai_set_enabled(
     enabled: bool,

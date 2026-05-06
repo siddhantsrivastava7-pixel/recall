@@ -45,7 +45,8 @@ import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { ScreenshotPreview, isScreenshotMemory } from "./ScreenshotPreview";
 import { RelatedMemories } from "./RelatedMemories";
-import { AiSummaryPanel, isDailyRecapMemory } from "./AiSummaryPanel";
+import { AiSummaryPanel, isDailyRecapMemory, isWeeklyRecapMemory } from "./AiSummaryPanel";
+import { aiClient } from "@/services/ai/AiClient";
 
 export function MemoryDetail({
   memory,
@@ -62,8 +63,47 @@ export function MemoryDetail({
   const currentMemory = liveMemory ?? memory;
 
   const { update, remove, markOpened } = useMemoryStore();
+  const upsertMemory = useMemoryStore((state) => state.upsertMemory);
   const recordMemoryOpened = useContextStore((state) => state.recordMemoryOpened);
   const { projects } = useProjectStore();
+
+  // v0.5.34 — auto-refresh recap memory bodies on detail-view open.
+  //
+  // Daily and Weekly recaps cache a snapshot of underlying memories'
+  // content at compose time. When those underlying memories change
+  // later (e.g. v0.5.33's OCR backfill promoted real text into
+  // screenshot rows that the recap had bulleted with placeholders),
+  // the recap memory stays stale until something forces a re-compose.
+  //
+  // Calling `refreshRecapMemory` is idempotent — the backend
+  // composer compares the new body to existing content and skips
+  // the write when they match. Cheap to call on every recap detail
+  // open. The returned memory gets upserted into the store so the
+  // detail view re-renders with the fresh body.
+  useEffect(() => {
+    const memoryId = currentMemory.id;
+    if (!isDailyRecapMemory(currentMemory) && !isWeeklyRecapMemory(currentMemory)) {
+      return;
+    }
+    let disposed = false;
+    void (async () => {
+      try {
+        const fresh = await aiClient.refreshRecapMemory(memoryId);
+        if (!disposed) {
+          upsertMemory(fresh);
+        }
+      } catch (error) {
+        // Recap refresh is non-critical — failure leaves the
+        // existing (possibly stale) body in place rather than
+        // breaking the detail view. Log for debugging.
+        console.error("[recall] recap refresh failed:", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMemory.id, currentMemory.sourceApp, currentMemory.externalId]);
 
   const [titleDraft, setTitleDraft] = useState(currentMemory.title ?? "");
   const [contentDraft, setContentDraft] = useState(currentMemory.content);

@@ -35,6 +35,15 @@ export const aiClient = {
   /// Returns the count cleared so the UI can confirm visually.
   clearFailedOcr: () => invoke<number>("ai_clear_failed_ocr"),
 
+  /// v0.5.34: regenerate a recap memory's body from current data.
+  /// Called when the user opens a Daily or Weekly recap memory in
+  /// detail view — the composer is idempotent so this is cheap
+  /// even when the body is already current. Returns the
+  /// (possibly-updated) Memory so callers can upsert into the
+  /// store without a refetch round-trip.
+  refreshRecapMemory: (memoryId: string) =>
+    invoke<import("@/domain/types").Memory>("refresh_recap_memory", { memoryId }),
+
   /// Master toggle. Persists `aiEnabled` in `app_settings` and flips the
   /// scheduler atomic so workers wake/sleep accordingly.
   setEnabled: (enabled: boolean) =>

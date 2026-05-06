@@ -43,6 +43,16 @@ export function isDailyRecapMemory(memory: Memory): boolean {
   );
 }
 
+/// v0.5.34: True when this memory is a per-week Weekly recap.
+/// Backend stamps these as `sourceApp = "weekly"` AND `externalId`
+/// starting with `"weekly:"`.
+export function isWeeklyRecapMemory(memory: Memory): boolean {
+  return (
+    memory.sourceApp === "weekly" &&
+    Boolean(memory.externalId?.startsWith("weekly:"))
+  );
+}
+
 export function AiSummaryPanel({ memory }: AiSummaryPanelProps) {
   // We seed local state from the memory row. Once a regeneration
   // resolves, we update local state directly so the user sees the
