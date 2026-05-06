@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
 import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone, Sparkles } from "lucide-react";
+import { BrainQrCode } from "@/components/settings/BrainQrCode";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
@@ -369,29 +369,32 @@ function PairingTab() {
             flexWrap: "wrap",
           }}
         >
+          {/*
+            v0.5.36 — brain-themed QR. Round-dot modules in a
+            blue→purple synaptic gradient sit on top of the panel's
+            existing surface (no white background frame). Container
+            keeps a soft inner glow so the gradient nodes pop.
+          */}
           {info?.qrPayload ? (
             <div
               style={{
-                background: "white",
                 padding: 14,
-                borderRadius: 10,
+                borderRadius: 16,
+                background:
+                  "radial-gradient(ellipse at center, rgba(102,153,255,0.08) 0%, rgba(179,136,255,0.04) 60%, transparent 100%)",
+                border: "1px solid rgba(155,123,255,0.14)",
                 flexShrink: 0,
                 lineHeight: 0,
               }}
             >
-              <QRCodeSVG
-                value={info.qrPayload}
-                size={188}
-                level="M"
-                marginSize={0}
-              />
+              <BrainQrCode value={info.qrPayload} size={200} />
             </div>
           ) : (
             <div
               style={{
-                width: 216,
-                height: 216,
-                borderRadius: 10,
+                width: 228,
+                height: 228,
+                borderRadius: 16,
                 background: "rgba(255,255,255,0.04)",
                 border: "1px dashed rgba(255,255,255,0.10)",
                 display: "flex",
