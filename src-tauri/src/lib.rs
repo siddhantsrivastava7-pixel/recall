@@ -381,6 +381,66 @@ async fn run_v0_5_44_twitter_chunks_backfill(
     Ok(())
 }
 
+/// v0.5.45 — strip the legacy `Author (@handle)\n\n` header from
+/// every tweet body that still has it, then re-trigger the
+/// chunk + embed pipeline so the new (header-free) text replaces the
+/// stale chunks. Without this pass, existing tweets keep embedding
+/// against their author-prefixed text and continue to under-rank in
+/// Ask Recall retrieval even after the v0.5.45 sync-time fix lands.
+///
+/// Idempotent — `strip_legacy_tweet_header` returns `None` for
+/// content that's already been cleaned, so the loop short-circuits
+/// per-row on subsequent boots. The hash-aware `replace_chunks`
+/// inside `kick_chunk_and_embed` is the second layer of idempotency.
+async fn run_v0_5_45_twitter_header_strip(
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    use crate::services::x_bookmark_sync::strip_legacy_tweet_header;
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, content FROM memories WHERE source_app = 'twitter'",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut stripped_count = 0u32;
+    for (id, content) in &rows {
+        let Some(cleaned) = strip_legacy_tweet_header(content) else {
+            continue;
+        };
+        // Update the row's body to the cleaner form. We touch only
+        // `content` — title, source_window, url, etc. already carry
+        // the author info, so the UI loses nothing. `updated_at`
+        // intentionally NOT bumped so we don't push every tweet to
+        // the top of the All Memories list on first boot.
+        sqlx::query("UPDATE memories SET content = ?1 WHERE id = ?2")
+            .bind(&cleaned)
+            .bind(id)
+            .execute(&state.pool)
+            .await?;
+        // Re-fetch the (now-updated) memory and kick the embed
+        // pipeline. The chunker computes new content hashes; the
+        // hash-aware replace deletes the stale chunk rows and
+        // queues fresh embed jobs for the cleaner text.
+        if let Some(memory) = state.memory_repository.find(id).await? {
+            state.capture_service.kick_chunk_and_embed(&memory);
+        }
+        stripped_count += 1;
+    }
+    if stripped_count > 0 {
+        eprintln!(
+            "[recall][v0.5.45] twitter header strip: cleaned {} of {} tweet memories",
+            stripped_count,
+            rows.len()
+        );
+    }
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -835,6 +895,27 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.44] tweet chunks backfill failed: {err}"
+                        );
+                    }
+                });
+
+                // v0.5.45: strip the legacy author header from
+                // existing tweet bodies and re-embed. Pre-v0.5.45
+                // syncs stamped "Author (@handle)\n\n" at the top
+                // of `content`, which (a) duplicated the author
+                // already in the title and (b) dragged the chunk
+                // embedding toward "person mentions on twitter" and
+                // away from the actual tweet topic. Idempotent —
+                // strip_legacy_tweet_header returns None on already-
+                // clean content, so subsequent boots are a no-op.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_45_twitter_header_strip(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.45] twitter header strip failed: {err}"
                         );
                     }
                 });

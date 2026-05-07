@@ -663,13 +663,52 @@ fn build_tweet_title(text: &str, author_name: &str, author_handle: &str) -> Stri
     }
 }
 
-fn build_tweet_content(text: &str, author_handle: &str, author_name: &str) -> String {
-    let header = if author_name.is_empty() {
-        author_handle.to_string()
-    } else {
-        format!("{author_name} ({author_handle})")
-    };
-    format!("{header}\n\n{text}")
+/// v0.5.45 — detect and strip the legacy "Author (@handle)\n\n"
+/// header from a pre-v0.5.45 tweet body. Returns `Some(stripped)` if
+/// the content had the header pattern, `None` otherwise (so callers
+/// can no-op without writing).
+///
+/// Detection rules — deliberately conservative so we never strip real
+/// content from a tweet that legitimately starts with a `@` mention:
+///   * The content must contain a `\n\n` separator.
+///   * The portion before `\n\n` must be a single line (no `\n`).
+///   * That line must contain `@` (every author header does).
+///   * That line must be ≤ 200 chars (real headers are 5–80 chars).
+pub fn strip_legacy_tweet_header(content: &str) -> Option<String> {
+    let split_idx = content.find("\n\n")?;
+    let header = &content[..split_idx];
+    if !header.contains('@') {
+        return None;
+    }
+    if header.contains('\n') {
+        return None;
+    }
+    if header.chars().count() > 200 {
+        return None;
+    }
+    Some(content[split_idx + 2..].to_string())
+}
+
+/// v0.5.45 — strip the author header from the body. Author info
+/// already lives in `title` (visible at the top of the memory card)
+/// and `source_window` (used as the "From @handle" affordance), so
+/// repeating it inside `content` does two harmful things:
+///   * UI: the user sees "Natia Kurdadze (@natiakourdadze)" stamped
+///     twice — once as the title, once as the first line of the body.
+///   * Retrieval: embeddings of short tweets (~280 chars) are highly
+///     sensitive to leading content. With the author header consuming
+///     the first 30+ chars, the chunk drifts in vector space toward
+///     "person mentions on twitter" instead of the actual tweet topic.
+///     Net effect: a tweet whose body is "how to take app screenshots"
+///     embeds further from a query about app screenshots than it
+///     should, so denser non-tweet memories outrank it.
+///
+/// Keep the function arity unchanged — `_author_handle` and
+/// `_author_name` are still threaded through in case a future change
+/// wants them. The compiler-warning suppression keeps the call site
+/// minimal.
+fn build_tweet_content(text: &str, _author_handle: &str, _author_name: &str) -> String {
+    text.to_string()
 }
 
 #[cfg(test)]
@@ -706,5 +745,47 @@ mod tests {
         let title = build_tweet_title("Just shipped Recall v0.5.37 — bookmark sync from X.\n\nMore later.", "Siddhant", "@siddh");
         assert!(title.starts_with("Siddhant (@siddh) · "));
         assert!(title.contains("Just shipped"));
+    }
+
+    #[test]
+    fn strip_legacy_tweet_header_removes_full_form() {
+        let raw = "Natia Kurdadze (@natiakourdadze)\n\nGot these app screenshots for $1.88. Here's how:";
+        let stripped = strip_legacy_tweet_header(raw).expect("should detect header");
+        assert_eq!(stripped, "Got these app screenshots for $1.88. Here's how:");
+    }
+
+    #[test]
+    fn strip_legacy_tweet_header_removes_handle_only_form() {
+        let raw = "@unknown\n\nA tweet without a display name still has the handle prefix.";
+        let stripped = strip_legacy_tweet_header(raw).expect("should detect header");
+        assert!(stripped.starts_with("A tweet without"));
+    }
+
+    #[test]
+    fn strip_legacy_tweet_header_no_header_returns_none() {
+        // v0.5.45 syncs no longer have the header at all — nothing
+        // to strip, return None so the backfill skips this row.
+        let raw = "Got these app screenshots for $1.88. Here's how:";
+        assert!(strip_legacy_tweet_header(raw).is_none());
+    }
+
+    #[test]
+    fn strip_legacy_tweet_header_skips_when_first_para_lacks_at_sign() {
+        // Defensive: tweet bodies that legitimately have a short
+        // first paragraph followed by \n\n must not be stripped if
+        // they don't contain '@'.
+        let raw = "Top 3 takeaways:\n\n1. First, focus on...";
+        assert!(strip_legacy_tweet_header(raw).is_none());
+    }
+
+    #[test]
+    fn strip_legacy_tweet_header_skips_oversized_first_block() {
+        // Defensive: a very long first paragraph with '@' in it (e.g.
+        // an actual tweet that opens by @-mentioning multiple people
+        // and runs to several hundred chars before the first \n\n)
+        // shouldn't be treated as a header.
+        let opener = "@a @b @c ".repeat(40); // ~360 chars, all mentions
+        let raw = format!("{opener}\n\nactual body");
+        assert!(strip_legacy_tweet_header(&raw).is_none());
     }
 }
