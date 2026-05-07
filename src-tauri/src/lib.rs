@@ -26,7 +26,10 @@ use commands::{
         import_bookmarks, list_bookmark_sources, sync_bookmarks_now, x_connection_status,
         x_oauth_disconnect, x_oauth_start, x_sync_bookmarks_now,
     },
-    files::{ingest_path, ingest_paths, suggested_locations},
+    files::{
+        add_watched_folder, ingest_path, ingest_paths, list_watched_folders,
+        remove_watched_folder, suggested_locations,
+    },
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
         create_memory, delete_memory, dismiss_memory_resurface, duplicate_memory, get_memory,
@@ -991,6 +994,26 @@ pub fn run() {
                         );
                     }
                 });
+
+                // v0.5.48: re-establish filesystem watchers for
+                // every folder in `watched_folders`. Spawned (not
+                // inline) so the boot path never blocks on
+                // watcher init. Each watcher is its own debouncer
+                // so a single failed watch (folder gone offline,
+                // permissions change) doesn't take down the rest.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) = state
+                        .file_watcher_service
+                        .restore_from_db(&app_handle, &state.pool)
+                        .await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.48] watcher restore failed: {err}"
+                        );
+                    }
+                });
             }
 
             Ok(())
@@ -1047,6 +1070,9 @@ pub fn run() {
             ingest_path,
             ingest_paths,
             suggested_locations,
+            add_watched_folder,
+            remove_watched_folder,
+            list_watched_folders,
             list_memories,
             get_memory,
             create_memory,

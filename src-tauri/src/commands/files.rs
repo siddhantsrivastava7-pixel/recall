@@ -21,24 +21,54 @@ use crate::{
     state::app_state::AppState,
 };
 
+/// v0.5.48 — auto-watch any ingested folder so changes flow into
+/// Recall without the user having to re-drop. Best-effort: a
+/// failed watch registration logs and continues, never blocking
+/// the ingest result the user is waiting on.
+async fn auto_watch_folder(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    path: &std::path::Path,
+) {
+    if !path.is_dir() {
+        return;
+    }
+    if let Err(error) = state
+        .file_watcher_service
+        .add_watch(app, &state.pool, path)
+        .await
+    {
+        eprintln!(
+            "[recall][file-watcher] auto-watch failed for {}: {error}",
+            path.display()
+        );
+    }
+}
+
 /// One-shot ingest. Path can be a file or a directory.
 /// Settings (caps, hidden-folder skip) read fresh inside the
 /// service so UI changes apply on the next call without restart.
 #[tauri::command]
 pub async fn ingest_path(
+    app: AppHandle,
     path: String,
     state: State<'_, AppState>,
 ) -> AppResult<file_ingestion_service::IngestResult> {
     let path_buf = std::path::PathBuf::from(&path);
     let settings = state.settings_repository.get().await?;
-    file_ingestion_service::ingest_path(
+    let result = file_ingestion_service::ingest_path(
         &state.pool,
         &state.memory_repository,
         &state.memory_service,
         &settings,
         &path_buf,
     )
-    .await
+    .await?;
+    // v0.5.48: auto-watch directories so future changes flow in
+    // without the user having to re-drag the folder. Single files
+    // are skipped here — there's no parent-of-our-choice to watch.
+    auto_watch_folder(&app, &state, &path_buf).await;
+    Ok(result)
 }
 
 /// Multi-path variant — drag-drop typically yields a Vec of
@@ -47,6 +77,7 @@ pub async fn ingest_path(
 /// Aggregates counts across each path.
 #[tauri::command]
 pub async fn ingest_paths(
+    app: AppHandle,
     paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> AppResult<file_ingestion_service::IngestResult> {
@@ -64,6 +95,10 @@ pub async fn ingest_paths(
         .await
         {
             Ok(result) => {
+                // v0.5.48: same auto-watch behavior as the single-
+                // path command — folders flowing through batch
+                // drops also get watched.
+                auto_watch_folder(&app, &state, &path_buf).await;
                 combined.files_seen += result.files_seen;
                 combined.files_imported += result.files_imported;
                 combined.files_skipped_size += result.files_skipped_size;
@@ -185,6 +220,59 @@ fn shallow_file_count(path: &std::path::Path) -> u32 {
         }
     }
     count
+}
+
+/// v0.5.48 — manually add a folder to the watch list. Useful
+/// when the user wants to watch a folder they haven't ingested
+/// (rare today; common once the v0.5.49 management UI lands).
+/// Idempotent — re-adding already-watched paths is a no-op.
+#[tauri::command]
+pub async fn add_watched_folder(
+    app: AppHandle,
+    path: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let path_buf = std::path::PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Err(AppError::Invalid(format!(
+            "Path does not exist: {}",
+            path_buf.display()
+        )));
+    }
+    if !path_buf.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "Watch target must be a directory: {}",
+            path_buf.display()
+        )));
+    }
+    state
+        .file_watcher_service
+        .add_watch(&app, &state.pool, &path_buf)
+        .await
+}
+
+/// v0.5.48 — stop watching a folder. Existing shadow memories
+/// for files already inside the folder stay (the user kept
+/// what they ingested), we just stop pulling new changes.
+#[tauri::command]
+pub async fn remove_watched_folder(
+    path: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let path_buf = std::path::PathBuf::from(&path);
+    state
+        .file_watcher_service
+        .remove_watch(&state.pool, &path_buf)
+        .await
+}
+
+/// v0.5.48 — list the absolute paths of every currently-watched
+/// folder. Source of truth is the `watched_folders` SQLite
+/// table, not the in-memory map (so the UI sees the same view
+/// the post-restart watchers will).
+#[tauri::command]
+pub async fn list_watched_folders(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    state.file_watcher_service.list_watched(&state.pool).await
 }
 
 /// Wired up so the Tauri command surface compiles even before

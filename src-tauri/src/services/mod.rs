@@ -5,6 +5,7 @@ pub mod capture_service;
 pub mod clipboard_watcher_service;
 pub mod export_service;
 pub mod file_ingestion_service;
+pub mod file_watcher_service;
 pub mod license_service;
 pub mod link_enrichment_service;
 pub mod link_utils;

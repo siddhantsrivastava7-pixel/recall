@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.5.47"
+version = "0.5.48"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"
@@ -39,6 +39,19 @@ urlencoding = "2.1"
 # falls back gracefully on image-only PDFs).
 walkdir = "2.5"
 pdf-extract = "0.7"
+# v0.5.48 — filesystem watcher for auto re-ingest of changed
+# files in user-added folders. notify wraps the platform-native
+# APIs (ReadDirectoryChangesW on Windows, FSEvents on macOS,
+# inotify on Linux). notify-debouncer-full coalesces the bursts
+# of events file editors emit on save (often 3–10 events for one
+# user-visible save) into a single debounced delivery so we
+# don't re-ingest the same file 8 times per save.
+#
+# Caret ranges are fine here — the tauri exact-pin discipline
+# exists to keep the JS↔Rust version pair in sync, which doesn't
+# apply to a pure Rust crate. notify 6.1.x is API-stable.
+notify = "6.1"
+notify-debouncer-full = "0.3"
 chrono = { version = "0.4.42", features = ["serde"] }
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }

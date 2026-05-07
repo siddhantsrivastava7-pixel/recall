@@ -18,6 +18,7 @@ use crate::{
     services::{
         bookmark_service::BookmarkIngestionService,
         capture_service::CaptureService,
+        file_watcher_service::FileWatcherService,
         license_service::{LicenseService, LocalLicenseVerifier},
         link_enrichment_service::LinkEnrichmentService,
         memory_service::MemoryService,
@@ -50,6 +51,11 @@ pub struct AppState {
     pub license_service: Arc<LicenseService>,
     pub bookmark_service: Arc<BookmarkIngestionService>,
     pub link_enrichment_service: Arc<LinkEnrichmentService>,
+    /// v0.5.48: filesystem watcher for auto re-ingest of changed
+    /// files in user-added folders. Holds one notify-debouncer per
+    /// watched path; survives restart by reloading from
+    /// `watched_folders` in `setup()`.
+    pub file_watcher_service: Arc<FileWatcherService>,
     pub spoken_transcript_service: Arc<SpokenTranscriptService>,
     pub pairing_service: Arc<PairingService>,
     pub receiver_service: Arc<DesktopReceiverService>,
@@ -142,6 +148,10 @@ impl AppState {
             platform.browser_bookmarks.clone(),
             link_enrichment_service.clone(),
         ));
+        // v0.5.48: empty watcher map at construction time. Boot
+        // restore (in lib.rs setup) populates it from the
+        // `watched_folders` table after the window opens.
+        let file_watcher_service = Arc::new(FileWatcherService::new());
 
         Self {
             pool,
@@ -162,6 +172,7 @@ impl AppState {
             spoken_transcript_service,
             pairing_service,
             receiver_service,
+            file_watcher_service,
             platform,
             ai_scheduler_cell: OnceLock::new(),
             screenshot_store_cell: OnceLock::new(),

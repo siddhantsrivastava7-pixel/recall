@@ -220,6 +220,30 @@ pub async fn run_migrations(pool: &SqlitePool) -> AppResult<()> {
         .execute(pool)
         .await?;
 
+    // v0.5.48 — watched-folder list. Every folder the user has
+    // dragged in (or chosen via Settings → Files in a future
+    // release) auto-lands here so the file watcher can re-establish
+    // its notify subscriptions on every boot. Path is the natural
+    // PK — duplicates are nonsensical and the existing ingest path
+    // already canonicalizes before it gets here.
+    //
+    // `recursive` is reserved (defaults to 1 = walk children).
+    // Today the watcher always watches recursively because the
+    // ingest service does too; the column is here so a future
+    // "watch only the top level" affordance doesn't need a
+    // schema change.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS watched_folders (
+            path      TEXT PRIMARY KEY,
+            recursive INTEGER NOT NULL DEFAULT 1,
+            added_at  TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // v0.5.37 — X (Twitter) OAuth 2.0 token storage.
     //
     // One row per connected X account. Today there's at most one
