@@ -325,6 +325,62 @@ async fn run_v0_5_42_twitter_backfill(state: &AppState) -> crate::errors::app_er
     Ok(())
 }
 
+/// v0.5.44 — chunk + embed any tweet memories that were inserted
+/// pre-v0.5.44 via the raw repository (so they bypassed
+/// `capture_service.persist`'s post-save embed hook). Without this,
+/// existing tweets stay invisible to Ask Recall even after the
+/// route fix lands, because dedup-by-external_id prevents
+/// re-creation through the new code path.
+///
+/// Cheap on the steady state — the `LEFT JOIN ... WHERE c.id IS NULL`
+/// query returns zero rows once every tweet has chunks, and
+/// `kick_chunk_and_embed`'s hash-aware upsert is itself idempotent.
+/// No settings flag because the SQL is the gate; the work runs
+/// only when there's work to do.
+async fn run_v0_5_44_twitter_chunks_backfill(
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    // Find tweet memory IDs that have no chunk row. Bounded by the
+    // user's bookmark count (typically tens to low thousands), so a
+    // single fetch_all is fine.
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT m.id FROM memories m \
+         LEFT JOIN memory_chunks c ON c.memory_id = m.id \
+         WHERE m.source_app = 'twitter' \
+           AND c.id IS NULL",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "[recall][v0.5.44] tweet chunks backfill: {} memories pending",
+        rows.len()
+    );
+
+    // Kick the chunk + embed pipeline per memory. Each call is
+    // best-effort and async-spawned internally; we yield between
+    // batches so a thousand-bookmark library doesn't monopolize the
+    // tokio executor on the boot path.
+    let mut kicked = 0u32;
+    for (idx, (id,)) in rows.iter().enumerate() {
+        if let Some(memory) = state.memory_repository.find(id).await? {
+            state.capture_service.kick_chunk_and_embed(&memory);
+            kicked += 1;
+        }
+        if idx % 25 == 24 {
+            tokio::task::yield_now().await;
+        }
+    }
+    eprintln!(
+        "[recall][v0.5.44] tweet chunks backfill: kicked {} memories",
+        kicked
+    );
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -761,6 +817,24 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.42] twitter backfill failed: {err}"
+                        );
+                    }
+                });
+
+                // v0.5.44: chunk + embed any tweet memories that
+                // landed pre-v0.5.44 via the raw repository and so
+                // never triggered the embed pipeline. Without this,
+                // existing tweets stay missing from Ask Recall
+                // context even after the route fix lands. Same
+                // SQL-as-gate idempotency pattern as v0.5.42.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_44_twitter_chunks_backfill(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.44] tweet chunks backfill failed: {err}"
                         );
                     }
                 });

@@ -142,6 +142,7 @@ pub async fn x_sync_bookmarks_now(
     let result = x_bookmark_sync::sync_bookmarks(
         &token,
         &state.memory_repository,
+        &state.memory_service,
         Some(project_id),
     )
     .await?;

@@ -147,6 +147,16 @@ impl CaptureService {
         });
     }
 
+    /// v0.5.44 — public entry point so callers that inserted a memory
+    /// outside of `create()` / `update()` (e.g. earlier X-bookmark
+    /// syncs that wrote through the raw repository) can still trigger
+    /// the chunk + embed pipeline retroactively. Same idempotency
+    /// guarantees as the post-save hook: hash-aware upsert means a
+    /// repeat call is cheap.
+    pub fn kick_chunk_and_embed(&self, memory: &Memory) {
+        self.maybe_chunk_and_embed(memory);
+    }
+
     /// Chunk + enqueue-embed hook. Called after `repository.create` and
     /// `repository.update` returns so the save path is never blocked
     /// by chunking or queue I/O. Hash-aware: an unchanged chunk keeps

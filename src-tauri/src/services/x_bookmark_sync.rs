@@ -53,6 +53,8 @@ use uuid::Uuid;
 use crate::db::repositories::SharedMemoryRepository;
 use crate::errors::app_error::{AppError, AppResult};
 use crate::models::{MemoryInput, MemorySourceType};
+use crate::services::memory_service::MemoryService;
+use std::sync::Arc;
 
 /// Public client ID registered for "Recall Desktop" on
 /// developer.x.com. Public clients use PKCE so this is safe to
@@ -495,9 +497,18 @@ pub struct BookmarkSyncResult {
 /// tweet memory into a project so tweets get their own pinned
 /// sidebar entry instead of scattering through All Memories.
 /// Pass `None` for the legacy behavior (no project).
+///
+/// v0.5.44 — switched from the raw repository to `MemoryService` so
+/// the post-save `chunk_and_embed` hook runs on tweet creation.
+/// Without this, tweets landed in the DB but were never chunked,
+/// embedded, auto-tagged, or entity-extracted, which made them
+/// invisible to Ask Recall and any other dense-retrieval surface.
+/// `memory_repo` is kept for the dedup-by-external-id check (not
+/// exposed on `MemoryService`).
 pub async fn sync_bookmarks(
     token: &XOAuthRow,
     memory_repo: &SharedMemoryRepository,
+    memory_service: &Arc<MemoryService>,
     project_id: Option<String>,
 ) -> AppResult<BookmarkSyncResult> {
     let mut result = BookmarkSyncResult::default();
@@ -585,7 +596,12 @@ pub async fn sync_bookmarks(
                 .clone()
                 .unwrap_or_else(|| Utc::now().to_rfc3339());
 
-            memory_repo
+            // v0.5.44: route through MemoryService so the post-save
+            // chunk + embed pipeline fires (auto-tagging, entity
+            // extraction, embedding job enqueue). Pre-v0.5.44 this
+            // hit the raw repository directly, which left tweets
+            // unembedded and therefore invisible to Ask Recall.
+            memory_service
                 .create(MemoryInput {
                     source_type: Some(MemorySourceType::Manual),
                     title: Some(title),
