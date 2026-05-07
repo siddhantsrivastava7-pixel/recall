@@ -441,6 +441,59 @@ async fn run_v0_5_45_twitter_header_strip(
     Ok(())
 }
 
+/// v0.5.47 — chunk + embed any file or folder shadow memories
+/// that landed pre-v0.5.47 via the raw repository (so they
+/// bypassed `capture_service.persist`'s post-save embed hook).
+/// Same shape as v0.5.44's twitter chunks backfill — different
+/// `source_app` filter, identical pattern.
+///
+/// The user reported the same symptom Twitter had: file content
+/// invisible to Ask Recall. Root cause was the same: file
+/// ingestion called `memory_repo.create()` directly, skipping the
+/// chunker and embed-queue enqueue. The route fix (v0.5.47 in
+/// file_ingestion_service.rs) handles future ingests; this
+/// retroactively chunks every file/folder shadow that's already
+/// in the DB without chunks.
+///
+/// Idempotent — the LEFT JOIN clause skips memories that already
+/// have chunks, so subsequent boots are no-ops.
+async fn run_v0_5_47_files_chunks_backfill(
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT m.id FROM memories m \
+         LEFT JOIN memory_chunks c ON c.memory_id = m.id \
+         WHERE m.source_app IN ('file', 'folder') \
+           AND c.id IS NULL",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "[recall][v0.5.47] file/folder chunks backfill: {} memories pending",
+        rows.len()
+    );
+
+    let mut kicked = 0u32;
+    for (idx, (id,)) in rows.iter().enumerate() {
+        if let Some(memory) = state.memory_repository.find(id).await? {
+            state.capture_service.kick_chunk_and_embed(&memory);
+            kicked += 1;
+        }
+        if idx % 25 == 24 {
+            tokio::task::yield_now().await;
+        }
+    }
+    eprintln!(
+        "[recall][v0.5.47] file/folder chunks backfill: kicked {} memories",
+        kicked
+    );
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -916,6 +969,25 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.45] twitter header strip failed: {err}"
+                        );
+                    }
+                });
+
+                // v0.5.47: chunk + embed file/folder shadow
+                // memories. Same shape as v0.5.44 for tweets —
+                // pre-v0.5.47 file ingest hit the raw repository
+                // directly so shadow rows landed without chunks.
+                // The route fix in file_ingestion_service handles
+                // future ingests; this catches rows already in the
+                // DB. SQL-as-gate, no settings flag needed.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_47_files_chunks_backfill(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.47] file/folder chunks backfill failed: {err}"
                         );
                     }
                 });

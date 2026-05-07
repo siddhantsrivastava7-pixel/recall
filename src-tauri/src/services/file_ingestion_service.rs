@@ -37,6 +37,7 @@
 //! * Office formats (.docx, .xlsx). v0.5.40.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -48,6 +49,7 @@ use walkdir::WalkDir;
 use crate::db::repositories::SharedMemoryRepository;
 use crate::errors::app_error::{AppError, AppResult};
 use crate::models::{AppSettings, MemoryInput, MemorySourceType};
+use crate::services::memory_service::MemoryService;
 
 /// Source-app stamp on memory rows that shadow file ingestion.
 /// Lets the recap composer route them, the search path filter,
@@ -75,9 +77,18 @@ pub struct IngestResult {
 
 /// Public entry — point at any path, get a result. Branches on
 /// `is_dir` and routes to the file or folder handler.
+///
+/// v0.5.47 — `memory_service` threads through alongside the raw
+/// repository so shadow-memory creates and updates fire the
+/// post-save chunk + embed pipeline. Pre-v0.5.47 ingest used the
+/// raw repository directly, which is exactly the same bug X
+/// bookmark sync had pre-v0.5.44: rows landed in the DB but were
+/// never embedded, so they were invisible to Ask Recall and to
+/// the search bar's semantic pass.
 pub async fn ingest_path(
     pool: &SqlitePool,
     memory_repo: &SharedMemoryRepository,
+    memory_service: &Arc<MemoryService>,
     settings: &AppSettings,
     path: &Path,
 ) -> AppResult<IngestResult> {
@@ -91,9 +102,9 @@ pub async fn ingest_path(
 
     let mut result = IngestResult::default();
     if path.is_dir() {
-        ingest_folder(pool, memory_repo, settings, &path, &mut result).await?;
+        ingest_folder(pool, memory_repo, memory_service, settings, &path, &mut result).await?;
     } else {
-        ingest_single_file(pool, memory_repo, settings, &path, &mut result).await?;
+        ingest_single_file(pool, memory_repo, memory_service, settings, &path, &mut result).await?;
     }
     result.message = build_summary_message(&result);
     Ok(result)
@@ -109,13 +120,14 @@ pub async fn ingest_path(
 async fn ingest_folder(
     pool: &SqlitePool,
     memory_repo: &SharedMemoryRepository,
+    memory_service: &Arc<MemoryService>,
     settings: &AppSettings,
     root: &Path,
     result: &mut IngestResult,
 ) -> AppResult<()> {
     // Persist the root folder row first so file rows can reference
     // their parent_folder string consistently.
-    upsert_folder_row(pool, memory_repo, root, settings).await?;
+    upsert_folder_row(pool, memory_repo, memory_service, root, settings).await?;
     result.folders_imported += 1;
 
     let depth_cap = settings.folder_ingest_depth_cap as usize;
@@ -156,7 +168,7 @@ async fn ingest_folder(
         if file_type.is_dir() && entry.depth() > 0 {
             // Persist subfolder rows so folder retrieval works
             // without re-walking. Cheap (one row per directory).
-            upsert_folder_row(pool, memory_repo, path, settings).await.ok();
+            upsert_folder_row(pool, memory_repo, memory_service, path, settings).await.ok();
             result.folders_imported += 1;
             continue;
         }
@@ -185,7 +197,7 @@ async fn ingest_folder(
         // We re-call ingest_single_file rather than inline so the
         // single-file drop path and the folder-walk path go
         // through identical extract+persist logic.
-        match ingest_single_file(pool, memory_repo, settings, path, result).await {
+        match ingest_single_file(pool, memory_repo, memory_service, settings, path, result).await {
             Ok(_) => {}
             Err(error) => {
                 eprintln!(
@@ -203,6 +215,7 @@ async fn ingest_folder(
 async fn ingest_single_file(
     pool: &SqlitePool,
     memory_repo: &SharedMemoryRepository,
+    memory_service: &Arc<MemoryService>,
     settings: &AppSettings,
     path: &Path,
     result: &mut IngestResult,
@@ -308,8 +321,12 @@ async fn ingest_single_file(
     let file_url = format!("file://{}", path_str.replace('\\', "/"));
 
     if let Some(shadow_id) = existing_shadow.clone() {
-        // Update existing shadow with fresh content.
-        let _ = memory_repo
+        // v0.5.47: route through MemoryService so the post-save
+        // chunk + embed pipeline fires (auto-tagging, entity
+        // extraction, embedding job enqueue). Same fix shape as
+        // v0.5.44 for X bookmarks. Without this, edited files
+        // re-sync to disk but their existing chunks stay stale.
+        let _ = memory_service
             .update(
                 &shadow_id,
                 MemoryInput {
@@ -331,7 +348,9 @@ async fn ingest_single_file(
         result.files_imported += 1;
     } else {
         // Brand-new file: create the shadow memory and link.
-        let memory = memory_repo
+        // v0.5.47: route through MemoryService — same reason as
+        // the update branch above.
+        let memory = memory_service
             .create(MemoryInput {
                 source_type: Some(MemorySourceType::Manual),
                 title: Some(shadow_title),
@@ -363,6 +382,7 @@ async fn ingest_single_file(
 async fn upsert_folder_row(
     pool: &SqlitePool,
     memory_repo: &SharedMemoryRepository,
+    memory_service: &Arc<MemoryService>,
     path: &Path,
     settings: &AppSettings,
 ) -> AppResult<()> {
@@ -438,11 +458,16 @@ async fn upsert_folder_row(
     let title = format!("Folder · {}", name);
     let body = build_folder_shadow_content(&path_str, child_count, &dominant);
 
+    // v0.5.47: route through MemoryService — folder shadow rows
+    // need the embed pipeline too so they show up under semantic
+    // retrieval (Ask Recall, blended search). The dedupe still
+    // uses the raw repo's find_by_external_source helper since
+    // MemoryService doesn't expose it.
     if let Some(existing) = memory_repo
         .find_by_external_source(FOLDER_SOURCE_APP, &path_str)
         .await?
     {
-        let _ = memory_repo
+        let _ = memory_service
             .update(
                 &existing.id,
                 MemoryInput {
@@ -462,7 +487,7 @@ async fn upsert_folder_row(
             )
             .await;
     } else {
-        let _ = memory_repo
+        let _ = memory_service
             .create(MemoryInput {
                 source_type: Some(MemorySourceType::Manual),
                 title: Some(title),

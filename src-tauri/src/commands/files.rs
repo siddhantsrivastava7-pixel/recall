@@ -34,6 +34,7 @@ pub async fn ingest_path(
     file_ingestion_service::ingest_path(
         &state.pool,
         &state.memory_repository,
+        &state.memory_service,
         &settings,
         &path_buf,
     )
@@ -56,6 +57,7 @@ pub async fn ingest_paths(
         match file_ingestion_service::ingest_path(
             &state.pool,
             &state.memory_repository,
+            &state.memory_service,
             &settings,
             &path_buf,
         )
