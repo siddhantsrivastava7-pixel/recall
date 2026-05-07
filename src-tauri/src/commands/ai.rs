@@ -798,9 +798,23 @@ pub(crate) async fn semantic_search_internal(
 }
 
 /// Pure-relevance memory aggregation: group chunks by memory, take
-/// each memory's mean of top-K chunks as its score, sort, truncate.
+/// each memory's score as its **best** chunk's score, sort, truncate.
 /// No diversity penalty — the caller (Ask Recall) wants enumeration
 /// of ALL relevant memories, even when they're near-duplicates.
+///
+/// v0.5.46 — switched from `mean of top-2 chunks` to `max chunk
+/// score`. The mean rule mathematically penalised single-chunk
+/// memories: a tweet whose only chunk scored 0.65 lost to a
+/// multi-chunk memory whose top-2 averaged 0.70 even when the tweet
+/// was the better answer in plain English. Concrete failure case
+/// from a user report — query "how can I take app screenshots?"
+/// matched a tweet titled "Got these app screenshots for $1.88.
+/// Here's how:" but Ask Recall surfaced a long companion-app memory
+/// instead because that memory had two screenshot-adjacent chunks
+/// averaging higher than the tweet's single chunk. Max-chunk scoring
+/// is the standard practice for chunk-level dense retrieval (every
+/// production RAG system I've seen does it this way) and removes the
+/// length bias.
 fn aggregate_by_relevance(
     scored_chunks: Vec<ScoredChunk>,
     top_n: usize,
@@ -808,7 +822,6 @@ fn aggregate_by_relevance(
     if top_n == 0 || scored_chunks.is_empty() {
         return Vec::new();
     }
-    const TOP_K_CHUNKS_PER_MEMORY: usize = 2;
     let mut by_memory: HashMap<String, Vec<ScoredChunk>> = HashMap::new();
     for chunk in scored_chunks {
         by_memory.entry(chunk.memory_id.clone()).or_default().push(chunk);
@@ -819,15 +832,18 @@ fn aggregate_by_relevance(
             if chunks.is_empty() {
                 return None;
             }
+            // Sort descending by score so [0] is the best chunk.
             chunks.sort_by(|a, b| {
                 b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
             });
-            let take = chunks.len().min(TOP_K_CHUNKS_PER_MEMORY);
-            let mean = chunks[..take].iter().map(|c| c.score).sum::<f32>() / take as f32;
             let best_chunk = chunks.into_iter().next().unwrap();
+            // Memory score = best chunk's score. No averaging — that
+            // gave longer memories an unfair lift via second-best
+            // chunks that often weren't even on-topic.
+            let memory_score = best_chunk.score;
             Some(RelatedMemoryHit {
                 memory_id,
-                score: mean,
+                score: memory_score,
                 best_chunk,
             })
         })
