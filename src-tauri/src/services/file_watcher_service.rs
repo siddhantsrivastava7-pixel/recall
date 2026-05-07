@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use notify::{RecommendedWatcher, RecursiveMode};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use notify_debouncer_full::{
     new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, FileIdMap,
 };
