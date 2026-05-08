@@ -574,21 +574,22 @@ async fn run_v0_5_49_office_formats_backfill(
 /// v0.5.54 — back-fill watched_folders from the `folders` table.
 /// v0.5.48 introduced auto-watch on ingest, but folders imported
 /// before that release have rows in `folders` and no entry in
-/// `watched_folders` — invisible to the v0.5.52 management
-/// panel and not actually being watched. This sweep adds every
-/// existing folder path to the watch list (skipping ones gone
-/// from disk) and re-establishes a debouncer for each.
+/// `watched_folders`.
 ///
-/// Idempotent: `INSERT OR IGNORE` no-ops on already-watched
-/// paths; `restore_from_db` immediately after handles the
-/// notify-side registration. Splitting INSERT from restore is
-/// intentional — the user-facing panel is what matters; restore
-/// is best-effort and tolerated to fail per-folder (folder
-/// gone offline, permissions revoked, etc.).
+/// v0.5.56 — only add **roots** (folders with no ancestor in the
+/// `folders` table). The walker creates a row per subfolder
+/// during recursive ingest, so the original v0.5.54 behavior
+/// (add every row) flooded the management panel with hundreds
+/// of redundant entries — and watching them is wasted work
+/// because notify is already recursive. A user with one
+/// `Documents` ingest now sees one entry; before this fix they
+/// saw the entire subtree.
 async fn run_v0_5_54_watched_folders_backfill(
     app: &tauri::AppHandle,
     state: &AppState,
 ) -> crate::errors::app_error::AppResult<()> {
+    use crate::commands::files::{is_path_under, normalize_for_match};
+
     let folder_paths: Vec<(String,)> =
         sqlx::query_as("SELECT path FROM folders ORDER BY indexed_at ASC")
             .fetch_all(&state.pool)
@@ -598,9 +599,31 @@ async fn run_v0_5_54_watched_folders_backfill(
         return Ok(());
     }
 
+    // Build (raw, normalized) pairs once; the inner is_path_under
+    // re-normalizes but the outer comparison loop short-circuits
+    // by string equality so the cost is bounded.
+    let normalized: Vec<(String, String)> = folder_paths
+        .iter()
+        .map(|(p,)| (p.clone(), normalize_for_match(p)))
+        .collect();
+
+    // Roots: folders whose normalized form has no other folder's
+    // normalized form as an ancestor. is_path_under returns true
+    // when paths are equal *or* descendant; the `n != other_n`
+    // guard rejects the equal case so only true ancestors count.
+    let roots: Vec<&String> = normalized
+        .iter()
+        .filter(|(_, n)| {
+            !normalized
+                .iter()
+                .any(|(_, other_n)| n != other_n && is_path_under(n, other_n))
+        })
+        .map(|(p, _)| p)
+        .collect();
+
     let now = chrono::Utc::now().to_rfc3339();
     let mut added = 0u32;
-    for (path_str,) in &folder_paths {
+    for path_str in &roots {
         let path = std::path::PathBuf::from(path_str);
         if !path.exists() {
             continue; // folder gone from disk; skip the row
@@ -609,7 +632,7 @@ async fn run_v0_5_54_watched_folders_backfill(
             "INSERT OR IGNORE INTO watched_folders (path, recursive, added_at) \
              VALUES (?1, 1, ?2)",
         )
-        .bind(path_str)
+        .bind(*path_str)
         .bind(&now)
         .execute(&state.pool)
         .await?;
@@ -620,12 +643,8 @@ async fn run_v0_5_54_watched_folders_backfill(
 
     if added > 0 {
         eprintln!(
-            "[recall][v0.5.54] watched-folders backfill: added {added} folder(s) from existing ingests"
+            "[recall][v0.5.54] watched-folders backfill: added {added} root folder(s) from existing ingests"
         );
-        // Re-establish watchers for newly-added paths. The
-        // existing v0.5.48 boot-time restore_from_db ran before
-        // we got here so backfilled paths missed it; this second
-        // pass picks them up.
         if let Err(error) = state
             .file_watcher_service
             .restore_from_db(app, &state.pool)
@@ -633,6 +652,67 @@ async fn run_v0_5_54_watched_folders_backfill(
         {
             eprintln!(
                 "[recall][v0.5.54] watcher restore (post-backfill) failed: {error}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// v0.5.56 — dedupe `watched_folders` down to roots. The
+/// v0.5.54 backfill (pre-v0.5.56) inserted every row of the
+/// `folders` table into `watched_folders`, including
+/// subfolders the walker recorded during recursive ingest.
+/// Notify already watches recursively, so each subfolder entry
+/// is redundant — and the user got hundreds of redundant rows
+/// in the management panel.
+///
+/// This sweep keeps an entry only when no other watched-folder
+/// entry is a strict ancestor of it. Removed entries go through
+/// `file_watcher_service.remove_watch` so the platform handle
+/// gets released alongside the row delete. Idempotent — runs
+/// every boot, no-ops once the set is already at roots-only.
+async fn run_v0_5_56_dedupe_watched_folders(
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    use crate::commands::files::{is_path_under, normalize_for_match};
+
+    let all_watched = state.file_watcher_service.list_watched(&state.pool).await?;
+    if all_watched.len() < 2 {
+        return Ok(());
+    }
+
+    let normalized: Vec<(String, String)> = all_watched
+        .iter()
+        .map(|p| (p.clone(), normalize_for_match(p)))
+        .collect();
+
+    let mut redundant: Vec<String> = Vec::new();
+    for (raw, n) in &normalized {
+        let has_ancestor = normalized
+            .iter()
+            .any(|(_, other_n)| n != other_n && is_path_under(n, other_n));
+        if has_ancestor {
+            redundant.push(raw.clone());
+        }
+    }
+
+    if redundant.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!(
+        "[recall][v0.5.56] dedupe: removing {} redundant watched-folder(s) (kept ancestors)",
+        redundant.len()
+    );
+    for raw in &redundant {
+        let path = std::path::PathBuf::from(raw);
+        if let Err(err) = state
+            .file_watcher_service
+            .remove_watch(&state.pool, &path)
+            .await
+        {
+            eprintln!(
+                "[recall][v0.5.56] remove_watch failed for {raw}: {err}"
             );
         }
     }
@@ -1177,9 +1257,11 @@ pub fn run() {
                 // v0.5.54: back-fill watched_folders from the
                 // `folders` table so pre-v0.5.48 ingests show up
                 // in the management panel + start being watched.
-                // Idempotent (INSERT OR IGNORE) and sequenced
-                // after the v0.5.48 restore so backfilled paths
-                // get their watcher registered too.
+                // v0.5.56: backfill now adds only roots, then
+                // dedupe runs to clean up any redundant entries
+                // left behind by the original v0.5.54 logic. Both
+                // are sequenced inside one task so the dedupe
+                // sees the post-backfill state.
                 let app_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
@@ -1188,6 +1270,13 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.54] watched-folders backfill failed: {err}"
+                        );
+                    }
+                    if let Err(err) =
+                        run_v0_5_56_dedupe_watched_folders(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.56] watched-folders dedupe failed: {err}"
                         );
                     }
                 });

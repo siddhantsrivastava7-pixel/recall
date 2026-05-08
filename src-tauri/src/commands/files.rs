@@ -519,7 +519,12 @@ pub fn _placeholder() -> AppResult<()> {
 /// stored case-as-typed, and Windows is case-insensitive at the
 /// filesystem layer but case-preserving at the API. Lowercasing
 /// would turn the "is_under" check into a probabilistic match.
-fn normalize_for_match(path: &str) -> String {
+///
+/// v0.5.56 — pub(crate) so lib.rs's watched-folder dedupe pass
+/// can reuse the same matcher. Keep the underlying behavior
+/// stable; if a future bug demands a different normalization
+/// rule, change here and both call sites stay consistent.
+pub(crate) fn normalize_for_match(path: &str) -> String {
     let trimmed = path.trim_end_matches('/').trim_end_matches('\\');
     // Windows UNC verbatim prefix: \\?\
     if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
@@ -530,8 +535,9 @@ fn normalize_for_match(path: &str) -> String {
 
 /// True when `candidate` is the same logical path as
 /// `normalized_root` or a descendant of it. Both forward and
-/// back slashes accepted as separators on either side.
-fn is_path_under(candidate: &str, normalized_root: &str) -> bool {
+/// back slashes accepted as separators on either side. v0.5.56:
+/// pub(crate) for reuse in lib.rs's watched-folder dedupe.
+pub(crate) fn is_path_under(candidate: &str, normalized_root: &str) -> bool {
     let normalized_candidate = normalize_for_match(candidate);
     if normalized_candidate == normalized_root {
         return true;
