@@ -43,11 +43,17 @@ import {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowRight,
+  CircleDot,
+  FileText,
+  FolderOpen,
+  Layers,
   Loader2,
   MessageCircleQuestion,
   Plus,
   Sparkles,
+  Twitter,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import {
   aiClient,
@@ -58,6 +64,17 @@ import {
 import { useChatStore } from "@/stores/chatStore";
 import { useMemoryStore } from "@/stores/memoryStore";
 import type { MainView } from "@/windows/MainWindow";
+// v0.5.61: scope chip taxonomy shared with the All Memories list
+// (`MemoriesView`). Same five buckets, same predicate, same wire
+// shape — keeping the picker source-of-truth in the domain module
+// means a memory the user can see in one surface scoped to
+// "Twitter" can also be asked about in Ask Recall scoped the
+// same way. Drift between the two would be confusing.
+import {
+  SOURCE_SCOPE_OPTIONS,
+  sourceScopeToBackendFilter,
+  type SourceScope,
+} from "@/domain/sourceScope";
 
 interface AskViewProps {
   setView: (view: MainView) => void;
@@ -85,6 +102,20 @@ type AskPhase =
   | { kind: "generating" };
 
 const CITATION_RE = /\[memory:([0-9a-fA-F\-]+)\]/g;
+
+/// v0.5.61: per-scope icon binding. Kept in this file (not in
+/// `domain/sourceScope.ts`) so the domain layer stays free of
+/// UI-library imports. The All Memories list binds its own icons
+/// the same way, so we don't lock the two surfaces to the same
+/// glyphs — they can diverge if a future product decision wants
+/// e.g. a different icon for "Memories" in chat vs. list.
+const SCOPE_ICONS: Record<SourceScope, LucideIcon> = {
+  all: CircleDot,
+  memories: Layers,
+  files: FileText,
+  folders: FolderOpen,
+  twitter: Twitter,
+};
 
 /* ────────────────────────────────────────────────────────────────────────
    v0.5.16 — top-level ErrorBoundary around AskView.
@@ -227,6 +258,14 @@ function AskViewInner({ setView }: AskViewProps) {
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [streamedText, setStreamedText] = useState("");
   const [streaming, setStreaming] = useState(false);
+  // v0.5.61: source scope kept as local view state (not persisted
+  // per session in the chatStore) so we don't need a backend
+  // migration for v0.5.61. Re-opening an old chat from the
+  // sidebar resets the picker to "all" — the previous answers in
+  // that thread were generated under whatever scope was active
+  // then; the new follow-up scope is independent. Per-session
+  // persistence is a follow-up if users miss it.
+  const [sourceScope, setSourceScope] = useState<SourceScope>("all");
   // v0.5.17: which session the in-flight turn was started for.
   // The user can switch chats mid-stream; if they do, we want to
   // hide the streaming bubble in the new chat (it doesn't belong
@@ -351,9 +390,14 @@ function AskViewInner({ setView }: AskViewProps) {
     setQuestion("");
     setPhase({ kind: "retrieving" });
     try {
+      // v0.5.61: derive the wire-format filter from the chip
+      // selection. `sourceScopeToBackendFilter("all")` returns
+      // undefined, which the IPC layer omits — so when scope is
+      // "All" the call is byte-identical to the v0.5.60 shape.
       const result: AskRecallResponse = await aiClient.askRecall(
         trimmed,
         turnSid,
+        sourceScopeToBackendFilter(sourceScope),
       );
       // v0.5.15: append both messages to the shared store so the
       // sidebar's last_used_at + message_count stay in sync. The
@@ -396,7 +440,14 @@ function AskViewInner({ setView }: AskViewProps) {
       setTurnSessionId(null);
       setPhase({ kind: "idle" });
     }
-  }, [question, streaming, sessionId, appendMessageToSession, refreshChats]);
+  }, [
+    question,
+    streaming,
+    sessionId,
+    sourceScope, // v0.5.61: closure must see the latest chip pick
+    appendMessageToSession,
+    refreshChats,
+  ]);
 
   const cancel = useCallback(async () => {
     if (!streaming) return;
@@ -477,6 +528,57 @@ function AskViewInner({ setView }: AskViewProps) {
           Multi-turn Q&amp;A grounded in your saved content — citations link
           back to the memories that backed each claim. Runs fully on-device.
         </p>
+        {/* v0.5.61: scope chips. The selected chip narrows the
+            candidate memory set the retrieval pipeline searches —
+            "Twitter" answers strictly from saved tweets, "Files"
+            from ingested files, etc. "All" is the v0.5.60
+            unscoped behavior. Disabled mid-stream because
+            mid-turn scope changes ambiguously apply to either
+            the in-flight turn or only future turns. */}
+        <div
+          role="radiogroup"
+          aria-label="Source scope"
+          style={{
+            display: "flex",
+            gap: 6,
+            marginTop: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          {SOURCE_SCOPE_OPTIONS.map((opt) => {
+            const Icon = SCOPE_ICONS[opt.value];
+            const active = sourceScope === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className={active ? "btn btn-primary" : "btn btn-ghost"}
+                onClick={() => setSourceScope(opt.value)}
+                disabled={streaming}
+                style={{
+                  height: 26,
+                  padding: "0 10px",
+                  fontSize: 11,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+                title={
+                  opt.value === "memories"
+                    ? "Notes, screenshots, bookmarks, and other captured memories — excludes ingested files, folders, and Twitter bookmarks."
+                    : opt.value === "all"
+                      ? "Search across every saved memory."
+                      : `Restrict the answer to ${opt.label.toLowerCase()}.`
+                }
+              >
+                <Icon size={11} strokeWidth={1.7} />
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
         {messages.length > 0 ? (
           <button
             type="button"

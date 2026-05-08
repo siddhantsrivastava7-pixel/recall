@@ -3,39 +3,16 @@ import { Search, SlidersHorizontal, Layers, FileText, FolderOpen, Twitter, Spark
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useBlendedSearch } from "@/hooks/useBlendedSearch";
-import type { Memory } from "@/domain/types";
 import { MemoryCard } from "./MemoryCard";
 import { MemoryDetail } from "./MemoryDetail";
 import { getProjectRelevantMemories } from "@/services/context/ContextEngine";
-
-/// v0.5.60 — source scope chips for the library list. The set is
-/// fixed for now; if a new source_app surfaces in the product
-/// (voice notes, etc.), add it to this list and the matchers
-/// stay shape-compatible.
-type SourceScope = "all" | "memories" | "files" | "folders" | "twitter";
-
-/// Returns true when the memory belongs to the given scope.
-/// "memories" is the catch-all for everything that isn't one of
-/// the other four buckets — clipboard captures, manual notes,
-/// screenshots, browser bookmarks, etc. The set is
-/// **negative-defined** rather than enumerated because new
-/// source_app values get added more often than the chip set
-/// changes; the catch-all naturally absorbs them.
-function memoryMatchesScope(memory: Memory, scope: SourceScope): boolean {
-  const app = memory.sourceApp;
-  switch (scope) {
-    case "all":
-      return true;
-    case "files":
-      return app === "file";
-    case "folders":
-      return app === "folder";
-    case "twitter":
-      return app === "twitter";
-    case "memories":
-      return app !== "file" && app !== "folder" && app !== "twitter";
-  }
-}
+// v0.5.61: source scope chip taxonomy lifted into the shared
+// domain module so AskView (and future scoped surfaces) reuse
+// the same predicate. v0.5.60 had this defined locally.
+import {
+  memoryMatchesScope,
+  type SourceScope,
+} from "@/domain/sourceScope";
 
 export function MemoriesView() {
   const [filter,     setFilter]     = useState("");

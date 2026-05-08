@@ -11,6 +11,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { AiStatusPayload } from "@/domain/types";
+// v0.5.61: re-exported so AskRecall callers don't need to know
+// the wire shape lives in the domain module — the AiClient
+// surface stays the single import for everything Ask Recall.
+import type { SourceAppFilter } from "@/domain/sourceScope";
+export type { SourceAppFilter } from "@/domain/sourceScope";
 
 export interface ClipboardImageDiagnostic {
   ok: boolean;
@@ -119,8 +124,22 @@ export const aiClient = {
   /// In multi-turn the backend looks up the session, injects past
   /// turns as chat-template messages in the prompt, and appends the
   /// new user/assistant pair to the session after generation.
-  askRecall: (question: string, sessionId?: string) =>
-    invoke<AskRecallResponse>("ask_recall", { question, sessionId }),
+  ///
+  /// v0.5.61: optional `sourceAppFilter` constrains the candidate
+  /// memory set (via `semantic_search_internal`) before semantic
+  /// ranking. Use the helpers in `@/domain/sourceScope` to derive
+  /// the wire shape from a `SourceScope` chip selection. Pass
+  /// `undefined` (or omit) to keep the v0.5.60 unscoped behavior.
+  askRecall: (
+    question: string,
+    sessionId?: string,
+    sourceAppFilter?: SourceAppFilter,
+  ) =>
+    invoke<AskRecallResponse>("ask_recall", {
+      question,
+      sessionId,
+      sourceAppFilter,
+    }),
 
   /// v0.5.11: flip the cancel flag for the in-flight ask. The LLM
   /// generation loop polls every token and returns a partial

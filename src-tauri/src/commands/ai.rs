@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
@@ -30,6 +30,7 @@ use crate::{
     ai::scheduler::SchedulerStatus,
     db::repositories::EmbeddingCoverage,
     errors::app_error::{AppError, AppResult},
+    models::Memory,
     state::app_state::AppState,
 };
 
@@ -680,6 +681,54 @@ pub struct SemanticSearchHit {
     pub chunk_end: i64,
 }
 
+/// v0.5.61: Source-app scope filter for Ask Recall retrieval.
+///
+/// Mirrors the v0.5.60 chip taxonomy on the All Memories list. The
+/// frontend sends one variant; the backend constrains the candidate
+/// memory set before semantic ranking. None / absent means "no
+/// filter" (the v0.5.60 behavior).
+///
+/// Wire shape (externally tagged, lowercase variants):
+///   * `{ "include": ["twitter"] }` — keep only memories whose
+///     `source_app` is in the list (case-insensitive).
+///   * `{ "exclude": ["file", "folder", "twitter"] }` — keep
+///     everything *except* memories whose `source_app` is in the
+///     list. Used by the "Memories" chip, which is negative-defined
+///     so new source_app values surface there by default rather
+///     than disappearing behind an opt-in include set.
+///
+/// An empty `include` list filters to nothing (no memories pass);
+/// an empty `exclude` list passes everything (equivalent to None).
+/// Both edge cases are intentional — the frontend should not send
+/// an empty include in practice (the "All" chip sends no filter
+/// at all instead).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceAppFilter {
+    Include(Vec<String>),
+    Exclude(Vec<String>),
+}
+
+impl SourceAppFilter {
+    /// True when the memory's `source_app` passes this filter.
+    /// Comparisons are ASCII case-insensitive — the codebase
+    /// stores `source_app` lowercase in practice (see
+    /// `MemorySourceType::as_source_app`) but defending against
+    /// case drift is cheap and matches the existing pattern at
+    /// the keyword-scoring site (~line 920).
+    pub fn matches(&self, memory: &Memory) -> bool {
+        let app = memory.source_app.as_deref().unwrap_or("");
+        match self {
+            SourceAppFilter::Include(allowed) => {
+                allowed.iter().any(|a| a.eq_ignore_ascii_case(app))
+            }
+            SourceAppFilter::Exclude(blocked) => {
+                !blocked.iter().any(|a| a.eq_ignore_ascii_case(app))
+            }
+        }
+    }
+}
+
 /// Hybrid keyword + semantic search. v0.3.3.
 ///
 ///   * Embed the query string with the active adapter.
@@ -705,8 +754,12 @@ pub async fn semantic_search(
 ) -> AppResult<Vec<SemanticSearchHit>> {
     // Public surface — preserves v0.4.4 behavior with MMR diversity
     // enabled (good for general search where the user doesn't want
-    // 5 near-duplicate results).
-    semantic_search_internal(&query, limit, true, &state).await
+    // 5 near-duplicate results). v0.5.61 adds source-app scoping
+    // only on the Ask Recall path; the general search command does
+    // not take a filter — list-side scoping happens client-side in
+    // MemoriesView, and adding wire-level filtering here would be
+    // a separate UX decision.
+    semantic_search_internal(&query, limit, true, None, &state).await
 }
 
 /// Internal helper that powers both the public `semantic_search`
@@ -727,6 +780,7 @@ pub(crate) async fn semantic_search_internal(
     query: &str,
     limit: Option<u32>,
     mmr_enabled: bool,
+    source_app_filter: Option<&SourceAppFilter>,
     state: &State<'_, AppState>,
 ) -> AppResult<Vec<SemanticSearchHit>> {
     let trimmed = query.trim();
@@ -759,26 +813,42 @@ pub(crate) async fn semantic_search_internal(
     //    own UI that the user took, OCR'd into chunks, and would
     //    otherwise pollute retrieval by surfacing previous answers
     //    as "matches" for similar future questions.
+    //
+    //    v0.5.61: when `source_app_filter` is set, build a parallel
+    //    "rejected by scope" id set in the same memory iteration
+    //    and short-circuit chunks whose memory failed the filter.
+    //    No extra DB round-trip — we already pull the full memory
+    //    list here for self-capture detection.
     let all_chunks = state
         .memory_repository
         .list_embedded_chunks_for_model(model_label)
         .await?;
     let mut self_capture_memory_ids: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    let mut filtered_out_memory_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for memory in state.memory_repository.list().await? {
-        if memory
+        let is_self_capture = memory
             .ocr_engine
             .as_deref()
             .map(|e| e.contains("self-capture"))
-            .unwrap_or(false)
-        {
-            self_capture_memory_ids.insert(memory.id);
+            .unwrap_or(false);
+        let is_rejected_by_scope = source_app_filter
+            .map(|f| !f.matches(&memory))
+            .unwrap_or(false);
+        if is_self_capture {
+            self_capture_memory_ids.insert(memory.id.clone());
+        }
+        if is_rejected_by_scope {
+            filtered_out_memory_ids.insert(memory.id);
         }
     }
     let mut scored: Vec<ScoredChunk> = Vec::with_capacity(all_chunks.len());
     let mut chunk_vectors: HashMap<String, Vec<f32>> = HashMap::new();
     for chunk in &all_chunks {
-        if self_capture_memory_ids.contains(&chunk.memory_id) {
+        if self_capture_memory_ids.contains(&chunk.memory_id)
+            || filtered_out_memory_ids.contains(&chunk.memory_id)
+        {
             continue;
         }
         let Some(bytes) = &chunk.embedding_vector else {
@@ -1461,6 +1531,16 @@ pub async fn ask_recall(
     // single-shot with the v0.5.11 prompt format — preserves the
     // existing behavior for callers that don't yet manage sessions.
     session_id: Option<String>,
+    // v0.5.61: optional source-app scope ("only my Twitter
+    // bookmarks", etc.). When present, the retrieval pipeline
+    // restricts candidate memories before semantic ranking. The
+    // tag-pivot pre-pass is unaffected — it runs against the full
+    // memory set today; adding scope to that path is a follow-up
+    // (most tag-pivot questions are inherently scope-broad
+    // enumerations like "what license keys did I save", and the
+    // semantic path picks up the slack when scope narrows the
+    // candidate pool).
+    source_app_filter: Option<SourceAppFilter>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<AskRecallResponse> {
@@ -1754,8 +1834,17 @@ pub async fn ask_recall(
             // v0.5.4: MMR off so enumeration questions ("what license
             // keys did I save last week") don't drop near-duplicate
             // matches.
-            let hits =
-                semantic_search_internal(&semantic_query, Some(64), false, &state).await?;
+            // v0.5.61: thread the source scope through so a temporal
+            // window query like "what twitter bookmarks did I save
+            // last week" actually restricts to twitter.
+            let hits = semantic_search_internal(
+                &semantic_query,
+                Some(64),
+                false,
+                source_app_filter.as_ref(),
+                &state,
+            )
+            .await?;
             let in_window_ids: std::collections::HashSet<&str> =
                 in_window.iter().map(|m| m.id.as_str()).collect();
             let mut ranked: Vec<String> = hits
@@ -1847,8 +1936,17 @@ pub async fn ask_recall(
         // Pure topical (or sparse tag-pivot): defer to the unified
         // retrieval pipeline. MMR disabled — Ask Recall needs
         // enumeration of relevant memories, not diversity.
-        let hits =
-            semantic_search_internal(&semantic_query, Some(SEMANTIC_TOP_K), false, &state).await?;
+        // v0.5.61: thread the source scope through; this is the
+        // hot path for general "Ask Recall using only my Twitter
+        // bookmarks" queries (no tag intent, no temporal window).
+        let hits = semantic_search_internal(
+            &semantic_query,
+            Some(SEMANTIC_TOP_K),
+            false,
+            source_app_filter.as_ref(),
+            &state,
+        )
+        .await?;
         eprintln!(
             "[recall][ask-recall] semantic: hits={} top_score={:.3}",
             hits.len(),
