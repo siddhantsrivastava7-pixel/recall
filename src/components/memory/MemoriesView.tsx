@@ -1,15 +1,46 @@
 import { useMemo, useState } from "react";
-import { Search, SlidersHorizontal } from "lucide-react";
+import { Search, SlidersHorizontal, Layers, FileText, FolderOpen, Twitter, Sparkles } from "lucide-react";
 import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useBlendedSearch } from "@/hooks/useBlendedSearch";
+import type { Memory } from "@/domain/types";
 import { MemoryCard } from "./MemoryCard";
 import { MemoryDetail } from "./MemoryDetail";
 import { getProjectRelevantMemories } from "@/services/context/ContextEngine";
 
+/// v0.5.60 — source scope chips for the library list. The set is
+/// fixed for now; if a new source_app surfaces in the product
+/// (voice notes, etc.), add it to this list and the matchers
+/// stay shape-compatible.
+type SourceScope = "all" | "memories" | "files" | "folders" | "twitter";
+
+/// Returns true when the memory belongs to the given scope.
+/// "memories" is the catch-all for everything that isn't one of
+/// the other four buckets — clipboard captures, manual notes,
+/// screenshots, browser bookmarks, etc. The set is
+/// **negative-defined** rather than enumerated because new
+/// source_app values get added more often than the chip set
+/// changes; the catch-all naturally absorbs them.
+function memoryMatchesScope(memory: Memory, scope: SourceScope): boolean {
+  const app = memory.sourceApp;
+  switch (scope) {
+    case "all":
+      return true;
+    case "files":
+      return app === "file";
+    case "folders":
+      return app === "folder";
+    case "twitter":
+      return app === "twitter";
+    case "memories":
+      return app !== "file" && app !== "folder" && app !== "twitter";
+  }
+}
+
 export function MemoriesView() {
   const [filter,     setFilter]     = useState("");
   const [sortOrder,  setSortOrder]  = useState<"newest" | "oldest">("newest");
+  const [sourceScope, setSourceScope] = useState<SourceScope>("all");
 
   const { memories, selectedMemoryId, selectMemory } = useMemoryStore();
   const { projects, activeProjectId, setActiveProject } = useProjectStore();
@@ -40,16 +71,38 @@ export function MemoriesView() {
       .map((r) => r.memory)
       .filter(
         (m) => activeProjectId === "all" || m.projectId === activeProjectId,
-      );
+      )
+      .filter((m) => memoryMatchesScope(m, sourceScope));
     list = ranked;
   } else {
-    list = memories.filter(
-      (m) => activeProjectId === "all" || m.projectId === activeProjectId,
-    );
+    list = memories
+      .filter((m) => activeProjectId === "all" || m.projectId === activeProjectId)
+      .filter((m) => memoryMatchesScope(m, sourceScope));
     if (sortOrder === "oldest") list = [...list].reverse();
   }
 
   const bookmarkCount = list.filter((memory) => memory.sourceType === "bookmark").length;
+
+  // v0.5.60 — counts per source scope, computed AFTER the project
+  // filter but BEFORE the source scope filter, so the chip labels
+  // reflect what the user would see if they switched scopes
+  // within the current project. This avoids the "Twitter (0)"
+  // chip lying about an empty bucket that's actually empty only
+  // because the user is looking at it through another scope.
+  const projectScoped = useMemo(() => {
+    return memories.filter(
+      (m) => activeProjectId === "all" || m.projectId === activeProjectId,
+    );
+  }, [memories, activeProjectId]);
+  const scopeCounts: Record<SourceScope, number> = useMemo(() => {
+    return {
+      all: projectScoped.length,
+      memories: projectScoped.filter((m) => memoryMatchesScope(m, "memories")).length,
+      files: projectScoped.filter((m) => memoryMatchesScope(m, "files")).length,
+      folders: projectScoped.filter((m) => memoryMatchesScope(m, "folders")).length,
+      twitter: projectScoped.filter((m) => memoryMatchesScope(m, "twitter")).length,
+    };
+  }, [projectScoped]);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -86,6 +139,76 @@ export function MemoriesView() {
             <SlidersHorizontal size={13} strokeWidth={1.8} />
             {sortOrder === "newest" ? "Newest" : "Oldest"}
           </button>
+        </div>
+
+        {/*
+          v0.5.60 — Source scope chips. Sit below the project
+          row because source is a less-frequently-used filter
+          dimension than project; visually subordinate. Chips
+          with zero matches stay enabled but show their count —
+          better to see "Twitter (0)" and know the bucket is
+          empty than to wonder where the chip went.
+        */}
+        <div
+          style={{
+            display: "flex",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 12,
+            alignItems: "center",
+          }}
+        >
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--t-4)",
+              letterSpacing: "0.10em",
+              textTransform: "uppercase",
+              marginRight: 4,
+            }}
+          >
+            Source
+          </span>
+          <SourceChip
+            scope="all"
+            label="All"
+            icon={<Sparkles size={11} strokeWidth={1.9} />}
+            active={sourceScope === "all"}
+            count={scopeCounts.all}
+            onClick={() => setSourceScope("all")}
+          />
+          <SourceChip
+            scope="memories"
+            label="Memories"
+            icon={<Layers size={11} strokeWidth={1.9} />}
+            active={sourceScope === "memories"}
+            count={scopeCounts.memories}
+            onClick={() => setSourceScope("memories")}
+          />
+          <SourceChip
+            scope="files"
+            label="Files"
+            icon={<FileText size={11} strokeWidth={1.9} />}
+            active={sourceScope === "files"}
+            count={scopeCounts.files}
+            onClick={() => setSourceScope("files")}
+          />
+          <SourceChip
+            scope="folders"
+            label="Folders"
+            icon={<FolderOpen size={11} strokeWidth={1.9} />}
+            active={sourceScope === "folders"}
+            count={scopeCounts.folders}
+            onClick={() => setSourceScope("folders")}
+          />
+          <SourceChip
+            scope="twitter"
+            label="Twitter"
+            icon={<Twitter size={11} strokeWidth={1.9} />}
+            active={sourceScope === "twitter"}
+            count={scopeCounts.twitter}
+            onClick={() => setSourceScope("twitter")}
+          />
         </div>
       </div>
 
@@ -157,6 +280,65 @@ function FilterPill({ label, active, onClick }: { label: string; active: boolean
       }}
     >
       {label}
+    </button>
+  );
+}
+
+/// v0.5.60 — Source scope chip. Same visual language as
+/// FilterPill (project pills), with three differences: a
+/// leading icon, a count suffix, and a slightly smaller font
+/// because the row is one level subordinate to projects.
+/// Stays enabled at count = 0 so the user can navigate to an
+/// empty scope and see the empty state explicitly.
+function SourceChip({
+  scope: _scope,
+  label,
+  icon,
+  active,
+  count,
+  onClick,
+}: {
+  scope: SourceScope;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "5px 11px",
+        borderRadius: 7,
+        fontSize: 12,
+        fontWeight: active ? 600 : 400,
+        color: active ? "var(--blue)" : "var(--t-3)",
+        background: active ? "var(--blue-dim)" : "transparent",
+        border: `1px solid ${active ? "var(--blue-border)" : "var(--border-default)"}`,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        whiteSpace: "nowrap",
+        transition: "all 130ms",
+        opacity: count === 0 && !active ? 0.6 : 1,
+      }}
+    >
+      <span style={{ display: "inline-flex", color: active ? "var(--blue)" : "var(--t-4)" }}>
+        {icon}
+      </span>
+      {label}
+      <span
+        style={{
+          marginLeft: 3,
+          opacity: 0.55,
+          fontFeatureSettings: '"tnum"',
+        }}
+      >
+        {count}
+      </span>
     </button>
   );
 }
