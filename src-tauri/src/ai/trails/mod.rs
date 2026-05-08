@@ -122,13 +122,13 @@ const MIN_TRAIL_LENGTH: usize = 3;
 /// centered cosine. Caller passes it through so we don't compute
 /// it twice when build_trail is called alongside other retrieval
 /// paths.
+// `model_label` takes `&'static str` to match `EmbeddingModelId`,
+// which is the shape `EmbeddingVector::from_bytes` expects. The
+// scheduler's `embedding_model_label()` already returns
+// `&'static str`, so the call site passes it through unchanged.
 pub async fn build_trail(
     memory_repo: &SharedMemoryRepository,
     seed_memory_id: &str,
-    /// `&'static str` to match `EmbeddingModelId`, which is the
-    /// shape `EmbeddingVector::from_bytes` expects. The scheduler's
-    /// `embedding_model_label()` already returns `&'static str`,
-    /// so the call site passes it through unchanged.
     model_label: &'static str,
     centroid: Option<&[f32]>,
 ) -> AppResult<TrailResult> {
