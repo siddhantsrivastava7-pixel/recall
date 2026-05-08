@@ -31,6 +31,7 @@
 //! Future kinds (v0.5.24+): `project_briefing`, `researched_before`.
 //! Both will reuse this module's storage + selection plumbing.
 
+pub mod active_thread;
 pub mod engine;
 pub mod forgotten_gold;
 pub mod weekly_recap;

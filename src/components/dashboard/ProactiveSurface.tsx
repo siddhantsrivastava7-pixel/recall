@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, Sparkles, Clock3, X, BookmarkCheck } from "lucide-react";
+import { ArrowRight, Sparkles, Clock3, X, BookmarkCheck, GitBranch } from "lucide-react";
 
 import { aiClient, type ActiveProactiveSurface } from "@/services/ai/AiClient";
 import { useMemoryStore } from "@/stores/memoryStore";
@@ -258,6 +258,23 @@ function variantFor(kind: string): CardVariant {
         actionBackground: "rgba(212,175,55,0.18)",
         actionColor: "rgba(212,175,55,0.95)",
         actionLabel: "Revisit memory",
+      };
+    case "active_thread":
+      // v0.5.59 — Active Thread variant. Distinct visual key
+      // from Weekly recap (blue, calm) and Forgotten gold
+      // (amber, archival): a soft teal that says "current
+      // momentum." Action label leads to the memory's detail
+      // view, where the v0.5.58 Memory Trail renders the chain.
+      return {
+        eyebrow: "Active thread",
+        eyebrowColor: "rgba(120,200,180,0.95)",
+        icon: <GitBranch size={11} strokeWidth={1.9} />,
+        background:
+          "linear-gradient(135deg, rgba(120,200,180,0.10), rgba(120,200,180,0.04))",
+        borderColor: "rgba(120,200,180,0.22)",
+        actionBackground: "rgba(120,200,180,0.18)",
+        actionColor: "rgba(120,200,180,0.95)",
+        actionLabel: "View thread",
       };
     default:
       return {

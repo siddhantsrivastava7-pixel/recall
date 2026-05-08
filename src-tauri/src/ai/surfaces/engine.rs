@@ -68,7 +68,21 @@ pub async fn compute_active_surface(
         return Ok(Some(active));
     }
 
-    // 2. Forgotten Gold — once-per-local-day cadence. If we already
+    // 2. v0.5.59 — Active Thread. Surfaces "you're working on X
+    // this week" as a Home card. Once-per-local-day cadence so
+    // the user sees the same thread across the day; reset on the
+    // next calendar day so a thread that quieted down can be
+    // replaced. Sits between Weekly Recap and Forgotten Gold
+    // because immediacy beats nostalgia: if there's an active
+    // topic worth re-engaging with, that wins over a memory
+    // dredged from months ago.
+    if let Some(active) =
+        active_thread_active(memory_repo, surface_repo, now_utc, now_local).await?
+    {
+        return Ok(Some(active));
+    }
+
+    // 3. Forgotten Gold — once-per-local-day cadence. If we already
     // recorded a forgotten_gold row for today, return that exact
     // row so the user sees the same memory throughout the day.
     if let Some(active) =
@@ -78,6 +92,95 @@ pub async fn compute_active_surface(
     }
 
     Ok(None)
+}
+
+/// v0.5.59 — Active Thread picker. Mirrors the once-per-day
+/// cadence of Forgotten Gold. The cluster's "memory" is its
+/// most-recent member; clicking the Home card opens that
+/// memory's detail view, where the v0.5.58 Memory Trail then
+/// renders the chain.
+async fn active_thread_active(
+    memory_repo: &SharedMemoryRepository,
+    surface_repo: &SharedProactiveSurfaceRepository,
+    now_utc: DateTime<Utc>,
+    now_local: DateTime<Local>,
+) -> AppResult<Option<ActiveSurface>> {
+    let day_start_local = local_day_start(now_local.date_naive());
+    let day_start_iso = day_start_local.with_timezone(&Utc).to_rfc3339();
+
+    // If today has an active row already, re-render it.
+    if let Some(existing) = surface_repo
+        .latest_active_for_kind("active_thread", &now_utc.to_rfc3339())
+        .await?
+    {
+        if existing.surfaced_at >= day_start_iso {
+            if let Some(memory) = memory_repo.find(&existing.memory_id).await? {
+                return Ok(Some(ActiveSurface {
+                    surface: existing,
+                    memory,
+                }));
+            }
+        }
+    }
+
+    // If we've already picked once today and the user dismissed
+    // the card, don't re-pick; respect the dismissal until the
+    // next calendar day.
+    let already_recorded_today = surface_repo
+        .has_recorded_since("active_thread", &day_start_iso)
+        .await?;
+    if already_recorded_today {
+        return Ok(None);
+    }
+
+    // Compute today's candidate.
+    let candidate = match crate::ai::surfaces::active_thread::pick_active_thread(memory_repo)
+        .await?
+    {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    let memory = match memory_repo.find(&candidate.representative_memory_id).await? {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+
+    let reason = format!(
+        "{} captures across {} day{} · {}",
+        candidate.count,
+        candidate.span_days,
+        if candidate.span_days == 1 { "" } else { "s" },
+        candidate.label
+    );
+    // Card auto-expires at end of local day so a stale "active"
+    // thread doesn't leak into tomorrow's Home if the user closes
+    // the app overnight.
+    let expires_at = (day_start_local + chrono::Duration::days(1))
+        .with_timezone(&Utc)
+        .to_rfc3339();
+
+    let surface_id = surface_repo
+        .record_surface(
+            "active_thread",
+            &memory.id,
+            candidate.score,
+            Some(&reason),
+            &now_utc.to_rfc3339(),
+            Some(&expires_at),
+        )
+        .await?;
+    let surface = ProactiveSurfaceRow {
+        id: surface_id,
+        kind: "active_thread".to_string(),
+        memory_id: memory.id.clone(),
+        score: candidate.score,
+        reason: Some(reason),
+        surfaced_at: now_utc.to_rfc3339(),
+        dismissed_at: None,
+        expires_at: Some(expires_at),
+    };
+    Ok(Some(ActiveSurface { surface, memory }))
 }
 
 async fn weekly_recap_active(
