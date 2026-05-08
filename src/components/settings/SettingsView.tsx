@@ -516,6 +516,11 @@ function WatchedFoldersCard() {
   const [folders, setFolders] = useState<string[] | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [busyPath, setBusyPath] = useState<string | null>(null);
+  // v0.5.53: tap into the memory store so the row's "Remove…"
+  // action can resolve a folder path → folder shadow memory id
+  // without an extra round-trip. Folder shadows have
+  // sourceApp = 'folder' and externalId = absolute path.
+  const memories = useMemoryStore((state) => state.memories);
 
   async function refresh() {
     try {
@@ -543,6 +548,75 @@ function WatchedFoldersCard() {
     try {
       await tauriClient.removeWatchedFolder(path);
       setActionMsg(`Stopped watching ${shortenPath(path)}`);
+      await refresh();
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
+  // v0.5.53 — full removal flow, callable from the row. Mirrors
+  // the two-step prompt in MemoryDetail's Delete handler so the
+  // user gets the same keep-or-cascade choice from either
+  // surface. If the folder has no shadow memory (unusual — would
+  // happen only if the user manually deleted the folder shadow
+  // but the watcher's row hung around), fall back to just
+  // stopping the watcher.
+  async function removeFromRecall(path: string) {
+    const folderMemory = memories.find(
+      (m) => m.sourceApp === "folder" && m.externalId === path,
+    );
+    if (!folderMemory) {
+      setActionMsg(
+        "No folder memory tied to this watch — stopping watcher only.",
+      );
+      void stopWatching(path);
+      return;
+    }
+    // Step 1: gate the operation entirely.
+    if (
+      !confirm(
+        `Remove this folder from Recall?\n\n${path}\n\nThe folder + its files on disk are not deleted. Recall stops watching for changes.`,
+      )
+    )
+      return;
+    // Step 2: cascade vs. keep.
+    const cascadeOk = confirm(
+      "Also remove every file memory inside this folder?\n\n" +
+        "OK — remove the folder + all files Recall indexed from it.\n" +
+        "Cancel — keep individual file memories in your library, just stop watching the folder.",
+    );
+    const keepChildren = !cascadeOk;
+    setBusyPath(path);
+    setActionMsg(null);
+    try {
+      await tauriClient.removeFolder(folderMemory.id, keepChildren);
+      // Mirror the backend's path-prefix sweep optimistically so
+      // the All Memories list reflects the removal without a
+      // re-hydrate round-trip.
+      const isUnder = (candidate: string | null | undefined) => {
+        if (!candidate) return false;
+        if (candidate === path) return true;
+        return (
+          candidate.startsWith(`${path}/`) ||
+          candidate.startsWith(`${path}\\`)
+        );
+      };
+      useMemoryStore.setState((state) => ({
+        memories: state.memories.filter((m) => {
+          if (m.id === folderMemory.id) return false;
+          if (keepChildren) return true;
+          if (m.sourceApp === "folder" && isUnder(m.externalId)) return false;
+          if (m.sourceApp === "file" && isUnder(m.folderPath)) return false;
+          return true;
+        }),
+      }));
+      setActionMsg(
+        keepChildren
+          ? `Removed ${shortenPath(path)}; file memories kept.`
+          : `Removed ${shortenPath(path)} and its files from Recall.`,
+      );
       await refresh();
     } catch (error) {
       setActionMsg(error instanceof Error ? error.message : String(error));
@@ -595,9 +669,14 @@ function WatchedFoldersCard() {
       <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55, maxWidth: 540 }}>
         Recall is watching these folders for changes. New files
         ingest automatically; edits re-extract within a few
-        seconds; deletions remove the shadow memory. Stop
-        watching to disconnect a folder — file memories already
-        in your library stay.
+        seconds; deletions remove the shadow memory.
+        <br />
+        <strong style={{ color: "var(--text-primary)" }}>Stop watching</strong>{" "}
+        disconnects a folder while keeping its file memories.{" "}
+        <strong style={{ color: "var(--text-primary)" }}>Remove…</strong>{" "}
+        does the full teardown — you'll be asked whether to also
+        drop every file memory the folder produced. Neither
+        action touches files on disk.
       </div>
 
       <div
@@ -645,6 +724,20 @@ function WatchedFoldersCard() {
               style={{ fontSize: 11, padding: "4px 10px", flexShrink: 0 }}
             >
               {busyPath === path ? "Stopping…" : "Stop watching"}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={() => void removeFromRecall(path)}
+              disabled={busyPath === path}
+              style={{
+                fontSize: 11,
+                padding: "4px 10px",
+                flexShrink: 0,
+                color: "var(--danger, #ff6b6b)",
+              }}
+              title="Remove the folder from Recall (with optional cascade through file memories)"
+            >
+              Remove…
             </button>
           </div>
         ))}
