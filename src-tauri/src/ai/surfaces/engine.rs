@@ -160,11 +160,15 @@ async fn active_thread_active(
         .with_timezone(&Utc)
         .to_rfc3339();
 
+    // ProactiveSurfaceRow::score is f64; the active-thread
+    // picker computes in f32 (matches the rest of the trail
+    // scoring code's precision). Cast at the boundary.
+    let score_f64 = candidate.score as f64;
     let surface_id = surface_repo
         .record_surface(
             "active_thread",
             &memory.id,
-            candidate.score,
+            score_f64,
             Some(&reason),
             &now_utc.to_rfc3339(),
             Some(&expires_at),
@@ -174,7 +178,7 @@ async fn active_thread_active(
         id: surface_id,
         kind: "active_thread".to_string(),
         memory_id: memory.id.clone(),
-        score: candidate.score,
+        score: score_f64,
         reason: Some(reason),
         surfaced_at: now_utc.to_rfc3339(),
         dismissed_at: None,
