@@ -633,7 +633,10 @@ pub async fn build_memory_trail(
         .ai_scheduler()
         .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
 
-    let model_label = scheduler.embedding_model_label().to_string();
+    // `embedding_model_label()` returns `&'static str`; pass the
+    // reference through verbatim so the lifetime survives the
+    // `EmbeddingVector::from_bytes` calls inside build_trail.
+    let model_label = scheduler.embedding_model_label();
     let centroid = if model_label == "unsupported" {
         None
     } else {
@@ -643,7 +646,7 @@ pub async fn build_memory_trail(
     crate::ai::trails::build_trail(
         &state.memory_repository,
         &memory_id,
-        &model_label,
+        model_label,
         centroid.as_deref(),
     )
     .await

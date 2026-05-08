@@ -51,7 +51,10 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::{
-    ai::embeddings::similarity::{cosine, EmbeddingVector, SEMANTIC_FLOOR},
+    ai::embeddings::{
+        similarity::cosine,
+        EmbeddingVector,
+    },
     db::repositories::SharedMemoryRepository,
     errors::app_error::AppResult,
     models::Memory,
@@ -122,7 +125,11 @@ const MIN_TRAIL_LENGTH: usize = 3;
 pub async fn build_trail(
     memory_repo: &SharedMemoryRepository,
     seed_memory_id: &str,
-    model_label: &str,
+    /// `&'static str` to match `EmbeddingModelId`, which is the
+    /// shape `EmbeddingVector::from_bytes` expects. The scheduler's
+    /// `embedding_model_label()` already returns `&'static str`,
+    /// so the call site passes it through unchanged.
+    model_label: &'static str,
     centroid: Option<&[f32]>,
 ) -> AppResult<TrailResult> {
     let seed = match memory_repo.find(seed_memory_id).await? {
@@ -293,7 +300,7 @@ async fn score_pair(
     seed_entities: &HashSet<String>,
     seed_created_at: Option<&chrono::DateTime<chrono::Utc>>,
     memory_repo: &SharedMemoryRepository,
-    model_label: &str,
+    model_label: &'static str,
     centroid: Option<&[f32]>,
 ) -> AppResult<ScoreBreakdown> {
     // ----- semantic similarity (40%) -----
