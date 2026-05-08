@@ -1,10 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ArrowRight,
   ChevronRight,
   Clock,
   FileText,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  Pencil,
   Plus,
+  PackageCheck,
   Search,
   Sparkles,
   TrendingUp,
@@ -79,46 +83,18 @@ export function HomeBriefing({ setView }: HomeBriefingProps) {
         <AiActivityPill setView={setView} />
       </div>
 
-      <div className="qs-row">
-        <div className="qs-card primary">
-          <div className="qs-eyebrow">
-            <Plus size={11} strokeWidth={1.7} /> Quick Capture
-          </div>
-          <h3 className="qs-title">Save a thought</h3>
-          <p className="qs-text">
-            Open a focused capture window, prefilled with whatever's on your
-            clipboard.
-          </p>
-          <div className="qs-btns">
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void tauriClient.openQuickSaveWindow()}
-            >
-              <Plus size={13} strokeWidth={1.8} />
-              Quick save
-              <span
-                className="kbd"
-                style={{
-                  background: "rgba(255,255,255,0.18)",
-                  color: "rgba(255,255,255,0.92)",
-                }}
-              >
-                Ctrl+Shift+S
-              </span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => void tauriClient.openSearchOverlay()}
-            >
-              <Search size={13} strokeWidth={1.8} />
-              Search overlay
-              <span className="kbd">Alt+Space</span>
-            </button>
-          </div>
-        </div>
-      </div>
+      {/*
+        v0.5.57 — Home capture row. Replaces the old single "Quick
+        Capture" card. Surfaces:
+          * one prominent search trigger that opens the system
+            search overlay (same affordance as Alt+Space)
+          * four quick-action chips for the most-used capture
+            paths (note, file/folder, image, link)
+        Everything below this row — Daily transcript, stats grid,
+        top topics, flashbacks, due-to-revisit, recent memories —
+        is unchanged.
+      */}
+      <HomeCapture />
 
       {/*
         v0.5.25 — Proactive surface slot. Sits above the Daily
@@ -254,6 +230,287 @@ export function HomeBriefing({ setView }: HomeBriefingProps) {
         </>
       ) : null}
     </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Home capture row (v0.5.57)
+   Search trigger + four quick-action chips. Sits above the daily
+   transcript and feeds the same downstream services every other
+   capture path uses — no new Rust commands, just thin wrappers.
+   ───────────────────────────────────────────────────────────────────────── */
+
+function HomeCapture() {
+  const create = useMemoryStore((state) => state.create);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkValue, setLinkValue] = useState("");
+
+  // Image extensions match the file_ingestion_service detection.
+  // Keep in sync with `is_image_extension` in
+  // src-tauri/src/services/file_ingestion_service.rs.
+  const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif"];
+
+  async function pickFileOrFolder() {
+    setBusy("file");
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ multiple: false, directory: false });
+      if (typeof selected === "string") {
+        await tauriClient.ingestPath(selected);
+      } else if (selected === null) {
+        // user cancelled
+      }
+    } catch (error) {
+      console.warn("[recall][home] file pick failed:", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function pickFolder() {
+    setBusy("folder");
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ multiple: false, directory: true });
+      if (typeof selected === "string") {
+        await tauriClient.ingestPath(selected);
+      }
+    } catch (error) {
+      console.warn("[recall][home] folder pick failed:", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function pickImage() {
+    setBusy("image");
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Images", extensions: IMAGE_EXTENSIONS }],
+      });
+      if (typeof selected === "string") {
+        await tauriClient.ingestPath(selected);
+      }
+    } catch (error) {
+      console.warn("[recall][home] image pick failed:", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveLink() {
+    const url = linkValue.trim();
+    if (!url) return;
+    setBusy("link");
+    try {
+      // capture_service.persist runs link enrichment when `url` is
+      // set — we don't have to fetch the OG metadata here. Title
+      // becomes the URL itself; the enricher overwrites it with
+      // the resolved page title once it lands.
+      await create({
+        sourceType: "manual",
+        title: url,
+        content: url,
+        note: null,
+        projectId: null,
+        url,
+        externalId: null,
+        folderPath: null,
+        sourceApp: null,
+        sourceWindow: null,
+      });
+      setLinkValue("");
+      setLinkOpen(false);
+    } catch (error) {
+      console.warn("[recall][home] link save failed:", error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
+      {/* Search trigger — looks like an .input, behaves like a
+          button that opens the system search overlay. Keeping the
+          two paths fused means we never grow a second search UI
+          on Home that the user has to learn. */}
+      <button
+        type="button"
+        onClick={() => void tauriClient.openSearchOverlay()}
+        className="home-search-trigger"
+        style={{
+          width: "100%",
+          marginTop: 24,
+          height: 44,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "0 16px",
+          borderRadius: 12,
+          background: "var(--tint-1)",
+          color: "var(--t-1)",
+          border: "none",
+          cursor: "text",
+          boxShadow: "inset 0 0 0 0.5px var(--line-strong)",
+          transition: "all 200ms var(--ease)",
+          textAlign: "left",
+          fontFamily: "inherit",
+          fontSize: 14,
+        }}
+        onMouseOver={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = "var(--tint-2)";
+        }}
+        onMouseOut={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = "var(--tint-1)";
+        }}
+      >
+        <Search size={16} strokeWidth={1.8} style={{ color: "var(--t-3)" }} />
+        <span style={{ flex: 1, color: "var(--t-3)" }}>
+          Search your library, or ask Recall a question…
+        </span>
+        <span className="kbd">Alt+Space</span>
+      </button>
+
+      {/* Four quick-action chips — each fires the existing capture
+          path the rest of the app uses. */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 8,
+          marginTop: 14,
+        }}
+      >
+        <CaptureChip
+          icon={<Pencil size={13} strokeWidth={1.8} />}
+          label={busy === "note" ? "Opening…" : "Take a note"}
+          disabled={busy !== null}
+          onClick={() => {
+            setBusy("note");
+            void tauriClient.openQuickSaveWindow().finally(() => setBusy(null));
+          }}
+        />
+        <CaptureChip
+          icon={<FileText size={13} strokeWidth={1.8} />}
+          label={busy === "file" ? "Choosing…" : "Add a file"}
+          disabled={busy !== null}
+          onClick={() => void pickFileOrFolder()}
+        />
+        <CaptureChip
+          icon={<PackageCheck size={13} strokeWidth={1.8} />}
+          label={busy === "folder" ? "Choosing…" : "Add a folder"}
+          disabled={busy !== null}
+          onClick={() => void pickFolder()}
+        />
+        <CaptureChip
+          icon={<ImageIcon size={13} strokeWidth={1.8} />}
+          label={busy === "image" ? "Choosing…" : "Add an image"}
+          disabled={busy !== null}
+          onClick={() => void pickImage()}
+        />
+        <CaptureChip
+          icon={<LinkIcon size={13} strokeWidth={1.8} />}
+          label={busy === "link" ? "Saving…" : "Save a link"}
+          disabled={busy !== null}
+          onClick={() => setLinkOpen((v) => !v)}
+          active={linkOpen}
+        />
+      </div>
+
+      {/* Inline link-save input. Opens below the chips, no modal —
+          fits the existing UI where there's never a system-level
+          modal for this kind of micro-flow. */}
+      {linkOpen ? (
+        <div
+          style={{
+            marginTop: 10,
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <input
+            autoFocus
+            type="url"
+            value={linkValue}
+            onChange={(event) => setLinkValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void saveLink();
+              } else if (event.key === "Escape") {
+                setLinkOpen(false);
+                setLinkValue("");
+              }
+            }}
+            placeholder="Paste a URL — Recall fetches the title + preview"
+            className="input"
+            style={{ flex: 1 }}
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void saveLink()}
+            disabled={busy !== null || linkValue.trim().length === 0}
+          >
+            <Plus size={13} strokeWidth={1.8} />
+            Save
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => {
+              setLinkOpen(false);
+              setLinkValue("");
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function CaptureChip({
+  icon,
+  label,
+  onClick,
+  disabled = false,
+  active = false,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  active?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="btn btn-ghost"
+      style={{
+        height: 32,
+        padding: "0 14px",
+        borderRadius: 8,
+        opacity: disabled ? 0.6 : 1,
+        background: active
+          ? "var(--accent-soft)"
+          : "var(--bg-hover)",
+        boxShadow: active
+          ? "inset 0 0 0 0.5px var(--accent-glow)"
+          : "inset 0 0 0 0.5px var(--line-strong)",
+      }}
+    >
+      <span style={{ display: "inline-flex", color: "var(--t-2)" }}>{icon}</span>
+      {label}
+    </button>
   );
 }
 
