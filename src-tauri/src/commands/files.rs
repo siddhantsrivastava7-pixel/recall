@@ -339,30 +339,43 @@ pub async fn remove_folder(
     }
 
     if !keep_children {
-        // Cascade through child files. Match either the exact folder
-        // path (covers the rare "file row whose path is the folder
-        // itself" case) or anything under it. The trailing slash
-        // patterns differ per OS so we handle both forward + back
-        // slash separators.
-        let prefix_fwd = format!("{}/%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
-        let prefix_bwd = format!("{}\\%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
+        // v0.5.55 — switched from SQL `LIKE <root>\%` cascade to
+        // Rust-side filtering with path normalization. The
+        // previous version missed entries whose stored path
+        // disagreed with the cascade root on UNC prefix, trailing
+        // separator, or `\` vs `/`. User report: "I removed
+        // Documents folder, but every folder inside Documents
+        // didn't get removed automatically." Root cause was
+        // `\\?\C:\Users\...` paths from canonicalize() not
+        // matching the LIKE pattern built from the folder
+        // shadow's external_id (which lacked the UNC prefix on
+        // older ingests).
+        //
+        // We pull every row and filter in-process. Cost is one
+        // full scan of `files` and `folders` per remove — fine
+        // for the typical library size and worth the correctness.
 
-        let child_files: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT id, shadow_memory_id FROM files \
-             WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
+        let normalized_root = normalize_for_match(&folder_path);
+
+        // ---- child files ----
+        let all_files: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, path, shadow_memory_id FROM files",
         )
-        .bind(&folder_path)
-        .bind(&prefix_fwd)
-        .bind(&prefix_bwd)
         .fetch_all(&state.pool)
         .await?;
 
-        // Drop child shadow memories first, then file rows. A failed
-        // delete partway through leaves the row referencing a now-
-        // missing shadow — better than leaving a shadow without a row
-        // (the latter looks like a normal memory but its source is
-        // gone).
-        for (file_id, shadow_id) in &child_files {
+        let matched_files: Vec<(String, Option<String>)> = all_files
+            .into_iter()
+            .filter(|(_, path, _)| is_path_under(path, &normalized_root))
+            .map(|(id, _, shadow)| (id, shadow))
+            .collect();
+
+        eprintln!(
+            "[recall][remove-folder] cascade: {} file(s) matched under {folder_path}",
+            matched_files.len()
+        );
+
+        for (file_id, shadow_id) in &matched_files {
             if let Some(shadow) = shadow_id {
                 let _ = state.memory_service.delete(shadow).await;
             }
@@ -372,24 +385,36 @@ pub async fn remove_folder(
                 .await;
         }
 
-        // Cascade through subfolder rows + their shadows.
-        let child_folders: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, path FROM folders \
-             WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
-        )
-        .bind(&folder_path)
-        .bind(&prefix_fwd)
-        .bind(&prefix_bwd)
-        .fetch_all(&state.pool)
-        .await?;
+        // ---- child folders ----
+        let all_folders: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, path FROM folders")
+                .fetch_all(&state.pool)
+                .await?;
 
-        for (folder_id, path) in &child_folders {
-            if let Some(shadow) = state
-                .memory_repository
-                .find_by_external_source("folder", path)
-                .await?
-            {
-                let _ = state.memory_service.delete(&shadow.id).await;
+        let matched_folders: Vec<(String, String)> = all_folders
+            .into_iter()
+            .filter(|(_, path)| is_path_under(path, &normalized_root))
+            .collect();
+
+        eprintln!(
+            "[recall][remove-folder] cascade: {} folder(s) matched under {folder_path}",
+            matched_folders.len()
+        );
+
+        for (folder_id, path) in &matched_folders {
+            // Folder shadows are keyed on external_id == path. Try
+            // both the as-stored path and a few normalization
+            // variants so older un-canonicalized shadows still
+            // resolve.
+            for lookup in path_lookup_variants(path) {
+                if let Some(shadow) = state
+                    .memory_repository
+                    .find_by_external_source("folder", &lookup)
+                    .await?
+                {
+                    let _ = state.memory_service.delete(&shadow.id).await;
+                    break;
+                }
             }
             let _ = sqlx::query("DELETE FROM folders WHERE id = ?1")
                 .bind(folder_id)
@@ -478,4 +503,126 @@ pub async fn list_watched_folders(state: State<'_, AppState>) -> AppResult<Vec<S
 pub fn _placeholder() -> AppResult<()> {
     let _: Result<(), AppError> = Ok(());
     Ok(())
+}
+
+/// v0.5.55 — strip Windows UNC verbatim prefix + trailing
+/// separators so two strings that name the same logical
+/// directory compare equal. Examples that all normalize to
+/// `C:\Users\siddh\Documents`:
+///
+/// * `\\?\C:\Users\siddh\Documents`
+/// * `C:\Users\siddh\Documents\`
+/// * `C:\Users\siddh\Documents/`
+/// * `\\?\C:\Users\siddh\Documents\`
+///
+/// Case sensitivity is preserved on purpose — Recall paths are
+/// stored case-as-typed, and Windows is case-insensitive at the
+/// filesystem layer but case-preserving at the API. Lowercasing
+/// would turn the "is_under" check into a probabilistic match.
+fn normalize_for_match(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/').trim_end_matches('\\');
+    // Windows UNC verbatim prefix: \\?\
+    if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    trimmed.to_string()
+}
+
+/// True when `candidate` is the same logical path as
+/// `normalized_root` or a descendant of it. Both forward and
+/// back slashes accepted as separators on either side.
+fn is_path_under(candidate: &str, normalized_root: &str) -> bool {
+    let normalized_candidate = normalize_for_match(candidate);
+    if normalized_candidate == normalized_root {
+        return true;
+    }
+    // Prefix must end with a separator so `Documents` doesn't
+    // match `Documents2`. Both separator flavors are checked so
+    // a stored Unix-style path under a Windows root (or vice
+    // versa) still matches.
+    normalized_candidate.starts_with(&format!("{normalized_root}/"))
+        || normalized_candidate.starts_with(&format!("{normalized_root}\\"))
+}
+
+/// v0.5.55 — set of path strings to try when looking up a
+/// folder's shadow memory by external_id. Folder shadows from
+/// different code paths over the project's lifetime have been
+/// stored with various levels of canonicalization; trying a few
+/// variants catches all of them.
+fn path_lookup_variants(path: &str) -> Vec<String> {
+    let mut variants = vec![path.to_string()];
+    let normalized = normalize_for_match(path);
+    if normalized != path {
+        variants.push(normalized.clone());
+    }
+    let unc = format!(r"\\?\{normalized}");
+    if !variants.contains(&unc) {
+        variants.push(unc);
+    }
+    variants
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_strips_unc_prefix() {
+        assert_eq!(
+            normalize_for_match(r"\\?\C:\Users\siddh\Documents"),
+            r"C:\Users\siddh\Documents"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_trailing_separator() {
+        assert_eq!(
+            normalize_for_match(r"C:\Users\siddh\Documents\"),
+            r"C:\Users\siddh\Documents"
+        );
+        assert_eq!(
+            normalize_for_match("/Users/siddh/Documents/"),
+            "/Users/siddh/Documents"
+        );
+    }
+
+    #[test]
+    fn normalize_handles_unc_with_trailing_slash() {
+        assert_eq!(
+            normalize_for_match(r"\\?\C:\Users\siddh\Documents\"),
+            r"C:\Users\siddh\Documents"
+        );
+    }
+
+    #[test]
+    fn is_under_matches_unc_against_dos() {
+        // The exact case the user hit: Documents canonicalizes to
+        // \\?\C:\... and a child folder was stored as plain C:\...
+        assert!(is_path_under(
+            r"C:\Users\siddh\Documents\Foo",
+            r"C:\Users\siddh\Documents"
+        ));
+        assert!(is_path_under(
+            r"\\?\C:\Users\siddh\Documents\Foo",
+            r"C:\Users\siddh\Documents"
+        ));
+    }
+
+    #[test]
+    fn is_under_does_not_match_sibling_with_shared_prefix() {
+        // "Documents" must not match "Documents2" — separator
+        // boundary is what distinguishes ancestor from sibling.
+        assert!(!is_path_under(
+            r"C:\Users\siddh\Documents2\Foo",
+            r"C:\Users\siddh\Documents"
+        ));
+    }
+
+    #[test]
+    fn is_under_self_match() {
+        assert!(is_path_under(
+            r"C:\Users\siddh\Documents",
+            r"C:\Users\siddh\Documents"
+        ));
+    }
 }
