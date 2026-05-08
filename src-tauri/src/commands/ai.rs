@@ -608,6 +608,47 @@ pub async fn find_related(
         .collect())
 }
 
+/// v0.5.58 — Memory Trails. Returns the chronologically-ordered
+/// chain of memories on the same topic as the given seed.
+///
+/// Different from `find_related`:
+///   * Ordered by `created_at`, not by score.
+///   * Trimmed to the connected segment containing the seed
+///     (gaps > 120 days break the chain).
+///   * Each node carries a one-line "why connected" rationale
+///     derived from the dominant signal in the link score.
+///   * Empty when fewer than 3 qualifying neighbors exist —
+///     the UI renders nothing rather than a sparse "trail of 1."
+///
+/// AI must be enabled and an embedding adapter must be available;
+/// without embeddings the semantic component drops to 0 and the
+/// trail relies entirely on entities, topic_labels, project, and
+/// temporal proximity (still useful, just less sharp).
+#[tauri::command]
+pub async fn build_memory_trail(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::ai::trails::TrailResult> {
+    let scheduler = state
+        .ai_scheduler()
+        .ok_or_else(|| AppError::Invalid("AI scheduler is not initialized.".into()))?;
+
+    let model_label = scheduler.embedding_model_label().to_string();
+    let centroid = if model_label == "unsupported" {
+        None
+    } else {
+        scheduler.corpus_centroid(&state.memory_repository).await?
+    };
+
+    crate::ai::trails::build_trail(
+        &state.memory_repository,
+        &memory_id,
+        &model_label,
+        centroid.as_deref(),
+    )
+    .await
+}
+
 fn maybe_center(values: Vec<f32>, centroid: Option<&[f32]>) -> Vec<f32> {
     match centroid {
         Some(c) => subtract_centroid(values, c),

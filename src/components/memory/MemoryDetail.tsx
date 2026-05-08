@@ -45,6 +45,7 @@ import { useMemoryStore } from "@/stores/memoryStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { ScreenshotPreview, isScreenshotMemory } from "./ScreenshotPreview";
 import { RelatedMemories } from "./RelatedMemories";
+import { MemoryTrail } from "./MemoryTrail";
 import { AiSummaryPanel, isDailyRecapMemory, isWeeklyRecapMemory } from "./AiSummaryPanel";
 import { aiClient } from "@/services/ai/AiClient";
 
@@ -997,6 +998,24 @@ export function MemoryDetail({
             with AI off so the panel doesn't become empty for them.
           */}
           <RelatedMemories
+            memory={currentMemory}
+            onOpenMemory={(id) => {
+              loadedMemoryIdRef.current = "";
+              openedMemoryIdRef.current = null;
+              setActiveMemoryId(id);
+            }}
+          />
+
+          {/*
+            v0.5.58 — Memory Trail. Distinct from RelatedMemories
+            above: ordered chronologically, trimmed to a coherent
+            chain around the seed, each node carries a one-line
+            "why connected" rationale. Renders nothing when no
+            qualifying trail exists (≥3 nodes above the link
+            floor) so it never adds noise to memories that don't
+            have a real thread.
+          */}
+          <MemoryTrail
             memory={currentMemory}
             onOpenMemory={(id) => {
               loadedMemoryIdRef.current = "";

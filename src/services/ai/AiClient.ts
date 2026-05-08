@@ -192,6 +192,15 @@ export const aiClient = {
   dismissProactiveSurface: (surfaceId: string) =>
     invoke<void>("proactive_surface_dismiss", { surfaceId }),
 
+  /// v0.5.58 — Memory Trail. Returns the chronologically-ordered
+  /// chain of memories on the same topic as the seed. Empty
+  /// `nodes` array when fewer than 3 qualifying neighbors exist
+  /// (UI hides the trail rather than rendering a sparse "trail
+  /// of 1"). Different shape from findRelated — these are
+  /// time-ordered with per-link rationale strings.
+  buildMemoryTrail: (memoryId: string) =>
+    invoke<MemoryTrailResult>("build_memory_trail", { memoryId }),
+
   /// v0.5.8: manual scrub trigger. Runs the v0.5.7 backfill (replace
   /// stale auto-tagger tags + flag self-captures + re-extract entities)
   /// regardless of the persisted "backfill done" flag, and returns a
@@ -430,6 +439,31 @@ export interface AskRecallResponse {
   /// v0.5.5: e.g. "license-key", "url", "phone-number". `null`
   /// when no tag-intent was detected.
   tagIntent: string | null;
+}
+
+/// v0.5.58: one node on a Memory Trail. The frontend hydrates the
+/// rest of the memory data from the in-memory store via
+/// `memoryId` — the backend doesn't re-serialize the full Memory
+/// shape on this hot path.
+export interface MemoryTrailNode {
+  memoryId: string;
+  /// 0..1 — the link score between this node and the seed.
+  /// The seed itself reports 1.0.
+  linkScore: number;
+  /// One-line "why this is on the trail" string ("shared topic:
+  /// app screenshots" / "high similarity: 0.82" / "same project").
+  rationale: string;
+  /// True for the memory the trail was built around. UI renders
+  /// it with a filled marker.
+  isSeed: boolean;
+}
+
+/// v0.5.58: response shape from `buildMemoryTrail`. `nodes` are
+/// chronologically ordered (oldest first). Empty when no
+/// qualifying trail exists for the seed.
+export interface MemoryTrailResult {
+  seedMemoryId: string;
+  nodes: MemoryTrailNode[];
 }
 
 /// v0.3.0: result row from `find_related`. The chunk fields point at
