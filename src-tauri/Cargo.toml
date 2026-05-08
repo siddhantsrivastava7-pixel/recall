@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.5.48"
+version = "0.5.49"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"
@@ -39,6 +39,13 @@ urlencoding = "2.1"
 # falls back gracefully on image-only PDFs).
 walkdir = "2.5"
 pdf-extract = "0.7"
+# v0.5.49 — Office format extraction. calamine reads .xlsx/.xlsm
+# in pure Rust (zero native deps); zip unwraps the .docx container
+# so we can pull `word/document.xml` and extract <w:t> text inline
+# without a heavyweight docx parser. Both are stable, widely-used
+# crates.
+calamine = "0.26"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # v0.5.48 — filesystem watcher for auto re-ingest of changed
 # files in user-added folders. notify wraps the platform-native
 # APIs (ReadDirectoryChangesW on Windows, FSEvents on macOS,

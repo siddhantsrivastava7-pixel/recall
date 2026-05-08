@@ -497,6 +497,80 @@ async fn run_v0_5_47_files_chunks_backfill(
     Ok(())
 }
 
+/// v0.5.49 — re-extract content for any existing .docx / .xlsx
+/// (and .docm / .xlsm) file rows that landed pre-v0.5.49 with
+/// empty extracted text. Pre-v0.5.49 these formats fell to the
+/// "[Recall did not extract text from this file...]" placeholder
+/// because Office formats weren't in the extractor's switch. The
+/// route fix in `file_ingestion_service::extract_text_for_path`
+/// handles future ingests; this catches files already in the DB.
+///
+/// Idempotent — the WHERE clause skips rows that already have
+/// text. Skipped rows for files that disappeared from disk
+/// between sessions get logged and continue, never propagated.
+async fn run_v0_5_49_office_formats_backfill(
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    use crate::services::file_ingestion_service;
+
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT path FROM files \
+         WHERE LOWER(extension) IN ('docx', 'docm', 'xlsx', 'xlsm') \
+           AND (extracted_text IS NULL OR extracted_text = '')",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "[recall][v0.5.49] office formats backfill: {} files pending",
+        rows.len()
+    );
+
+    let settings = state.settings_repository.get().await?;
+    let mut re_extracted = 0u32;
+    for (idx, (path_str,)) in rows.iter().enumerate() {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            // Source file is gone — leave the row alone; the
+            // watcher's remove path or a future GC pass cleans
+            // orphaned shadows.
+            continue;
+        }
+        // Re-call the full ingest path. ingest_path's ON CONFLICT
+        // logic upserts the file row with fresh extracted_text +
+        // re-routes through MemoryService::update which fires the
+        // chunk + embed pipeline. One call handles everything.
+        match file_ingestion_service::ingest_path(
+            &state.pool,
+            &state.memory_repository,
+            &state.memory_service,
+            &settings,
+            &path,
+        )
+        .await
+        {
+            Ok(_) => re_extracted += 1,
+            Err(error) => {
+                eprintln!(
+                    "[recall][v0.5.49] re-ingest failed for {}: {error}",
+                    path.display()
+                );
+            }
+        }
+        if idx % 10 == 9 {
+            tokio::task::yield_now().await;
+        }
+    }
+    eprintln!(
+        "[recall][v0.5.49] office formats backfill: re-extracted {} files",
+        re_extracted
+    );
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -1011,6 +1085,23 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.48] watcher restore failed: {err}"
+                        );
+                    }
+                });
+
+                // v0.5.49: re-extract content for any pre-v0.5.49
+                // .docx / .xlsx files where the placeholder text
+                // landed because Office formats weren't in the
+                // extractor's switch yet. Spawned + best-effort,
+                // SQL-as-gate (skips files with non-empty text).
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_49_office_formats_backfill(&state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.49] office formats backfill failed: {err}"
                         );
                     }
                 });

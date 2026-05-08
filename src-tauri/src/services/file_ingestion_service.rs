@@ -542,6 +542,28 @@ pub fn extract_text_for_path(path: &Path, extension: &Option<String>) -> Extract
             Err(_) => ExtractionResult::default(),
         };
     }
+    // v0.5.49 — Office formats. Both extractors return None on
+    // any error (corrupt file, unsupported XML shape, etc.) so the
+    // ingest path falls through to the "Recall did not extract"
+    // placeholder rather than crashing the whole walk.
+    if ext == "docx" || ext == "docm" {
+        return match extract_docx_text(path) {
+            Some(text) => ExtractionResult {
+                text: Some(text),
+                is_image: false,
+            },
+            None => ExtractionResult::default(),
+        };
+    }
+    if ext == "xlsx" || ext == "xlsm" {
+        return match extract_xlsx_text(path) {
+            Some(text) => ExtractionResult {
+                text: Some(text),
+                is_image: false,
+            },
+            None => ExtractionResult::default(),
+        };
+    }
     if is_image_extension(ext) {
         return ExtractionResult {
             text: None,
@@ -549,6 +571,190 @@ pub fn extract_text_for_path(path: &Path, extension: &Option<String>) -> Extract
         };
     }
     ExtractionResult::default()
+}
+
+/// v0.5.49 — extract body text from a .docx (or .docm) file by
+/// unwrapping the OOXML zip container and pulling text out of
+/// `word/document.xml`'s `<w:t>` elements. We don't use a full
+/// docx parser because we don't care about styles, tables,
+/// images, or sections — just the searchable text. The naive
+/// `<w:t>...</w:t>` scan handles 99% of real documents and
+/// degrades gracefully on the rest (returns whatever it found).
+///
+/// Returns `None` on any IO/zip/utf-8 failure so the caller can
+/// fall back to the empty-extraction placeholder.
+fn extract_docx_text(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+
+    // .docx always names the body XML at this exact path. If it's
+    // missing we're either looking at a non-docx zip or a corrupted
+    // file — return None and let the caller stamp the placeholder.
+    let mut document = archive.by_name("word/document.xml").ok()?;
+    let mut xml = String::new();
+    use std::io::Read;
+    document.read_to_string(&mut xml).ok()?;
+
+    // Pull every <w:t>...</w:t> run. Word emits separate runs per
+    // formatting change so a single visible paragraph can be
+    // dozens of runs — we join with empty string (matching how
+    // Word renders them) and rely on `<w:p>` paragraph breaks to
+    // already be encoded as literal newlines in the XML stream
+    // when present. For paragraph spacing we replace `</w:p>`
+    // with a newline marker before the run scan.
+    let with_breaks = xml.replace("</w:p>", "</w:p>\n");
+
+    let mut out = String::with_capacity(with_breaks.len() / 4);
+    let bytes = with_breaks.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Find the next "<w:t" — covers both `<w:t>` and `<w:t xml:space="preserve">`.
+        let Some(start_rel) = find_subslice(&bytes[i..], b"<w:t") else {
+            // No more runs; copy any newlines between the last run
+            // and EOF so paragraph spacing survives.
+            for &b in &bytes[i..] {
+                if b == b'\n' {
+                    out.push('\n');
+                }
+            }
+            break;
+        };
+        // Carry over newlines from skipped XML between runs (these
+        // are the paragraph breaks we injected above).
+        for &b in &bytes[i..i + start_rel] {
+            if b == b'\n' {
+                out.push('\n');
+            }
+        }
+        let abs_start = i + start_rel;
+        // Skip past the opening tag's `>` so we land at the text body.
+        let Some(gt_rel) = find_subslice(&bytes[abs_start..], b">") else {
+            break;
+        };
+        let body_start = abs_start + gt_rel + 1;
+        let Some(end_rel) = find_subslice(&bytes[body_start..], b"</w:t>") else {
+            break;
+        };
+        let body_end = body_start + end_rel;
+        let run = std::str::from_utf8(&bytes[body_start..body_end]).ok()?;
+        out.push_str(&decode_xml_entities(run));
+        i = body_end + b"</w:t>".len();
+    }
+
+    // Collapse runs of 3+ blank lines down to 2 — Word documents
+    // often emit a lot of empty paragraphs as spacing.
+    let collapsed = collapse_blank_lines(&out);
+    Some(collapsed)
+}
+
+/// v0.5.49 — extract text from .xlsx via calamine. Concatenates
+/// every cell of every sheet, separated by tabs within a row and
+/// newlines between rows, with sheet name headers between sheets.
+///
+/// This is more text than a human would read but gives the
+/// chunker something to work with — embeddings care about
+/// content, not visual layout.
+fn extract_xlsx_text(path: &Path) -> Option<String> {
+    use calamine::{open_workbook_auto, Data, Reader};
+
+    let mut workbook = open_workbook_auto(path).ok()?;
+    let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
+    if sheet_names.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for name in &sheet_names {
+        let Ok(range) = workbook.worksheet_range(name) else {
+            continue;
+        };
+        if range.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        // Sheet header lets the embedding latch onto sheet
+        // semantics ("Q3 forecast", "Headcount") rather than just
+        // the cell soup that follows.
+        out.push_str(&format!("# Sheet: {name}\n"));
+        for row in range.rows() {
+            let cells: Vec<String> = row
+                .iter()
+                .map(|cell| match cell {
+                    Data::Empty => String::new(),
+                    Data::String(s) => s.clone(),
+                    Data::Float(f) => format!("{f}"),
+                    Data::Int(i) => format!("{i}"),
+                    Data::Bool(b) => format!("{b}"),
+                    Data::DateTime(dt) => format!("{}", dt.as_f64()),
+                    Data::DateTimeIso(s) => s.clone(),
+                    Data::DurationIso(s) => s.clone(),
+                    Data::Error(e) => format!("#ERR:{e:?}"),
+                })
+                .collect();
+            // Skip rows that are entirely empty so we don't
+            // write a 10,000-line block of tabs for sparse
+            // spreadsheets.
+            if cells.iter().all(|c| c.is_empty()) {
+                continue;
+            }
+            out.push_str(&cells.join("\t"));
+            out.push('\n');
+        }
+    }
+    if out.trim().is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Cheap subslice search. We avoid pulling in `memchr` for one
+/// site; this is N×M but the windows we search are short (XML
+/// stream slices) and the haystack/needle relationship is
+/// favorable in practice.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    for i in 0..=haystack.len() - needle.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Decode the small set of XML entities Word emits inside text
+/// runs. Anything else we leave verbatim — embeddings tolerate
+/// a stray `&copy;` better than a panic on an unexpected entity.
+fn decode_xml_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+/// Collapse runs of 3+ blank lines to 2. Word documents often
+/// emit empty paragraphs as visual spacing; preserving them
+/// inflates the chunk count without adding embedding signal.
+fn collapse_blank_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut blank_run = 0;
+    for line in s.lines() {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 2 {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 fn is_text_extension(ext: &str) -> bool {
