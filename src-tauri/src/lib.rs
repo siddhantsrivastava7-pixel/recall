@@ -571,6 +571,74 @@ async fn run_v0_5_49_office_formats_backfill(
     Ok(())
 }
 
+/// v0.5.54 — back-fill watched_folders from the `folders` table.
+/// v0.5.48 introduced auto-watch on ingest, but folders imported
+/// before that release have rows in `folders` and no entry in
+/// `watched_folders` — invisible to the v0.5.52 management
+/// panel and not actually being watched. This sweep adds every
+/// existing folder path to the watch list (skipping ones gone
+/// from disk) and re-establishes a debouncer for each.
+///
+/// Idempotent: `INSERT OR IGNORE` no-ops on already-watched
+/// paths; `restore_from_db` immediately after handles the
+/// notify-side registration. Splitting INSERT from restore is
+/// intentional — the user-facing panel is what matters; restore
+/// is best-effort and tolerated to fail per-folder (folder
+/// gone offline, permissions revoked, etc.).
+async fn run_v0_5_54_watched_folders_backfill(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> crate::errors::app_error::AppResult<()> {
+    let folder_paths: Vec<(String,)> =
+        sqlx::query_as("SELECT path FROM folders ORDER BY indexed_at ASC")
+            .fetch_all(&state.pool)
+            .await?;
+
+    if folder_paths.is_empty() {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut added = 0u32;
+    for (path_str,) in &folder_paths {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            continue; // folder gone from disk; skip the row
+        }
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO watched_folders (path, recursive, added_at) \
+             VALUES (?1, 1, ?2)",
+        )
+        .bind(path_str)
+        .bind(&now)
+        .execute(&state.pool)
+        .await?;
+        if result.rows_affected() > 0 {
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        eprintln!(
+            "[recall][v0.5.54] watched-folders backfill: added {added} folder(s) from existing ingests"
+        );
+        // Re-establish watchers for newly-added paths. The
+        // existing v0.5.48 boot-time restore_from_db ran before
+        // we got here so backfilled paths missed it; this second
+        // pass picks them up.
+        if let Err(error) = state
+            .file_watcher_service
+            .restore_from_db(app, &state.pool)
+            .await
+        {
+            eprintln!(
+                "[recall][v0.5.54] watcher restore (post-backfill) failed: {error}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Boot the AI scheduler after the main window has opened. Two
 /// reasons this lives in its own helper rather than inline in `setup()`:
 ///
@@ -1102,6 +1170,24 @@ pub fn run() {
                     {
                         eprintln!(
                             "[recall][v0.5.49] office formats backfill failed: {err}"
+                        );
+                    }
+                });
+
+                // v0.5.54: back-fill watched_folders from the
+                // `folders` table so pre-v0.5.48 ingests show up
+                // in the management panel + start being watched.
+                // Idempotent (INSERT OR IGNORE) and sequenced
+                // after the v0.5.48 restore so backfilled paths
+                // get their watcher registered too.
+                let app_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    if let Err(err) =
+                        run_v0_5_54_watched_folders_backfill(&app_handle, &state).await
+                    {
+                        eprintln!(
+                            "[recall][v0.5.54] watched-folders backfill failed: {err}"
                         );
                     }
                 });

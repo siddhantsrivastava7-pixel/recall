@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useUpdateStore } from "@/stores/updateStore";
 import { useLicenseStore } from "@/stores/licenseStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useMemoryStore } from "@/stores/memoryStore";
 import { usePairingStore } from "@/features/pairing/pairingStore";
 import { tauriClient, type SuggestedLocation, type XOAuthRow } from "@/services/api/tauri-client";
 import { syncBookmarksNow } from "@/services/bookmarks";
@@ -625,11 +626,48 @@ function WatchedFoldersCard() {
     }
   }
 
-  // Don't render the section header at all when nothing's watched
-  // — saves the user a "0 watched folders" eyesore on a fresh
-  // install.
-  if (!folders || folders.length === 0) {
-    return null;
+  // v0.5.54 — always render the section. Pre-v0.5.54 we hid it
+  // when the watch list was empty, but that left users asking
+  // "where can I see folders" with nowhere to look. The empty
+  // state explains why nothing's there + points at the way to
+  // add folders (the Files & Folders card directly above).
+  if (!folders) {
+    return null; // still loading — render nothing transient
+  }
+  if (folders.length === 0) {
+    return (
+      <div
+        style={{
+          marginTop: 28,
+          paddingTop: 22,
+          borderTop: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 650,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "rgba(155,123,255,0.95)",
+            marginBottom: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <Eye size={11} />
+          Watched folders
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55, maxWidth: 540 }}>
+          No folders connected yet. Drop a folder onto the Recall
+          window — or use <strong style={{ color: "var(--text-primary)" }}>Import a folder</strong>{" "}
+          above — and Recall will watch it for changes. New files
+          ingest automatically; edits re-extract within a few
+          seconds; deletions remove the shadow memory.
+        </div>
+      </div>
+    );
   }
 
   return (
