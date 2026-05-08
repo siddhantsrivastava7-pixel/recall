@@ -66,6 +66,15 @@ export const tauriClient = {
   // Drops the shadow memory + file/folder rows; for folders also
   // stops the watcher and cascades through all descendants.
   // Doesn't touch the actual file/folder on disk.
+  // v0.5.48 — filesystem watcher management. add/remove are
+  // imperative; list returns the canonical persisted set so the
+  // UI sees the same view that survives restart.
+  listWatchedFolders: () => invoke<string[]>("list_watched_folders"),
+  addWatchedFolder: (path: string) =>
+    invoke<void>("add_watched_folder", { path }),
+  removeWatchedFolder: (path: string) =>
+    invoke<void>("remove_watched_folder", { path }),
+
   removeFile: (memoryId: string) =>
     invoke<void>("remove_file", { memoryId }),
   // v0.5.51 — `keepChildren` lets the user drop the folder +

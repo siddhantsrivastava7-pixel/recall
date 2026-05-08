@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone, Sparkles } from "lucide-react";
+import { Zap, Keyboard, BookOpen, Key, CheckCircle, XCircle, RefreshCw, Download, Upload, Trash2, PackageCheck, Smartphone, Sparkles, Eye, FolderOpen } from "lucide-react";
 import { BrainQrCode } from "@/components/settings/BrainQrCode";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
@@ -319,6 +319,18 @@ function BookmarksTab() {
         ever auto-scanning anything.
       */}
       <FileIngestionCard />
+
+      {/*
+        v0.5.51 — watched folders panel. Once the user drops a
+        folder it auto-watches (v0.5.48). Without this surface,
+        the watch list was invisible — users had no way to see
+        what Recall is monitoring or stop watching one without
+        deleting the folder shadow memory. The panel only renders
+        when there's at least one watched folder so it doesn't
+        clutter the Bookmarks tab for users who haven't ingested
+        anything yet.
+      */}
+      <WatchedFoldersCard />
     </Section>
   );
 }
@@ -497,6 +509,170 @@ function FileIngestionCard() {
       )}
     </div>
   );
+}
+
+/* Watched folders panel — v0.5.51 */
+function WatchedFoldersCard() {
+  const [folders, setFolders] = useState<string[] | null>(null);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [busyPath, setBusyPath] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const list = await tauriClient.listWatchedFolders();
+      setFolders(list);
+    } catch (error) {
+      console.error("[recall][watched-folders] list failed:", error);
+      setFolders([]);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function stopWatching(path: string) {
+    if (
+      !confirm(
+        `Stop watching this folder?\n\n${path}\n\nFile memories Recall already created from this folder stay in your library. Recall just won't pick up new edits or new files.`,
+      )
+    )
+      return;
+    setBusyPath(path);
+    setActionMsg(null);
+    try {
+      await tauriClient.removeWatchedFolder(path);
+      setActionMsg(`Stopped watching ${shortenPath(path)}`);
+      await refresh();
+    } catch (error) {
+      setActionMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyPath(null);
+    }
+  }
+
+  // Don't render the section header at all when nothing's watched
+  // — saves the user a "0 watched folders" eyesore on a fresh
+  // install.
+  if (!folders || folders.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 28,
+        paddingTop: 22,
+        borderTop: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 650,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: "rgba(155,123,255,0.95)",
+          marginBottom: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <Eye size={11} />
+        Watched folders
+      </div>
+      <div
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--text-primary)",
+          marginBottom: 4,
+        }}
+      >
+        {folders.length} folder{folders.length === 1 ? "" : "s"} connected
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55, maxWidth: 540 }}>
+        Recall is watching these folders for changes. New files
+        ingest automatically; edits re-extract within a few
+        seconds; deletions remove the shadow memory. Stop
+        watching to disconnect a folder — file memories already
+        in your library stay.
+      </div>
+
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          maxWidth: 640,
+        }}
+      >
+        {folders.map((path) => (
+          <div
+            key={path}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <FolderOpen size={14} style={{ color: "var(--t-3)", flexShrink: 0 }} />
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 12,
+                fontFamily: "ui-monospace, monospace",
+                color: "var(--text-primary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={path}
+            >
+              {path}
+            </div>
+            <button
+              className="btn-ghost"
+              onClick={() => void stopWatching(path)}
+              disabled={busyPath === path}
+              style={{ fontSize: 11, padding: "4px 10px", flexShrink: 0 }}
+            >
+              {busyPath === path ? "Stopping…" : "Stop watching"}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {actionMsg && (
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 12,
+            color: "var(--t-3)",
+            lineHeight: 1.5,
+            maxWidth: 540,
+          }}
+        >
+          {actionMsg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Display helper — collapse a long absolute path to its tail
+/// for the action-message line. The full path is still in the
+/// row above, so the message just needs to confirm which one.
+function shortenPath(path: string): string {
+  const segments = path.split(/[\\/]/);
+  return segments.slice(-2).join("/") || path;
 }
 
 /* X (Twitter) connection card — v0.5.37 */
