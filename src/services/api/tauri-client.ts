@@ -61,6 +61,15 @@ export const tauriClient = {
     invoke<FileIngestResult>("ingest_path", { path }),
   ingestPaths: (paths: string[]) =>
     invoke<FileIngestResult>("ingest_paths", { paths }),
+
+  // v0.5.50 — explicit removal of files/folders from Recall.
+  // Drops the shadow memory + file/folder rows; for folders also
+  // stops the watcher and cascades through all descendants.
+  // Doesn't touch the actual file/folder on disk.
+  removeFile: (memoryId: string) =>
+    invoke<void>("remove_file", { memoryId }),
+  removeFolder: (memoryId: string) =>
+    invoke<void>("remove_folder", { memoryId }),
   suggestedLocations: () =>
     invoke<SuggestedLocation[]>("suggested_locations"),
   readClipboardText: () => invoke<string | null>("read_clipboard_text"),

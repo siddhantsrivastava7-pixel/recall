@@ -222,6 +222,184 @@ fn shallow_file_count(path: &std::path::Path) -> u32 {
     count
 }
 
+/// v0.5.50 — fully remove a file from Recall. Drops the shadow
+/// memory + the `files` row, leaving the actual file on disk
+/// untouched. The file remains visible in the parent folder's
+/// watcher; if the user later edits it, the watcher's Modify
+/// event re-ingests it. That's the right behavior — explicit
+/// removal "for good" is what `remove_folder` does (stops
+/// watching), and a user who keeps editing a removed file
+/// probably wants it back. If a "stay removed" semantic ever
+/// becomes important, a `dismissed_files` table is the natural
+/// next step.
+#[tauri::command]
+pub async fn remove_file(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    // Locate the file row via the shadow_memory_id pointer. Some
+    // older shadows (pre-v0.5.47) may not have the link populated
+    // — fall back to looking up the memory's external_id (the
+    // file row's UUID) and using that.
+    let file_row: Option<(String, String)> = sqlx::query_as(
+        "SELECT id, path FROM files WHERE shadow_memory_id = ?1",
+    )
+    .bind(&memory_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let (file_id, _file_path) = match file_row {
+        Some(row) => row,
+        None => {
+            // Fall back: look up via the memory's external_id.
+            let memory = state.memory_repository.find(&memory_id).await?;
+            let external_id = memory.and_then(|m| m.external_id);
+            match external_id {
+                Some(ext) => {
+                    let alt: Option<(String, String)> = sqlx::query_as(
+                        "SELECT id, path FROM files WHERE id = ?1",
+                    )
+                    .bind(&ext)
+                    .fetch_optional(&state.pool)
+                    .await?;
+                    match alt {
+                        Some(row) => row,
+                        None => {
+                            // No file row to clean up — just delete the memory and return.
+                            return state.memory_service.delete(&memory_id).await;
+                        }
+                    }
+                }
+                None => {
+                    return state.memory_service.delete(&memory_id).await;
+                }
+            }
+        }
+    };
+
+    // Drop file row first so the memory delete doesn't leave a
+    // dangling shadow_memory_id pointer if the second step fails.
+    sqlx::query("DELETE FROM files WHERE id = ?1")
+        .bind(&file_id)
+        .execute(&state.pool)
+        .await?;
+    state.memory_service.delete(&memory_id).await?;
+    Ok(())
+}
+
+/// v0.5.50 — fully remove a folder from Recall. Stops the
+/// filesystem watcher, drops `watched_folders` + `folders`
+/// rows, and cascades through every `files` row + shadow
+/// memory under the folder's path. The folder + its files on
+/// disk stay where they are.
+///
+/// "Cascade by path prefix" is intentional: we use the
+/// canonicalized folder path as the prefix and match `files.path`
+/// against `<folder>/...`. This catches every descendant
+/// regardless of folder depth without needing recursive parent
+/// traversal.
+#[tauri::command]
+pub async fn remove_folder(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    // Look up the folder row via the memory's external_id. For
+    // folder shadows, external_id is the absolute path string
+    // (per file_ingestion_service::upsert_folder_row).
+    let memory = state.memory_repository.find(&memory_id).await?;
+    let folder_path = match memory.and_then(|m| m.external_id) {
+        Some(p) => p,
+        None => {
+            // No folder mapping — just drop the memory and return.
+            return state.memory_service.delete(&memory_id).await;
+        }
+    };
+
+    // Stop the watcher first so no in-flight events trigger a
+    // re-ingest of files we're about to delete.
+    let path_buf = std::path::PathBuf::from(&folder_path);
+    if let Err(error) = state
+        .file_watcher_service
+        .remove_watch(&state.pool, &path_buf)
+        .await
+    {
+        eprintln!(
+            "[recall][file-remove] watcher stop failed for {folder_path}: {error}"
+        );
+    }
+
+    // Cascade through child files. Match either the exact folder
+    // path (covers the rare "file row whose path is the folder
+    // itself" case) or anything under it. SQLite `||` is string
+    // concatenation; the trailing slash patterns differ per OS so
+    // we handle both forward + back slash separators.
+    let prefix_fwd = format!("{}/%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
+    let prefix_bwd = format!("{}\\%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
+
+    let child_files: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, shadow_memory_id FROM files \
+         WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
+    )
+    .bind(&folder_path)
+    .bind(&prefix_fwd)
+    .bind(&prefix_bwd)
+    .fetch_all(&state.pool)
+    .await?;
+
+    // Drop child shadow memories first, then file rows. A failed
+    // delete partway through leaves the row referencing a now-
+    // missing shadow — better than leaving a shadow without a row
+    // (the latter looks like a normal memory but its source is
+    // gone).
+    for (file_id, shadow_id) in &child_files {
+        if let Some(shadow) = shadow_id {
+            let _ = state.memory_service.delete(shadow).await;
+        }
+        let _ = sqlx::query("DELETE FROM files WHERE id = ?1")
+            .bind(file_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    // Cascade through subfolder rows + their shadows. Same prefix
+    // match as files.
+    let child_folders: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, path FROM folders \
+         WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
+    )
+    .bind(&folder_path)
+    .bind(&prefix_fwd)
+    .bind(&prefix_bwd)
+    .fetch_all(&state.pool)
+    .await?;
+
+    for (folder_id, path) in &child_folders {
+        // Find + delete each subfolder's shadow memory. external_id
+        // is the path so we can look up by source_app + external_id.
+        if let Some(shadow) = state
+            .memory_repository
+            .find_by_external_source("folder", path)
+            .await?
+        {
+            let _ = state.memory_service.delete(&shadow.id).await;
+        }
+        let _ = sqlx::query("DELETE FROM folders WHERE id = ?1")
+            .bind(folder_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    // The user-facing folder shadow itself — already deleted via
+    // the loop above when path == folder_path, but we also need
+    // to delete the memory row the user clicked Delete on. The
+    // shadow lookup goes by external_id == folder_path, which is
+    // exactly what the loop matched. Safe to call again — the
+    // delete is a no-op if the row's already gone.
+    let _ = state.memory_service.delete(&memory_id).await;
+
+    Ok(())
+}
+
 /// v0.5.48 — manually add a folder to the watch list. Useful
 /// when the user wants to watch a folder they haven't ingested
 /// (rare today; common once the v0.5.49 management UI lands).

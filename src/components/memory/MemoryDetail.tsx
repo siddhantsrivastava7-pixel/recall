@@ -362,8 +362,70 @@ export function MemoryDetail({
   }
 
   async function deleteMemory() {
-    if (!confirm("Delete this memory? This cannot be undone.")) return;
-    await remove(currentMemory.id);
+    // v0.5.50 — file/folder memories need a different teardown
+    // than ordinary memories. Plain `remove` only drops the
+    // shadow row, leaving the `files`/`folders` table rows
+    // orphaned and the filesystem watcher still hooked into a
+    // folder we just "removed." The dedicated commands handle
+    // the cascade. The actual file/folder on disk stays put —
+    // the user is removing it from Recall, not from their
+    // computer.
+    const sourceApp = currentMemory.sourceApp;
+    const isFile = sourceApp === "file";
+    const isFolder = sourceApp === "folder";
+    const promptCopy = isFolder
+      ? "Remove this folder from Recall? The folder + its files on disk are not deleted, and Recall will stop watching for changes."
+      : isFile
+      ? "Remove this file from Recall? The file on disk is not deleted."
+      : "Delete this memory? This cannot be undone.";
+    if (!confirm(promptCopy)) return;
+
+    if (isFile) {
+      await tauriClient.removeFile(currentMemory.id);
+      // Mirror the optimistic store update that `remove` does so
+      // the list re-renders immediately. Pull a fresh hydrate by
+      // dropping it locally.
+      useMemoryStore.setState((state) => ({
+        memories: state.memories.filter((m) => m.id !== currentMemory.id),
+        selectedMemoryId:
+          state.selectedMemoryId === currentMemory.id ? null : state.selectedMemoryId,
+        operationMessage: "File removed from Recall.",
+      }));
+    } else if (isFolder) {
+      await tauriClient.removeFolder(currentMemory.id);
+      // Folder removal cascades through children. Mirror the
+      // backend's path-prefix sweep optimistically so the list
+      // re-renders without children. Match keys differ by source:
+      //   - folder shadows: externalId is the absolute path
+      //   - file shadows:   externalId is a UUID, but folderPath
+      //     holds the parent directory the file lives in
+      const folderPath = currentMemory.externalId ?? "";
+      const isUnder = (candidate: string | null | undefined) => {
+        if (!candidate) return false;
+        if (candidate === folderPath) return true;
+        return (
+          candidate.startsWith(`${folderPath}/`) ||
+          candidate.startsWith(`${folderPath}\\`)
+        );
+      };
+      useMemoryStore.setState((state) => ({
+        memories: state.memories.filter((m) => {
+          if (m.id === currentMemory.id) return false;
+          if (m.sourceApp === "folder" && isUnder(m.externalId)) {
+            return false;
+          }
+          if (m.sourceApp === "file" && isUnder(m.folderPath)) {
+            return false;
+          }
+          return true;
+        }),
+        selectedMemoryId:
+          state.selectedMemoryId === currentMemory.id ? null : state.selectedMemoryId,
+        operationMessage: "Folder removed from Recall.",
+      }));
+    } else {
+      await remove(currentMemory.id);
+    }
     onClose();
   }
 

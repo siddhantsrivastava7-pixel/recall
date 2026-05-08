@@ -28,7 +28,7 @@ use commands::{
     },
     files::{
         add_watched_folder, ingest_path, ingest_paths, list_watched_folders,
-        remove_watched_folder, suggested_locations,
+        remove_file, remove_folder, remove_watched_folder, suggested_locations,
     },
     license::{activate_license, deactivate_license, get_license_state, validate_license_key},
     memories::{
@@ -1164,6 +1164,8 @@ pub fn run() {
             add_watched_folder,
             remove_watched_folder,
             list_watched_folders,
+            remove_file,
+            remove_folder,
             list_memories,
             get_memory,
             create_memory,
