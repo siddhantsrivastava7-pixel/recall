@@ -289,18 +289,28 @@ pub async fn remove_file(
 
 /// v0.5.50 — fully remove a folder from Recall. Stops the
 /// filesystem watcher, drops `watched_folders` + `folders`
-/// rows, and cascades through every `files` row + shadow
-/// memory under the folder's path. The folder + its files on
-/// disk stay where they are.
+/// rows, and (when `keep_children` is false) cascades through
+/// every `files` row + shadow memory under the folder's path.
+/// The folder + its files on disk stay where they are.
 ///
 /// "Cascade by path prefix" is intentional: we use the
 /// canonicalized folder path as the prefix and match `files.path`
 /// against `<folder>/...`. This catches every descendant
 /// regardless of folder depth without needing recursive parent
 /// traversal.
+///
+/// v0.5.51 — `keep_children` lets the user remove just the
+/// folder + watcher while keeping every file memory the folder
+/// produced. Useful when the user added a folder for one-shot
+/// indexing and wants to stop the watcher but doesn't want to
+/// re-find dozens of file memories. When true: stop the
+/// watcher, drop watched_folders, drop folder shadow + folder
+/// row only. Subfolder rows + every file under the path are
+/// left intact (each becomes a free-standing file memory).
 #[tauri::command]
 pub async fn remove_folder(
     memory_id: String,
+    keep_children: bool,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
     // Look up the folder row via the memory's external_id. For
@@ -328,73 +338,81 @@ pub async fn remove_folder(
         );
     }
 
-    // Cascade through child files. Match either the exact folder
-    // path (covers the rare "file row whose path is the folder
-    // itself" case) or anything under it. SQLite `||` is string
-    // concatenation; the trailing slash patterns differ per OS so
-    // we handle both forward + back slash separators.
-    let prefix_fwd = format!("{}/%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
-    let prefix_bwd = format!("{}\\%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
+    if !keep_children {
+        // Cascade through child files. Match either the exact folder
+        // path (covers the rare "file row whose path is the folder
+        // itself" case) or anything under it. The trailing slash
+        // patterns differ per OS so we handle both forward + back
+        // slash separators.
+        let prefix_fwd = format!("{}/%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
+        let prefix_bwd = format!("{}\\%", folder_path.trim_end_matches('/').trim_end_matches('\\'));
 
-    let child_files: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT id, shadow_memory_id FROM files \
-         WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
-    )
-    .bind(&folder_path)
-    .bind(&prefix_fwd)
-    .bind(&prefix_bwd)
-    .fetch_all(&state.pool)
-    .await?;
+        let child_files: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, shadow_memory_id FROM files \
+             WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
+        )
+        .bind(&folder_path)
+        .bind(&prefix_fwd)
+        .bind(&prefix_bwd)
+        .fetch_all(&state.pool)
+        .await?;
 
-    // Drop child shadow memories first, then file rows. A failed
-    // delete partway through leaves the row referencing a now-
-    // missing shadow — better than leaving a shadow without a row
-    // (the latter looks like a normal memory but its source is
-    // gone).
-    for (file_id, shadow_id) in &child_files {
-        if let Some(shadow) = shadow_id {
-            let _ = state.memory_service.delete(shadow).await;
+        // Drop child shadow memories first, then file rows. A failed
+        // delete partway through leaves the row referencing a now-
+        // missing shadow — better than leaving a shadow without a row
+        // (the latter looks like a normal memory but its source is
+        // gone).
+        for (file_id, shadow_id) in &child_files {
+            if let Some(shadow) = shadow_id {
+                let _ = state.memory_service.delete(shadow).await;
+            }
+            let _ = sqlx::query("DELETE FROM files WHERE id = ?1")
+                .bind(file_id)
+                .execute(&state.pool)
+                .await;
         }
-        let _ = sqlx::query("DELETE FROM files WHERE id = ?1")
-            .bind(file_id)
+
+        // Cascade through subfolder rows + their shadows.
+        let child_folders: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, path FROM folders \
+             WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
+        )
+        .bind(&folder_path)
+        .bind(&prefix_fwd)
+        .bind(&prefix_bwd)
+        .fetch_all(&state.pool)
+        .await?;
+
+        for (folder_id, path) in &child_folders {
+            if let Some(shadow) = state
+                .memory_repository
+                .find_by_external_source("folder", path)
+                .await?
+            {
+                let _ = state.memory_service.delete(&shadow.id).await;
+            }
+            let _ = sqlx::query("DELETE FROM folders WHERE id = ?1")
+                .bind(folder_id)
+                .execute(&state.pool)
+                .await;
+        }
+    } else {
+        // keep_children path — drop only the folder row + the
+        // shadow the user clicked Delete on. File memories
+        // become free-standing (their `folder_path` field still
+        // holds the parent dir, which is fine for navigation but
+        // no longer corresponds to a folder shadow).
+        let _ = sqlx::query("DELETE FROM folders WHERE path = ?1")
+            .bind(&folder_path)
             .execute(&state.pool)
             .await;
     }
 
-    // Cascade through subfolder rows + their shadows. Same prefix
-    // match as files.
-    let child_folders: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, path FROM folders \
-         WHERE path = ?1 OR path LIKE ?2 OR path LIKE ?3",
-    )
-    .bind(&folder_path)
-    .bind(&prefix_fwd)
-    .bind(&prefix_bwd)
-    .fetch_all(&state.pool)
-    .await?;
-
-    for (folder_id, path) in &child_folders {
-        // Find + delete each subfolder's shadow memory. external_id
-        // is the path so we can look up by source_app + external_id.
-        if let Some(shadow) = state
-            .memory_repository
-            .find_by_external_source("folder", path)
-            .await?
-        {
-            let _ = state.memory_service.delete(&shadow.id).await;
-        }
-        let _ = sqlx::query("DELETE FROM folders WHERE id = ?1")
-            .bind(folder_id)
-            .execute(&state.pool)
-            .await;
-    }
-
-    // The user-facing folder shadow itself — already deleted via
-    // the loop above when path == folder_path, but we also need
-    // to delete the memory row the user clicked Delete on. The
-    // shadow lookup goes by external_id == folder_path, which is
-    // exactly what the loop matched. Safe to call again — the
-    // delete is a no-op if the row's already gone.
+    // The user-facing folder shadow itself. In the cascade path
+    // it was already deleted via the loop when path == folder_path;
+    // in the keep-children path it's still around. Safe to call
+    // either way — the delete is a no-op if the row's already
+    // gone.
     let _ = state.memory_service.delete(&memory_id).await;
 
     Ok(())

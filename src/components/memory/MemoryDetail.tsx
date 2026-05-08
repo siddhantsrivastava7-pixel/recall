@@ -392,14 +392,28 @@ export function MemoryDetail({
         operationMessage: "File removed from Recall.",
       }));
     } else if (isFolder) {
-      await tauriClient.removeFolder(currentMemory.id);
-      // Folder removal cascades through children. Mirror the
-      // backend's path-prefix sweep optimistically so the list
-      // re-renders without children. Match keys differ by source:
+      // v0.5.51 — folder removal asks two questions:
+      //   1. confirm the user actually wants to stop indexing this
+      //      folder (drops the watcher + folder shadow either way)
+      //   2. choose whether to also drop every file memory that
+      //      came from inside it
+      // The two-step keeps the native confirm() flow simple and
+      // gives the user explicit control. "OK" on step 2 cascades
+      // through children; "Cancel" keeps them.
+      const folderPath = currentMemory.externalId ?? "";
+      const cascadeOk = confirm(
+        "Also remove every file memory inside this folder?\n\n" +
+        "OK — remove the folder + all files Recall indexed from it.\n" +
+        "Cancel — keep individual file memories in your library, just stop watching the folder.",
+      );
+      const keepChildren = !cascadeOk;
+      await tauriClient.removeFolder(currentMemory.id, keepChildren);
+      // Mirror the backend's path-prefix sweep optimistically so the
+      // list re-renders without stale rows. Match keys differ by
+      // source:
       //   - folder shadows: externalId is the absolute path
       //   - file shadows:   externalId is a UUID, but folderPath
       //     holds the parent directory the file lives in
-      const folderPath = currentMemory.externalId ?? "";
       const isUnder = (candidate: string | null | undefined) => {
         if (!candidate) return false;
         if (candidate === folderPath) return true;
@@ -411,6 +425,10 @@ export function MemoryDetail({
       useMemoryStore.setState((state) => ({
         memories: state.memories.filter((m) => {
           if (m.id === currentMemory.id) return false;
+          if (keepChildren) {
+            // Only the folder shadow itself is gone. Children stay.
+            return true;
+          }
           if (m.sourceApp === "folder" && isUnder(m.externalId)) {
             return false;
           }
@@ -421,7 +439,9 @@ export function MemoryDetail({
         }),
         selectedMemoryId:
           state.selectedMemoryId === currentMemory.id ? null : state.selectedMemoryId,
-        operationMessage: "Folder removed from Recall.",
+        operationMessage: keepChildren
+          ? "Folder removed. File memories kept in your library."
+          : "Folder and its files removed from Recall.",
       }));
     } else {
       await remove(currentMemory.id);

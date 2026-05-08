@@ -68,8 +68,11 @@ export const tauriClient = {
   // Doesn't touch the actual file/folder on disk.
   removeFile: (memoryId: string) =>
     invoke<void>("remove_file", { memoryId }),
-  removeFolder: (memoryId: string) =>
-    invoke<void>("remove_folder", { memoryId }),
+  // v0.5.51 — `keepChildren` lets the user drop the folder +
+  // watcher while keeping every file memory the folder
+  // produced. true = keep file memories, false = cascade them.
+  removeFolder: (memoryId: string, keepChildren: boolean = false) =>
+    invoke<void>("remove_folder", { memoryId, keepChildren }),
   suggestedLocations: () =>
     invoke<SuggestedLocation[]>("suggested_locations"),
   readClipboardText: () => invoke<string | null>("read_clipboard_text"),
