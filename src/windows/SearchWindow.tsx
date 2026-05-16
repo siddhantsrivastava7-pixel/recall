@@ -6,9 +6,12 @@
  * Pressing ESC calls closeCurrentWindow().
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { FileText, Globe, Search, X } from "lucide-react";
+
+import { PointerPanel } from "@/features/pointer/PointerPanel";
+import { usePointerStore } from "@/features/pointer/pointerStore";
 
 import {
   formatRelativeTimestamp,
@@ -82,6 +85,67 @@ export function SearchWindow() {
     reset();
     await tauriClient.openMemoryInMain(memory.id);
     await tauriClient.closeCurrentWindow();
+  }
+
+  // v0.5.61 — Recall Pointer. The same search-overlay window
+  // doubles as the Pointer host. On `recall://pointer-activate`
+  // we take-once the stashed selection; if present, the window
+  // renders PointerPanel instead of search. We also probe on
+  // mount in case the event fired before this listener attached
+  // (window was cold-started by the hotkey).
+  const pointerSelection = usePointerStore((s) => s.selection);
+  const activatePointer = usePointerStore((s) => s.activate);
+  const resetPointer = usePointerStore((s) => s.reset);
+  const [pointerChecked, setPointerChecked] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    const pull = async () => {
+      try {
+        const sel = await tauriClient.pointerTakeSelection();
+        if (!disposed && sel) {
+          activatePointer(sel);
+        }
+      } catch {
+        // Pointer is best-effort; a failed take just means the
+        // window renders ordinary search.
+      } finally {
+        if (!disposed) setPointerChecked(true);
+      }
+    };
+    // Cold-start case: hotkey opened the window, the stash is
+    // already populated, the event may have raced us.
+    void pull();
+    // Warm case: window already open, hotkey fires the event.
+    const un = getCurrentWindow().listen("recall://pointer-activate", () => {
+      void pull();
+    });
+    return () => {
+      disposed = true;
+      void un.then((f) => f());
+      // Leaving Pointer mode (window closed) clears the session
+      // so the next plain search-overlay open is clean.
+      resetPointer();
+    };
+  }, [activatePointer, resetPointer]);
+
+  const closePointer = () => {
+    resetPointer();
+    void tauriClient.closeCurrentWindow();
+  };
+
+  if (pointerChecked && pointerSelection) {
+    return (
+      <div
+        style={{
+          width: "100vw",
+          height: "100vh",
+          background: "transparent",
+        }}
+      >
+        <PointerPanel onClose={closePointer} />
+      </div>
+    );
   }
 
   return (

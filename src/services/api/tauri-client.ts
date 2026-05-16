@@ -10,6 +10,7 @@ import type {
   Memory,
   MemoryInput,
   PairingInfo,
+  PointerSelection,
   Project,
   RuntimeInfo,
   ShortcutBinding,
@@ -107,6 +108,11 @@ export const tauriClient = {
   openQuickSaveWindow: () => invoke<void>("open_quick_save_window"),
   openMemoryInMain: (memoryId: string) => invoke<void>("open_memory_in_main", { memoryId }),
   closeCurrentWindow: () => invoke<void>("close_current_window"),
+  /// v0.5.61 — Recall Pointer. Take-once read of the selection
+  /// the hotkey handler stashed. Returns null when nothing is
+  /// pending (the signal to render plain search instead).
+  pointerTakeSelection: () =>
+    invoke<PointerSelection | null>("pointer_take_selection"),
   setWidgetExpanded: (expanded: boolean) => invoke<void>("set_widget_expanded", { expanded }),
   saveWidgetPosition: () => invoke<void>("save_widget_position"),
   seedSampleData: () => invoke<void>("seed_sample_data"),

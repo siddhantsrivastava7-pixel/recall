@@ -231,6 +231,18 @@ export interface AppContextSnapshot {
   sourceWindow: string | null;
 }
 
+/**
+ * v0.5.61 — Recall Pointer selection. Captured by the hotkey
+ * handler from the clipboard + app context; taken once by the
+ * overlay frontend via `pointerTakeSelection`.
+ */
+export interface PointerSelection {
+  text: string;
+  sourceApp: string | null;
+  sourceWindow: string | null;
+  capturedAt: string;
+}
+
 export interface BootstrapPayload {
   runtime: RuntimeInfo;
   settings: AppSettings;

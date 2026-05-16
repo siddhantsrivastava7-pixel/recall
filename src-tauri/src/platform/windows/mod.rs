@@ -74,6 +74,12 @@ impl ShortcutAdapter for WindowsShortcutAdapter {
                 editable: true,
                 description: "Open main app".into(),
             },
+            ShortcutBinding {
+                action: "open-pointer".into(),
+                accelerator: "Ctrl+Shift+P".into(),
+                editable: true,
+                description: "Recall Pointer — bridge copied text to your saved memories".into(),
+            },
         ]
     }
 }

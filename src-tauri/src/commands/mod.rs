@@ -6,6 +6,7 @@ pub mod license;
 pub mod memories;
 pub mod pairing;
 pub mod platform;
+pub mod pointer;
 pub mod projects;
 pub mod settings;
 pub mod windows;

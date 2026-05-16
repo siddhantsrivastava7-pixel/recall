@@ -87,6 +87,13 @@ pub struct AppState {
     /// for the runtime cancel signal.
     pub ask_recall_cancel_handles:
         Arc<AsyncMutex<HashMap<String, crate::ai::ask::session::CancelHandle>>>,
+    /// v0.5.61 — Recall Pointer's single-slot selection stash.
+    /// The hotkey handler writes the captured selection here;
+    /// the frontend takes it (read-and-clear) on overlay open.
+    /// Single slot by design — only the most recent trigger
+    /// matters; an older un-consumed selection is stale and
+    /// should not resurface.
+    pub pointer_selection: Arc<AsyncMutex<Option<crate::models::PointerSelection>>>,
     /// Capture service is exposed on AppState so the AI scheduler hook can
     /// re-use the existing post-save path. Held as Arc for cheap clones.
     pub capture_service: Arc<CaptureService>,
@@ -178,6 +185,7 @@ impl AppState {
             screenshot_store_cell: OnceLock::new(),
             llm_adapter_cell: OnceLock::new(),
             ask_recall_cancel_handles: Arc::new(AsyncMutex::new(HashMap::new())),
+            pointer_selection: Arc::new(AsyncMutex::new(None)),
             capture_service,
             init_error: None,
             startup_bookmark_sync_completed: AtomicBool::new(false),

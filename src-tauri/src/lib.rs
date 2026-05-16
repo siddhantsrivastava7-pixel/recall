@@ -37,6 +37,7 @@ use commands::{
         list_memories, mark_memory_opened, set_memory_resurface, update_memory,
     },
     pairing::{get_pairing_info, reset_pairing},
+    pointer::pointer_take_selection,
     platform::{detect_app_context, read_clipboard_text, write_clipboard_text},
     projects::{create_project, delete_project, list_projects, update_project},
     settings::{
@@ -961,6 +962,79 @@ pub fn run() {
                                 Some("open-main-app") => {
                                     let _ = state.platform.window.open_main(&app).await;
                                 }
+                                Some("open-pointer") => {
+                                    // v0.5.61 — Recall Pointer. Read the
+                                    // clipboard, resolve app context,
+                                    // stash a PointerSelection, then open
+                                    // the search-overlay window and tell
+                                    // the frontend to render Pointer mode.
+                                    // No-op when the clipboard has no
+                                    // text — nothing to bridge.
+                                    if !license_active {
+                                        let _ = state.platform.window.open_main(&app).await;
+                                    } else {
+                                        let text = state
+                                            .platform
+                                            .clipboard
+                                            .read_text(&app)
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                            .map(|t| t.trim().to_string())
+                                            .filter(|t| !t.is_empty());
+                                        if let Some(text) = text {
+                                            let ctx = state
+                                                .platform
+                                                .app_context
+                                                .detect_context()
+                                                .await
+                                                .ok();
+                                            let selection =
+                                                crate::models::PointerSelection {
+                                                    text,
+                                                    source_app: ctx
+                                                        .as_ref()
+                                                        .and_then(|c| c.source_app.clone()),
+                                                    source_window: ctx
+                                                        .as_ref()
+                                                        .and_then(|c| {
+                                                            c.source_window.clone()
+                                                        }),
+                                                    captured_at: chrono::Utc::now()
+                                                        .to_rfc3339(),
+                                                };
+                                            {
+                                                let mut slot = state
+                                                    .pointer_selection
+                                                    .lock()
+                                                    .await;
+                                                *slot = Some(selection);
+                                            }
+                                            let _ = state
+                                                .platform
+                                                .window
+                                                .open_search_overlay(&app)
+                                                .await;
+                                            // The overlay's frontend
+                                            // pulls the stash via
+                                            // pointer_take_selection on
+                                            // this event; the event also
+                                            // covers the case where the
+                                            // window was already open.
+                                            if let Some(win) = app
+                                                .get_webview_window("search-overlay")
+                                            {
+                                                let _ = win.emit(
+                                                    "recall://pointer-activate",
+                                                    (),
+                                                );
+                                            }
+                                        }
+                                        // Clipboard empty → silently do
+                                        // nothing. Surfacing an empty
+                                        // overlay would be noise.
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -1370,6 +1444,7 @@ pub fn run() {
             deactivate_license,
             get_pairing_info,
             reset_pairing,
+            pointer_take_selection,
             open_main_window,
             open_search_overlay,
             open_quick_save_window,

@@ -652,6 +652,30 @@ pub struct AppContextSnapshot {
     pub source_window: Option<String>,
 }
 
+/// v0.5.61 — Recall Pointer selection. Captured when the user
+/// triggers the Pointer hotkey: the current clipboard text plus
+/// whatever app context the platform adapter could resolve.
+/// Stashed in AppState (single slot, overwritten each trigger)
+/// and pulled exactly once by the frontend via
+/// `pointer_take_selection` — the take semantics mean a stale
+/// selection never leaks into a later, unrelated overlay open.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PointerSelection {
+    /// The selected (clipboard) text. Always present — the
+    /// trigger no-ops when the clipboard has no text.
+    pub text: String,
+    /// Frontmost app when the hotkey fired, if the platform
+    /// adapter could resolve it (e.g. "Safari", "Code").
+    pub source_app: Option<String>,
+    /// Foreground window title, if available. Often carries the
+    /// page title in browsers / the file name in editors.
+    pub source_window: Option<String>,
+    /// RFC3339 capture timestamp. Used for the "just now" label
+    /// and as the memory's created_at if the user saves.
+    pub captured_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapPayload {

@@ -78,6 +78,12 @@ impl ShortcutAdapter for MacShortcutAdapter {
                 editable: true,
                 description: "Open main app".into(),
             },
+            ShortcutBinding {
+                action: "open-pointer".into(),
+                accelerator: "Super+Shift+P".into(),
+                editable: true,
+                description: "Recall Pointer — bridge copied text to your saved memories".into(),
+            },
         ]
     }
 }
