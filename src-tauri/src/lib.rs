@@ -72,18 +72,54 @@ async fn current_shortcut_bindings(state: &AppState) -> Vec<crate::models::Short
         .unwrap_or_else(|_| state.platform.shortcuts.bindings())
 }
 
+/// v0.5.64 — order-independent accelerator comparison.
+///
+/// `normalize_accelerator` joins tokens in *input order*. The
+/// global-shortcut plugin, when it reports a keypress, emits the
+/// modifier tokens in its own internal order (commonly
+/// `shift+control+…`, not the human "Ctrl+Shift+…" we store).
+/// String-equality on the joined form therefore fails for any
+/// shortcut with ≥2 modifiers — `"Shift+Ctrl+P" != "Ctrl+Shift+P"`
+/// — and the handler silently does nothing. Single-modifier
+/// shortcuts (Alt+Space) round-trip fine, which is why this went
+/// unnoticed until the first multi-modifier global hotkey
+/// (Recall Pointer's Ctrl+Shift+P) was actually exercised.
+///
+/// Compare as sorted token *sets* instead: split, normalize each
+/// part, sort, equate. Modifier order stops mattering; the
+/// non-modifier key still has to match exactly.
+fn accelerators_equivalent(a: &str, b: &str) -> bool {
+    fn tokens(value: &str) -> Vec<String> {
+        let mut parts: Vec<String> = normalize_accelerator(value)
+            .split('+')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .collect();
+        parts.sort();
+        parts
+    }
+    !a.trim().is_empty() && tokens(a) == tokens(b)
+}
+
 async fn shortcut_action_for_accelerator(state: &AppState, accelerator: &str) -> Option<String> {
-    let normalized = normalize_accelerator(accelerator);
     let bindings = state
         .shortcut_service
         .list(&state.platform.shortcuts.bindings())
         .await
         .ok()?;
 
-    bindings
-        .into_iter()
-        .find(|binding| normalize_accelerator(&binding.accelerator) == normalized)
-        .map(|binding| binding.action)
+    // Diagnostic: Windows GUI builds have no visible stderr, but
+    // running the .exe from a terminal surfaces this — invaluable
+    // for confirming the round-trip when a user reports a dead
+    // hotkey.
+    let resolved = bindings
+        .iter()
+        .find(|binding| accelerators_equivalent(&binding.accelerator, accelerator))
+        .map(|binding| binding.action.clone());
+    eprintln!(
+        "[recall][shortcuts] keypress accelerator={accelerator:?} → action={resolved:?}"
+    );
+    resolved
 }
 
 pub(crate) async fn apply_shortcut_bindings(
@@ -1476,4 +1512,39 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recall");
+}
+
+#[cfg(test)]
+mod shortcut_match_tests {
+    use super::accelerators_equivalent;
+
+    #[test]
+    fn modifier_order_does_not_matter() {
+        // The exact failure: plugin reports shift-first, we store
+        // ctrl-first. Must still match.
+        assert!(accelerators_equivalent("Shift+Ctrl+P", "Ctrl+Shift+P"));
+        assert!(accelerators_equivalent("ctrl+shift+s", "Ctrl+Shift+S"));
+        assert!(accelerators_equivalent("Control+Shift+KeyP", "Ctrl+Shift+P"));
+    }
+
+    #[test]
+    fn single_modifier_still_matches() {
+        assert!(accelerators_equivalent("alt+space", "Alt+Space"));
+    }
+
+    #[test]
+    fn different_key_does_not_match() {
+        assert!(!accelerators_equivalent("Ctrl+Shift+P", "Ctrl+Shift+S"));
+    }
+
+    #[test]
+    fn missing_modifier_does_not_match() {
+        // Ctrl+P must not resolve a Ctrl+Shift+P binding.
+        assert!(!accelerators_equivalent("Ctrl+P", "Ctrl+Shift+P"));
+    }
+
+    #[test]
+    fn empty_input_never_matches() {
+        assert!(!accelerators_equivalent("", "Ctrl+Shift+P"));
+    }
 }
