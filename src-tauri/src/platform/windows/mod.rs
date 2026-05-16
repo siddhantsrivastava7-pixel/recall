@@ -76,9 +76,18 @@ impl ShortcutAdapter for WindowsShortcutAdapter {
             },
             ShortcutBinding {
                 action: "open-pointer".into(),
-                accelerator: "Ctrl+Shift+P".into(),
+                // v0.5.66 — moved off Ctrl+Shift+P. That combo is
+                // "new private window" in Chromium/Brave/Edge and
+                // the command palette in VS Code; browsers grab it
+                // before Recall's global registration lands, so the
+                // hotkey appeared dead while Brave opened a private
+                // window instead. Ctrl+Shift+Space is not a default
+                // accelerator in any major browser or editor and
+                // isn't a Windows system hotkey. Still editable for
+                // users who do have a conflict with it.
+                accelerator: "Ctrl+Shift+Space".into(),
                 editable: true,
-                description: "Recall Pointer — bridge copied text to your saved memories".into(),
+                description: "Recall Pointer — bridge selected text to your saved memories".into(),
             },
         ]
     }

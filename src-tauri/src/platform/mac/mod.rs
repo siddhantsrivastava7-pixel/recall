@@ -80,9 +80,14 @@ impl ShortcutAdapter for MacShortcutAdapter {
             },
             ShortcutBinding {
                 action: "open-pointer".into(),
-                accelerator: "Super+Shift+P".into(),
+                // v0.5.66 — moved off Cmd+Shift+P (Chrome/Brave/Edge
+                // print-to-PDF dialog, VS Code command palette) to a
+                // combo no major browser or editor claims by default.
+                // Cmd+Space / Ctrl+Space are OS-reserved on macOS
+                // (Spotlight / input source); Cmd+Shift+Space is not.
+                accelerator: "Super+Shift+Space".into(),
                 editable: true,
-                description: "Recall Pointer — bridge copied text to your saved memories".into(),
+                description: "Recall Pointer — bridge selected text to your saved memories".into(),
             },
         ]
     }
