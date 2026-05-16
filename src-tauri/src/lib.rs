@@ -92,28 +92,43 @@ pub(crate) async fn apply_shortcut_bindings(
     shortcuts: &[crate::models::ShortcutBinding],
 ) -> crate::errors::app_error::AppResult<()> {
     let shortcut_manager = app.global_shortcut();
-    let previous_bindings = current_shortcut_bindings(state).await;
-
-    let previous_accelerators = previous_bindings
-        .iter()
-        .map(|binding| binding.accelerator.clone())
-        .collect::<Vec<_>>();
 
     let _ = shortcut_manager.unregister_all();
 
-    let mut registered = Vec::new();
+    // v0.5.62 — per-shortcut best-effort registration.
+    //
+    // Pre-v0.5.62 this was all-or-nothing: a single accelerator
+    // that the OS refused (because another running app already
+    // holds a system-wide registration for it — Ctrl+Shift+P is
+    // a common collision) aborted the *entire* batch and rolled
+    // back to the previous set. Net effect: one conflicting
+    // shortcut silently disabled a working feature (Recall
+    // Pointer's default Ctrl+Shift+P being the motivating bug
+    // report). That's the wrong failure mode — a shortcut the OS
+    // won't grant should degrade to "that one shortcut doesn't
+    // work," not "Recall's shortcuts are broken."
+    //
+    // Now: register each independently. Collect the failures,
+    // log them (no file logging on Windows GUI builds, so
+    // eprintln is the diagnostic channel), and return Ok so the
+    // shortcuts that *did* register stay live. A future change
+    // can surface failed accelerators to the Settings →
+    // Shortcuts UI so the user knows exactly which to rebind.
+    let mut failed: Vec<(String, String)> = Vec::new();
     for binding in shortcuts {
         if let Err(error) = shortcut_manager.register(binding.accelerator.as_str()) {
-            let _ = shortcut_manager.unregister_all();
-            for accelerator in previous_accelerators {
-                let _ = shortcut_manager.register(accelerator.as_str());
-            }
-            return Err(crate::errors::app_error::AppError::Invalid(format!(
-                "shortcut `{}` could not be registered: {}",
-                binding.accelerator, error
-            )));
+            failed.push((binding.accelerator.clone(), error.to_string()));
         }
-        registered.push(binding.accelerator.clone());
+    }
+
+    if !failed.is_empty() {
+        for (accelerator, error) in &failed {
+            eprintln!(
+                "[recall][shortcuts] `{accelerator}` could not be registered \
+                 (likely claimed by another app): {error} — other shortcuts \
+                 still active; rebind this one in Settings → Shortcuts."
+            );
+        }
     }
 
     Ok(())
@@ -965,11 +980,19 @@ pub fn run() {
                                 Some("open-pointer") => {
                                     // v0.5.61 — Recall Pointer. Read the
                                     // clipboard, resolve app context,
-                                    // stash a PointerSelection, then open
-                                    // the search-overlay window and tell
-                                    // the frontend to render Pointer mode.
-                                    // No-op when the clipboard has no
-                                    // text — nothing to bridge.
+                                    // stash a PointerSelection, open the
+                                    // search-overlay window, render
+                                    // Pointer mode.
+                                    //
+                                    // v0.5.62 — ALWAYS open the panel,
+                                    // even with an empty clipboard. The
+                                    // pre-v0.5.62 silent no-op made the
+                                    // feature undiscoverable: a user
+                                    // pressing the hotkey to "see what
+                                    // it does" got nothing and concluded
+                                    // it was broken. Empty text now
+                                    // renders a one-line "copy something
+                                    // first" hint instead of a dead key.
                                     if !license_active {
                                         let _ = state.platform.window.open_main(&app).await;
                                     } else {
@@ -981,58 +1004,53 @@ pub fn run() {
                                             .ok()
                                             .flatten()
                                             .map(|t| t.trim().to_string())
-                                            .filter(|t| !t.is_empty());
-                                        if let Some(text) = text {
-                                            let ctx = state
-                                                .platform
-                                                .app_context
-                                                .detect_context()
-                                                .await
-                                                .ok();
-                                            let selection =
-                                                crate::models::PointerSelection {
-                                                    text,
-                                                    source_app: ctx
-                                                        .as_ref()
-                                                        .and_then(|c| c.source_app.clone()),
-                                                    source_window: ctx
-                                                        .as_ref()
-                                                        .and_then(|c| {
-                                                            c.source_window.clone()
-                                                        }),
-                                                    captured_at: chrono::Utc::now()
-                                                        .to_rfc3339(),
-                                                };
-                                            {
-                                                let mut slot = state
-                                                    .pointer_selection
-                                                    .lock()
-                                                    .await;
-                                                *slot = Some(selection);
-                                            }
-                                            let _ = state
-                                                .platform
-                                                .window
-                                                .open_search_overlay(&app)
+                                            .unwrap_or_default();
+                                        let ctx = state
+                                            .platform
+                                            .app_context
+                                            .detect_context()
+                                            .await
+                                            .ok();
+                                        let selection =
+                                            crate::models::PointerSelection {
+                                                text,
+                                                source_app: ctx
+                                                    .as_ref()
+                                                    .and_then(|c| c.source_app.clone()),
+                                                source_window: ctx
+                                                    .as_ref()
+                                                    .and_then(|c| {
+                                                        c.source_window.clone()
+                                                    }),
+                                                captured_at: chrono::Utc::now()
+                                                    .to_rfc3339(),
+                                            };
+                                        {
+                                            let mut slot = state
+                                                .pointer_selection
+                                                .lock()
                                                 .await;
-                                            // The overlay's frontend
-                                            // pulls the stash via
-                                            // pointer_take_selection on
-                                            // this event; the event also
-                                            // covers the case where the
-                                            // window was already open.
-                                            if let Some(win) = app
-                                                .get_webview_window("search-overlay")
-                                            {
-                                                let _ = win.emit(
-                                                    "recall://pointer-activate",
-                                                    (),
-                                                );
-                                            }
+                                            *slot = Some(selection);
                                         }
-                                        // Clipboard empty → silently do
-                                        // nothing. Surfacing an empty
-                                        // overlay would be noise.
+                                        let _ = state
+                                            .platform
+                                            .window
+                                            .open_search_overlay(&app)
+                                            .await;
+                                        // The overlay's frontend pulls
+                                        // the stash via
+                                        // pointer_take_selection on this
+                                        // event; the event also covers
+                                        // the case where the window was
+                                        // already open.
+                                        if let Some(win) = app
+                                            .get_webview_window("search-overlay")
+                                        {
+                                            let _ = win.emit(
+                                                "recall://pointer-activate",
+                                                (),
+                                            );
+                                        }
                                     }
                                 }
                                 _ => {}

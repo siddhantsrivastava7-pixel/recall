@@ -58,6 +58,7 @@ export function PointerPanel({ onClose }: { onClose: () => void }) {
 
   if (!selection) return null;
 
+  const hasText = selection.text.trim().length > 0;
   const sourceLabel =
     selection.sourceApp && selection.sourceApp !== "recall-pointer"
       ? selection.sourceApp
@@ -132,7 +133,34 @@ export function PointerPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
+        {/* ── Empty-clipboard hint (discovery aid) ── */}
+        {!hasText ? (
+          <div style={{ padding: "14px 16px 18px" }}>
+            <div
+              style={{
+                fontSize: 13.5,
+                lineHeight: 1.55,
+                color: "var(--t-2)",
+              }}
+            >
+              Copy any text first, then press the Pointer shortcut again.
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 12,
+                color: "var(--t-4)",
+                lineHeight: 1.5,
+              }}
+            >
+              Recall Pointer bridges what you're looking at now to what
+              you've already saved — select &amp; copy, then trigger.
+            </div>
+          </div>
+        ) : null}
+
         {/* ── Selection preview ── */}
+        {hasText ? (
         <div style={{ padding: "10px 16px 4px" }}>
           <div
             style={{
@@ -177,8 +205,10 @@ export function PointerPanel({ onClose }: { onClose: () => void }) {
             ) : null}
           </div>
         </div>
+        ) : null}
 
         {/* ── Body: actions / related / ask ── */}
+        {hasText ? (
         <div style={{ padding: "12px 16px 16px" }}>
           {mode === "actions" ? (
             <ActionRow
@@ -235,6 +265,7 @@ export function PointerPanel({ onClose }: { onClose: () => void }) {
             </div>
           ) : null}
         </div>
+        ) : null}
       </div>
     </div>
   );
