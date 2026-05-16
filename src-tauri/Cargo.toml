@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.5.64"
+version = "0.5.65"
 description = "Recall desktop app"
 authors = ["OpenAI Codex"]
 edition = "2021"
@@ -118,6 +118,10 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Power",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
+  # v0.5.65 — SendInput for Recall Pointer's auto-copy: synthesize
+  # Ctrl+C against the focused app so the user doesn't have to copy
+  # manually before triggering the hotkey.
+  "Win32_UI_Input_KeyboardAndMouse",
   "Foundation",
   "Foundation_Collections",
   "Globalization",

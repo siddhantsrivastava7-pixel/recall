@@ -84,6 +84,66 @@ impl ShortcutAdapter for WindowsShortcutAdapter {
     }
 }
 
+/// v0.5.65 — synthesize Ctrl+C against the focused window so
+/// Recall Pointer can grab the *current selection* without the
+/// user copying manually first. Permission-free on Windows
+/// (SendInput needs no special grant, unlike macOS Accessibility).
+///
+/// Sequence the caller must honor: the foreground app is still
+/// focused when the global-shortcut handler runs (Recall's
+/// window isn't shown yet), so firing Ctrl+C here lands in that
+/// app. The caller then sleeps briefly (the target app needs a
+/// beat to populate the clipboard) before reading it.
+///
+/// We do NOT save/restore the prior clipboard. The selection
+/// becoming the clipboard is the expected mental model for a
+/// "act on what I selected" gesture — and restore races with
+/// async clipboard writes anyway. Returns Ok(()) if the input
+/// was injected; the caller treats failure as "fall back to
+/// whatever's already on the clipboard / show the copy hint."
+pub fn synthesize_copy() -> AppResult<()> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL,
+    };
+
+    fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    // Ctrl down, C down, C up, Ctrl up — the canonical copy
+    // chord. Sent as one SendInput batch so no other input
+    // interleaves between the presses.
+    let inputs = [
+        key(VK_CONTROL, false),
+        key(VK_C, false),
+        key(VK_C, true),
+        key(VK_CONTROL, true),
+    ];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize != inputs.len() {
+        return Err(crate::errors::app_error::AppError::Invalid(
+            "SendInput did not inject the full copy chord".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn resize_widget_window(window: &WebviewWindow, expanded: bool) -> AppResult<()> {
     let current_position = window.outer_position()?;
     let current_size = window.outer_size()?;

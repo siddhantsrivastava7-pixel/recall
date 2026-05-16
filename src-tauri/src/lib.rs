@@ -1032,6 +1032,27 @@ pub fn run() {
                                     if !license_active {
                                         let _ = state.platform.window.open_main(&app).await;
                                     } else {
+                                        // v0.5.65 — auto-copy the
+                                        // live selection. The
+                                        // foreground app is still
+                                        // focused here (Recall's
+                                        // window isn't shown yet),
+                                        // so a synthetic Ctrl+C
+                                        // lands in it. Windows
+                                        // only + permission-free;
+                                        // no-op false on macOS,
+                                        // which keeps the v1
+                                        // copy-first behavior. On
+                                        // success wait a beat for
+                                        // the target app to write
+                                        // the clipboard before we
+                                        // read it.
+                                        if crate::platform::try_synthesize_copy() {
+                                            tokio::time::sleep(
+                                                std::time::Duration::from_millis(130),
+                                            )
+                                            .await;
+                                        }
                                         let text = state
                                             .platform
                                             .clipboard
