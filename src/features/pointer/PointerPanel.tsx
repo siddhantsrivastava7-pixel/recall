@@ -36,6 +36,26 @@ import {
   savePointerSelection,
 } from "./pointerActions";
 
+// v0.5.63 — distinctive cursor while Recall Pointer is active.
+// A classic arrow shape filled with Recall's accent blue and
+// outlined white so it reads on any backdrop. Applied ONLY to
+// the Pointer overlay's full-screen container — never a
+// system-wide SetSystemCursor / NSCursor hijack (invasive,
+// needs crash-safe teardown, un-premium). Because the overlay
+// window is full-screen-transparent, this means: the moment
+// Pointer activates the cursor turns Recall-blue everywhere,
+// and reverts the instant the window closes. encodeURIComponent
+// (not hand-rolled %23) so the `#` in the hex colors can't
+// break the data URI.
+const POINTER_CURSOR_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" ' +
+  'viewBox="0 0 28 28"><path d="M5 3 L5 21 L10 16 L13 22 L16 21 ' +
+  'L13 15 L20 15 Z" fill="#0A84FF" stroke="#ffffff" ' +
+  'stroke-width="1.4" stroke-linejoin="round"/></svg>';
+const POINTER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  POINTER_CURSOR_SVG,
+)}") 4 3, auto`;
+
 export function PointerPanel({ onClose }: { onClose: () => void }) {
   const selection = usePointerStore((s) => s.selection);
   const mode = usePointerStore((s) => s.mode);
@@ -74,6 +94,12 @@ export function PointerPanel({ onClose }: { onClose: () => void }) {
         justifyContent: "center",
         paddingTop: "16vh",
         background: "transparent",
+        // v0.5.63 — Recall-blue cursor over the whole active
+        // overlay. Buttons re-assert `cursor: pointer` on their
+        // own so they still feel clickable; the custom cursor
+        // covers the backdrop + panel surface, which is the
+        // "Pointer is active" signal.
+        cursor: POINTER_CURSOR,
       }}
       onClick={onClose}
     >
